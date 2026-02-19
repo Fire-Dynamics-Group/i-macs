@@ -1,0 +1,750 @@
+{% extends "base.html" %}
+{% block title %}MACS+ — Config Builder{% endblock %}
+
+{# ── Macro: numeric parameter field with vary/sweep/LHS extras ── #}
+{% macro param_field(name, label, default, step="1", min_val="", max_val="", sweep_step="") %}
+<label data-param="{{ name }}">{{ label }}
+    <input type="number" name="{{ name }}" value="{{ default }}" step="{{ step }}"
+        {% if min_val != "" %}min="{{ min_val }}"{% endif %}
+        {% if max_val != "" %}max="{{ max_val }}"{% endif %}>
+    <input type="checkbox" class="vary-check" data-param="{{ name }}"
+           onchange="updateVaryState(this)" hidden>
+    <span class="vary-pill" data-param="{{ name }}" style="display:none;"
+          onclick="toggleVaryPill(this)">
+        <span class="vary-pill-text">+ Sweep</span>
+    </span>
+    <span class="sweep-extra" style="display:none;">
+        min <input type="number" name="{{ name }}_min" step="{{ step }}" class="sweep-input">
+        max <input type="number" name="{{ name }}_max" step="{{ step }}" class="sweep-input">
+        step <input type="number" name="{{ name }}_step" step="{{ step }}" value="{{ sweep_step or step }}" class="sweep-input">
+    </span>
+    <span class="lhs-extra" style="display:none;">
+        <select name="{{ name }}_dist" class="lhs-input">
+            <option value="lognormal">Lognormal</option>
+            <option value="gumbel">Gumbel</option>
+        </select>
+        Mean <input type="number" name="{{ name }}_mean" step="any" class="lhs-input">
+        CoV <input type="number" name="{{ name }}_cov" step="0.01" value="0.3" class="lhs-input">
+    </span>
+</label>
+{% endmacro %}
+
+{% block content %}
+<h2>Configuration Builder</h2>
+
+<div id="run-result" class="result-banner" style="display:none;"></div>
+
+<form id="config-form">
+    <!-- Mode toggle -->
+    <fieldset>
+        <legend>Run Mode</legend>
+        <details id="frc-import">
+            <summary>Import from .frc file</summary>
+            <div class="grid" style="align-items:end;">
+                <label>
+                    <input type="file" id="frc-file" accept=".frc">
+                </label>
+                <button type="button" id="frc-import-btn" onclick="importFrc()">Import</button>
+            </div>
+            <div id="frc-status" style="display:none;"></div>
+        </details>
+        <label>
+            <input type="radio" name="run_mode" value="single" checked onchange="toggleMode()">
+            Single Run
+        </label>
+        <label>
+            <input type="radio" name="run_mode" value="sweep" onchange="toggleMode()">
+            Parameter Sweep
+        </label>
+        <label>
+            <input type="radio" name="run_mode" value="lhs" onchange="toggleMode()">
+            LHS Sampling
+        </label>
+    </fieldset>
+
+    <!-- LHS Sampling options (hidden by default) -->
+    <fieldset id="lhs-options" class="visible">
+        <legend>LHS Sampling</legend>
+        <div class="grid">
+            <label>Occupancy Type
+                <select name="occupancy_preset" id="occupancy-select">
+                    <option value="Dwelling">Dwelling (Gumbel, mean=780 MJ/m2)</option>
+                    <option value="Hospital">Hospital (Gumbel, mean=230 MJ/m2)</option>
+                    <option value="Hotel room">Hotel room (Gumbel, mean=310 MJ/m2)</option>
+                    <option value="Library">Library (Gumbel, mean=1500 MJ/m2)</option>
+                    <option value="Office" selected>Office (Gumbel, mean=420 MJ/m2)</option>
+                    <option value="School">School (Gumbel, mean=285 MJ/m2)</option>
+                    <option value="Fast food outlet">Fast food outlet (Lognormal, mean=526 MJ/m2)</option>
+                    <option value="Clothing store">Clothing store (Lognormal, mean=393 MJ/m2)</option>
+                    <option value="Restaurant">Restaurant (Lognormal, mean=298 MJ/m2)</option>
+                    <option value="Kitchen">Kitchen (Lognormal, mean=314 MJ/m2)</option>
+                    <option value="Retail unit storage area">Retail unit storage (Lognormal, mean=1196 MJ/m2)</option>
+                    <option value="Manufacturing and storage of combustible goods (<150 kg/m2)">Manufacturing &lt;150 kg/m2 (Lognormal, mean=1180 MJ/m2)</option>
+                    <option value="Manufacturing and storage of combustible goods (>150 kg/m2)">Manufacturing &gt;150 kg/m2 (Lognormal, mean=9920 MJ/m2)</option>
+                </select>
+            </label>
+            <label>Number of Samples
+                <input type="number" name="n_samples" value="1000" min="1">
+            </label>
+            <label>Random Seed
+                <input type="number" name="seed" value="42">
+            </label>
+        </div>
+    </fieldset>
+
+    <!-- Geometry -->
+    <fieldset>
+        <legend>Geometry</legend>
+        <div class="grid">
+            {{ param_field("span1", "Span 1 (m)", defaults.span1, step="0.1") }}
+            {{ param_field("span2", "Span 2 (m)", defaults.span2, step="0.1") }}
+            {{ param_field("numbeam", "Number of Beams", defaults.numbeam, step="1", min_val="1", max_val="5") }}
+        </div>
+    </fieldset>
+
+    <!-- Slab -->
+    <fieldset>
+        <legend>Slab</legend>
+        <div class="grid">
+            <label>Concrete Type
+                <select name="conc_type">
+                    <option value="NW" {% if defaults.conc_type == "NW" %}selected{% endif %}>Normal Weight (NW)</option>
+                    <option value="LW" {% if defaults.conc_type == "LW" %}selected{% endif %}>Lightweight (LW)</option>
+                </select>
+            </label>
+            {{ param_field("fck", "fck (MPa)", defaults.fck, step="5", sweep_step="5") }}
+            {{ param_field("slab_depth", "Slab Depth (mm)", defaults.slab_depth, step="10", sweep_step="10") }}
+        </div>
+    </fieldset>
+
+    <!-- Deck -->
+    <fieldset>
+        <legend>Deck</legend>
+        <div class="grid">
+            <label>Deck Type
+                <select name="deck_id">
+                    {% for deck_id, deck in decks.items() %}
+                    <option value="{{ deck_id }}" {% if deck_id == defaults.DeckId %}selected{% endif %}>
+                        {{ deck.name|default(deck_id) }} ({{ deck_id }})
+                    </option>
+                    {% endfor %}
+                </select>
+            </label>
+            <label>Mesh Type
+                <select name="mesh_type">
+                    {% for mesh_id, mesh in meshes.items() %}
+                    <option value="{{ mesh_id }}" {% if mesh_id == defaults.mesh_type %}selected{% endif %}>
+                        {{ mesh_id }} — {{ mesh.mainArea }}mm&sup2;/m
+                    </option>
+                    {% endfor %}
+                </select>
+            </label>
+            {{ param_field("mesh_axis", "Mesh Axis (mm)", defaults.mesh_axis, step="5") }}
+        </div>
+    </fieldset>
+
+    <!-- Beams -->
+    <fieldset>
+        <legend>Beams — Unprotected</legend>
+        <div class="grid">
+            <label>Section Size
+                <select name="u_sec_size">
+                    {% for sec_id, sec in sections.items() %}
+                    <option value="{{ sec_id }}" {% if sec_id == defaults.uSecSize %}selected{% endif %}>
+                        {{ sec.name|default(sec_id) }} (h={{ sec.h }}mm)
+                    </option>
+                    {% endfor %}
+                </select>
+            </label>
+            <label>Steel Grade (fy)
+                <select name="u_sec_fy">
+                    <option value="235">S235</option>
+                    <option value="275">S275</option>
+                    <option value="355" selected>S355</option>
+                    <option value="460">S460</option>
+                </select>
+            </label>
+            {{ param_field("ush_con", "Shear Connection (%)", defaults.ush_con, step="1", min_val="0", max_val="100") }}
+        </div>
+    </fieldset>
+
+    <!-- Perimeter Beams -->
+    <fieldset>
+        <legend>Beams — Perimeter</legend>
+        <details>
+            <summary>Side A / B / C / D configuration</summary>
+            {% for side in ['A', 'B', 'C', 'D'] %}
+            <fieldset>
+                <legend>Side {{ side }}</legend>
+                <div class="grid">
+                    <label>Section
+                        <select name="side_{{ side|lower }}_sec">
+                            {% for sec_id, sec in sections.items() %}
+                            <option value="{{ sec_id }}" {% if sec_id == defaults['Side' + side + 'SecSize'] %}selected{% endif %}>
+                                {{ sec.name|default(sec_id) }}
+                            </option>
+                            {% endfor %}
+                        </select>
+                    </label>
+                    <label>fy
+                        <select name="side_{{ side|lower }}_fy">
+                            <option value="235">S235</option>
+                            <option value="275">S275</option>
+                            <option value="355" selected>S355</option>
+                            <option value="460">S460</option>
+                        </select>
+                    </label>
+                    <label>
+                        <input type="checkbox" name="side_{{ side|lower }}_edge" value="1"
+                            {% if defaults['Side' + side + 'EdgeFlag'] == 1 %}checked{% endif %}>
+                        Edge beam
+                    </label>
+                    <label>
+                        <input type="checkbox" name="side_{{ side|lower }}_composite" value="1"
+                            {% if defaults['Side' + side + 'CompoFlag'] == 1 %}checked{% endif %}>
+                        Composite
+                    </label>
+                </div>
+            </fieldset>
+            {% endfor %}
+        </details>
+    </fieldset>
+
+    <!-- Loading -->
+    <fieldset>
+        <legend>Loading</legend>
+        <div class="grid">
+            {{ param_field("lead_var_act", "Leading Variable (kN/m²)", defaults.lead_var_act, step="0.5") }}
+            {{ param_field("othr_var_act", "Other Variable (kN/m²)", defaults.othr_var_act, step="0.5") }}
+            {{ param_field("cold_perm", "Cold Permanent (kN/m²)", defaults.cold_perm, step="0.1") }}
+        </div>
+        <div class="grid">
+            {{ param_field("lead_var_fac", "Leading Factor (psi)", defaults.lead_var_fac, step="0.1", min_val="0", max_val="1") }}
+            {{ param_field("othr_var_fac", "Other Factor (psi)", defaults.othr_var_fac, step="0.1", min_val="0", max_val="1") }}
+        </div>
+    </fieldset>
+
+    <!-- Fire -->
+    <fieldset>
+        <legend>Fire</legend>
+        <div class="grid">
+            <label>Method
+                <select name="method">
+                    <option value="iso" {% if defaults.method == "iso" %}selected{% endif %}>ISO 834</option>
+                    <option value="parametric" {% if defaults.method == "parametric" %}selected{% endif %}>Parametric</option>
+                </select>
+            </label>
+            {{ param_field("time_limit", "Time Limit (min)", defaults.time_limit, step="15", sweep_step="15") }}
+        </div>
+        <details>
+            <summary>Compartment Parameters (parametric fire)</summary>
+            <div class="grid">
+                {{ param_field("Lc", "Lc (m)", defaults.Lc, step="1") }}
+                {{ param_field("Bc", "Bc (m)", defaults.Bc, step="1") }}
+                {{ param_field("Hc", "Hc (m)", defaults.Hc, step="0.1") }}
+            </div>
+            <div class="grid">
+                {{ param_field("Hw", "Hw (m)", defaults.Hw, step="0.1") }}
+                {{ param_field("Lw", "Lw (m)", defaults.Lw, step="1") }}
+                {{ param_field("window_percent", "Window %", defaults.window_percent, step="1", min_val="0", max_val="100") }}
+            </div>
+            <div class="grid">
+                {{ param_field("qf", "qf (MJ/m²)", defaults.qf, step="10") }}
+                {{ param_field("Bfac", "B factor", defaults.Bfac, step="10") }}
+                {{ param_field("growth_rate", "Growth Rate", defaults.growth_rate, step="1") }}
+            </div>
+            <div class="grid">
+                {{ param_field("combustion_factor", "Combustion Factor", defaults.combustion_factor, step="0.1", min_val="0", max_val="1") }}
+            </div>
+        </details>
+    </fieldset>
+
+    <button type="submit" id="submit-btn">Run</button>
+</form>
+
+<div id="single-result" style="display:none;">
+    <article>
+        <header>Result</header>
+        <div id="single-result-body"></div>
+        <footer>
+            <a id="single-result-link" href="#">View Full Details</a>
+        </footer>
+    </article>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+/* ── All numeric parameter names (matches the macro-generated fields) ── */
+const NUMERIC_PARAMS = [
+    'span1', 'span2', 'numbeam',
+    'fck', 'slab_depth',
+    'mesh_axis',
+    'ush_con',
+    'lead_var_act', 'othr_var_act', 'cold_perm', 'lead_var_fac', 'othr_var_fac',
+    'time_limit',
+    'Lc', 'Bc', 'Hc', 'Hw', 'Lw', 'window_percent', 'qf', 'Bfac', 'growth_rate',
+    'combustion_factor',
+];
+
+/* ── Select (non-numeric) fields — always go to fixed ── */
+const SELECT_FIELDS = ['conc_type', 'method', 'deck_id', 'mesh_type', 'u_sec_size', 'u_sec_fy'];
+
+/* ── FRC import ── */
+async function importFrc() {
+    const fileInput = document.getElementById('frc-file');
+    const statusDiv = document.getElementById('frc-status');
+    const btn = document.getElementById('frc-import-btn');
+
+    if (!fileInput.files.length) {
+        statusDiv.innerHTML = '<p class="fail">Please select a .frc file first.</p>';
+        statusDiv.style.display = 'block';
+        return;
+    }
+
+    btn.setAttribute('aria-busy', 'true');
+    btn.disabled = true;
+    statusDiv.style.display = 'none';
+
+    const formData = new FormData();
+    formData.append('file', fileInput.files[0]);
+
+    try {
+        const resp = await fetch('/api/import-frc', {method: 'POST', body: formData});
+        const data = await resp.json();
+
+        if (!resp.ok) {
+            statusDiv.innerHTML = `<p class="fail">Error: ${data.error}</p>`;
+            statusDiv.style.display = 'block';
+            return;
+        }
+
+        // Pre-populate form fields from parsed params
+        const params = data.params;
+        const form = document.getElementById('config-form');
+
+        // Simple numeric/string fields
+        const directFields = [
+            'span1', 'span2', 'numbeam', 'fck', 'slab_depth', 'mesh_axis',
+            'lead_var_act', 'othr_var_act', 'cold_perm', 'lead_var_fac', 'othr_var_fac',
+            'time_limit', 'Lc', 'Bc', 'Hc', 'Hw', 'Lw', 'window_percent',
+            'qf', 'Bfac', 'growth_rate', 'combustion_factor',
+        ];
+        directFields.forEach(name => {
+            if (params[name] !== undefined && form.elements[name]) {
+                form.elements[name].value = params[name];
+            }
+        });
+
+        // Select fields
+        if (params.conc_type && form.elements['conc_type']) {
+            form.elements['conc_type'].value = params.conc_type;
+        }
+        if (params.method && form.elements['method']) {
+            form.elements['method'].value = params.method;
+        }
+
+        // Deck — try to match DeckId
+        if (params.DeckId && form.elements['deck_id']) {
+            const deckSel = form.elements['deck_id'];
+            for (let i = 0; i < deckSel.options.length; i++) {
+                if (deckSel.options[i].value === params.DeckId) {
+                    deckSel.value = params.DeckId;
+                    break;
+                }
+            }
+        }
+
+        // Mesh type
+        if (params.mesh_type && form.elements['mesh_type']) {
+            const meshSel = form.elements['mesh_type'];
+            for (let i = 0; i < meshSel.options.length; i++) {
+                if (meshSel.options[i].value === params.mesh_type) {
+                    meshSel.value = params.mesh_type;
+                    break;
+                }
+            }
+        }
+
+        // Unprotected beam
+        if (params.uSecSize && form.elements['u_sec_size']) {
+            const secSel = form.elements['u_sec_size'];
+            for (let i = 0; i < secSel.options.length; i++) {
+                if (secSel.options[i].value === params.uSecSize) {
+                    secSel.value = params.uSecSize;
+                    break;
+                }
+            }
+        }
+        if (params.fy5 && form.elements['u_sec_fy']) {
+            form.elements['u_sec_fy'].value = params.fy5;
+        }
+        if (params.ush_con !== undefined && form.elements['ush_con']) {
+            form.elements['ush_con'].value = params.ush_con;
+        }
+
+        // Perimeter beams (sides A-D)
+        const sides = ['a', 'b', 'c', 'd'];
+        const sideUpper = ['A', 'B', 'C', 'D'];
+        const fyKeys = ['fy1', 'fy2', 'fy3', 'fy4'];
+        sides.forEach((side, idx) => {
+            const S = sideUpper[idx];
+            // Section
+            const secKey = `Side${S}SecSize`;
+            const secField = form.elements[`side_${side}_sec`];
+            if (params[secKey] && secField) {
+                for (let i = 0; i < secField.options.length; i++) {
+                    if (secField.options[i].value === params[secKey]) {
+                        secField.value = params[secKey];
+                        break;
+                    }
+                }
+            }
+            // fy
+            if (params[fyKeys[idx]] && form.elements[`side_${side}_fy`]) {
+                form.elements[`side_${side}_fy`].value = params[fyKeys[idx]];
+            }
+            // Edge flag (checkbox)
+            const edgeKey = `Side${S}EdgeFlag`;
+            const edgeCb = form.elements[`side_${side}_edge`];
+            if (edgeCb) edgeCb.checked = params[edgeKey] === 1;
+            // Composite flag (checkbox)
+            const compoKey = `Side${S}CompoFlag`;
+            const compoCb = form.elements[`side_${side}_composite`];
+            if (compoCb) compoCb.checked = params[compoKey] === 1;
+        });
+
+        // Show success with project info
+        const proj = data.project || {};
+        let msg = '<p class="pass">Imported successfully!</p>';
+        if (proj.ProjectName) {
+            msg += `<p><strong>Project:</strong> ${proj.ProjectName}`;
+            if (proj.JobNumber) msg += ` (Job ${proj.JobNumber})`;
+            msg += '</p>';
+        }
+        if (proj.ClientName) msg += `<p><strong>Client:</strong> ${proj.ClientName}</p>`;
+        statusDiv.innerHTML = msg;
+        statusDiv.style.display = 'block';
+
+    } catch (err) {
+        statusDiv.innerHTML = `<p class="fail">Upload failed: ${err.message}</p>`;
+        statusDiv.style.display = 'block';
+    } finally {
+        btn.removeAttribute('aria-busy');
+        btn.disabled = false;
+    }
+}
+
+/* ── Pill click handler ── */
+function toggleVaryPill(pill) {
+    const paramName = pill.dataset.param;
+    const cb = document.querySelector(`.vary-check[data-param="${paramName}"]`);
+    if (!cb) return;
+    cb.checked = !cb.checked;
+    updateVaryState(cb);
+}
+
+/* ── Mode toggle — show/hide pills, auto-check defaults ── */
+function toggleMode() {
+    const mode = document.querySelector('input[name="run_mode"]:checked').value;
+    const isSweep = mode === 'sweep';
+    const isLHS = mode === 'lhs';
+    const isBatch = isSweep || isLHS;
+
+    const pillLabel = isSweep ? 'Sweep' : 'Sample';
+
+    // Show/hide pills + reset state
+    document.querySelectorAll('.vary-pill').forEach(pill => {
+        pill.style.display = isBatch ? 'inline-block' : 'none';
+        pill.classList.remove('active');
+        pill.querySelector('.vary-pill-text').textContent = '+ ' + pillLabel;
+    });
+
+    // Reset all hidden checkboxes
+    document.querySelectorAll('.vary-check').forEach(cb => {
+        cb.checked = false;
+    });
+
+    // Hide all extras when switching modes
+    document.querySelectorAll('.sweep-extra, .lhs-extra').forEach(el => {
+        el.style.display = 'none';
+    });
+
+    // LHS options panel
+    document.getElementById('lhs-options').classList.toggle('visible', isLHS);
+
+    if (isLHS) {
+        document.getElementById('submit-btn').textContent = 'Start LHS Sampling';
+        document.querySelector('select[name="method"]').value = 'parametric';
+    } else if (isSweep) {
+        document.getElementById('submit-btn').textContent = 'Start Sweep';
+    } else {
+        document.getElementById('submit-btn').textContent = 'Run';
+    }
+
+    // Auto-check default varying params in batch modes
+    if (isBatch) {
+        ['growth_rate', 'window_percent'].forEach(name => {
+            const cb = document.querySelector(`.vary-check[data-param="${name}"]`);
+            if (cb) {
+                cb.checked = true;
+                updateVaryState(cb);
+            }
+        });
+    }
+}
+
+/* ── Sync pill + extras when vary state changes ── */
+function updateVaryState(cb) {
+    const mode = document.querySelector('input[name="run_mode"]:checked').value;
+    const paramName = cb.dataset.param;
+    const label = cb.closest('label[data-param]');
+    if (!label) return;
+
+    const pill = label.querySelector(`.vary-pill[data-param="${paramName}"]`);
+    const sweepExtra = label.querySelector('.sweep-extra');
+    const lhsExtra = label.querySelector('.lhs-extra');
+    const pillLabel = mode === 'sweep' ? 'Sweep' : 'Sample';
+
+    if (cb.checked) {
+        // Activate pill
+        if (pill) {
+            pill.classList.add('active');
+            pill.querySelector('.vary-pill-text').textContent = pillLabel + ' \u00d7';
+        }
+        if (mode === 'sweep') {
+            if (sweepExtra) sweepExtra.style.display = 'block';
+            if (lhsExtra) lhsExtra.style.display = 'none';
+        } else if (mode === 'lhs') {
+            if (sweepExtra) sweepExtra.style.display = 'none';
+            // qf and window_percent use presets — no manual dist input
+            if (paramName === 'qf' || paramName === 'window_percent') {
+                if (lhsExtra) lhsExtra.style.display = 'none';
+            } else {
+                if (lhsExtra) {
+                    lhsExtra.style.display = 'block';
+                    // Pre-fill mean from current field value
+                    const meanInput = label.querySelector(`input[name="${paramName}_mean"]`);
+                    const valueInput = label.querySelector(`input[name="${paramName}"]`);
+                    if (meanInput && valueInput && !meanInput.value) {
+                        meanInput.value = valueInput.value;
+                    }
+                }
+            }
+        }
+    } else {
+        // Deactivate pill
+        if (pill) {
+            pill.classList.remove('active');
+            pill.querySelector('.vary-pill-text').textContent = '+ ' + pillLabel;
+        }
+        if (sweepExtra) sweepExtra.style.display = 'none';
+        if (lhsExtra) lhsExtra.style.display = 'none';
+    }
+}
+
+/* ── Build sweep range from min/max/step inputs ── */
+function buildSweepRange(name) {
+    const form = document.getElementById('config-form');
+    const min = parseFloat(form.elements[name + '_min']?.value);
+    const max = parseFloat(form.elements[name + '_max']?.value);
+    const step = parseFloat(form.elements[name + '_step']?.value);
+    if (isNaN(min) || isNaN(max) || isNaN(step) || step <= 0) return null;
+    const values = [];
+    for (let v = min; v <= max + step * 0.001; v += step) {
+        values.push(Math.round(v * 1000) / 1000);
+    }
+    return values.length > 0 ? values : null;
+}
+
+/* ── Form submission ── */
+document.getElementById('config-form').addEventListener('submit', async function(e) {
+    e.preventDefault();
+    const form = e.target;
+    const mode = form.elements['run_mode'].value;
+    const isSweep = mode === 'sweep';
+    const isLHS = mode === 'lhs';
+    const btn = document.getElementById('submit-btn');
+    btn.setAttribute('aria-busy', 'true');
+    btn.disabled = true;
+
+    if (isLHS) {
+        // ── Build LHS payload dynamically ──
+        const distributions = {};
+        const fixed = {};
+
+        // Collect varied params from checked vary-checkboxes
+        document.querySelectorAll('.vary-check:checked').forEach(cb => {
+            const name = cb.dataset.param;
+            if (name === 'qf') {
+                // Use occupancy preset
+                distributions.qf = {preset: form.elements['occupancy_preset'].value};
+            } else if (name === 'window_percent') {
+                // Use Opening Factor preset with transform
+                distributions.window_percent = {preset: 'Opening Factor', transform: 'opening_factor'};
+            } else {
+                // Explicit distribution from user inputs
+                const distType = form.elements[name + '_dist']?.value || 'lognormal';
+                let mean = parseFloat(form.elements[name + '_mean']?.value);
+                const cov = parseFloat(form.elements[name + '_cov']?.value);
+                // Fall back to current field value if mean not filled
+                if (isNaN(mean)) {
+                    mean = parseFloat(form.elements[name]?.value);
+                }
+                if (!isNaN(mean) && !isNaN(cov) && cov > 0) {
+                    distributions[name] = {type: distType, mean: mean, cov: cov};
+                }
+            }
+        });
+
+        // All unchecked numeric params go to fixed
+        NUMERIC_PARAMS.forEach(name => {
+            if (!distributions[name] && form.elements[name]) {
+                const v = parseFloat(form.elements[name].value);
+                if (!isNaN(v)) fixed[name] = v;
+            }
+        });
+
+        // Select fields always go to fixed
+        SELECT_FIELDS.forEach(name => {
+            if (form.elements[name]) {
+                fixed[name] = form.elements[name].value;
+            }
+        });
+
+        const payload = {
+            sampling: 'lhs',
+            analysis_method: 'parametric',
+            n_samples: parseInt(form.elements['n_samples'].value),
+            seed: parseInt(form.elements['seed'].value),
+            distributions: distributions,
+            fixed: fixed,
+        };
+
+        try {
+            const resp = await fetch('/api/sweeps', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify(payload),
+            });
+            const data = await resp.json();
+            if (resp.ok) {
+                window.location.href = '/dashboard';
+            } else {
+                alert(data.error || 'LHS sampling failed');
+            }
+        } catch (err) {
+            alert('Request failed: ' + err.message);
+        }
+    } else if (isSweep) {
+        // ── Build sweep payload dynamically ──
+        const sweep = {};
+        const fixed = {};
+
+        // Collect varied params from checked vary-checkboxes
+        document.querySelectorAll('.vary-check:checked').forEach(cb => {
+            const name = cb.dataset.param;
+            const range = buildSweepRange(name);
+            if (range) {
+                sweep[name] = range;
+            }
+        });
+
+        // All unchecked numeric params go to fixed
+        NUMERIC_PARAMS.forEach(name => {
+            if (!sweep[name] && form.elements[name]) {
+                const v = parseFloat(form.elements[name].value);
+                if (!isNaN(v)) fixed[name] = v;
+            }
+        });
+
+        // Select fields always go to fixed
+        SELECT_FIELDS.forEach(name => {
+            if (form.elements[name]) {
+                fixed[name] = form.elements[name].value;
+            }
+        });
+
+        const payload = {
+            analysis_method: form.elements['method'].value,
+            sweep: sweep,
+            fixed: fixed,
+        };
+
+        try {
+            const resp = await fetch('/api/sweeps', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify(payload),
+            });
+            const data = await resp.json();
+            if (resp.ok) {
+                window.location.href = '/dashboard';
+            } else {
+                alert(data.error || 'Sweep failed');
+            }
+        } catch (err) {
+            alert('Request failed: ' + err.message);
+        }
+    } else {
+        // ── Single run ──
+        const params = {};
+        NUMERIC_PARAMS.forEach(name => {
+            const el = form.elements[name];
+            if (el) {
+                const v = el.value;
+                params[name] = isNaN(parseFloat(v)) ? v : parseFloat(v);
+            }
+        });
+        SELECT_FIELDS.forEach(name => {
+            if (form.elements[name]) {
+                params[name] = form.elements[name].value;
+            }
+        });
+
+        // Perimeter beams
+        ['a', 'b', 'c', 'd'].forEach(side => {
+            const sel = form.elements[`side_${side}_sec`];
+            if (sel) params[`side_${side}_sec`] = sel.value;
+            const fy = form.elements[`side_${side}_fy`];
+            if (fy) params[`side_${side}_fy`] = fy.value;
+            const edge = form.elements[`side_${side}_edge`];
+            if (edge) params[`side_${side}_edge`] = edge.checked ? 1 : 0;
+            const comp = form.elements[`side_${side}_composite`];
+            if (comp) params[`side_${side}_composite`] = comp.checked ? 1 : 0;
+        });
+
+        try {
+            const resp = await fetch('/api/runs', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify(params),
+            });
+            const data = await resp.json();
+            const resultDiv = document.getElementById('single-result');
+            const body = document.getElementById('single-result-body');
+            if (resp.ok) {
+                const pass = data.uf_max <= 1.0;
+                body.innerHTML = `
+                    <p><strong>UF max:</strong> <span class="${pass ? 'pass' : 'fail'}">${data.uf_max.toFixed(3)}</span></p>
+                    <p><strong>Status:</strong> <span class="${pass ? 'pass' : 'fail'}">${pass ? 'PASS' : 'FAIL'}</span></p>
+                    <p><strong>Duration:</strong> ${(data.duration_ms / 1000).toFixed(2)}s</p>
+                `;
+                document.getElementById('single-result-link').href = '/results/' + data.id;
+            } else {
+                body.innerHTML = `<p class="fail"><strong>Error:</strong> ${data.error}</p>`;
+                if (data.id) {
+                    document.getElementById('single-result-link').href = '/results/' + data.id;
+                }
+            }
+            resultDiv.style.display = 'block';
+        } catch (err) {
+            alert('Request failed: ' + err.message);
+        }
+    }
+
+    btn.removeAttribute('aria-busy');
+    btn.disabled = false;
+});
+</script>
+{% endblock %}

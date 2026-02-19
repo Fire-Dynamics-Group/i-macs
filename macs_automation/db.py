@@ -67,9 +67,9 @@ CREATE INDEX IF NOT EXISTS idx_time_series_run_id ON time_series(run_id);
 class ResultsDB:
     """SQLite database for storing batch run results."""
 
-    def __init__(self, db_path: str | Path):
+    def __init__(self, db_path: str | Path, check_same_thread: bool = True):
         self.db_path = str(db_path)
-        self.conn = sqlite3.connect(self.db_path)
+        self.conn = sqlite3.connect(self.db_path, check_same_thread=check_same_thread)
         self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.execute("PRAGMA synchronous=NORMAL")
         self.conn.executescript(SCHEMA_SQL)
@@ -292,3 +292,127 @@ class ResultsDB:
         """Return number of successful runs (no error)."""
         cursor = self.conn.execute("SELECT COUNT(*) FROM runs WHERE error IS NULL")
         return cursor.fetchone()[0]
+
+    def get_runs(self, limit: int = 50, offset: int = 0) -> list[dict]:
+        """Return paginated list of runs, newest first."""
+        self.conn.row_factory = sqlite3.Row
+        cursor = self.conn.execute(
+            "SELECT * FROM runs ORDER BY id DESC LIMIT ? OFFSET ?",
+            (limit, offset),
+        )
+        rows = [dict(row) for row in cursor.fetchall()]
+        self.conn.row_factory = None
+        return rows
+
+    def get_run(self, run_id: int) -> Optional[dict]:
+        """Return a single run by ID, or None if not found."""
+        self.conn.row_factory = sqlite3.Row
+        cursor = self.conn.execute("SELECT * FROM runs WHERE id = ?", (run_id,))
+        row = cursor.fetchone()
+        self.conn.row_factory = None
+        if row is None:
+            return None
+        return dict(row)
+
+    def get_time_series(self, run_id: int) -> list[dict]:
+        """Return time series data for a run, ordered by time_step."""
+        self.conn.row_factory = sqlite3.Row
+        cursor = self.conn.execute(
+            "SELECT * FROM time_series WHERE run_id = ? ORDER BY time_step",
+            (run_id,),
+        )
+        rows = [dict(row) for row in cursor.fetchall()]
+        self.conn.row_factory = None
+        return rows
+
+    def get_stats(self) -> dict:
+        """Return summary statistics: total, successful, errors, pass/fail counts."""
+        total = self.get_run_count()
+        successful = self.get_successful_run_count()
+        errors = total - successful
+        pass_cursor = self.conn.execute(
+            "SELECT COUNT(*) FROM runs WHERE error IS NULL AND uf_max <= 1.0"
+        )
+        pass_count = pass_cursor.fetchone()[0]
+        fail_count = successful - pass_count
+        return {
+            "total": total,
+            "successful": successful,
+            "errors": errors,
+            "pass_count": pass_count,
+            "fail_count": fail_count,
+        }
+
+    # ─── Report query methods ──────────────────────────────────────────────
+
+    # Whitelist of valid time_series column names for safe SQL interpolation
+    TIME_SERIES_COLUMNS = frozenset({
+        "fire_temp", "lofl_temp", "mesh_temp", "slabtop_temp", "slabbot_temp",
+        "beam_hot_capacity", "deflection", "slab_yield", "enhancement",
+        "slab_cap", "total_plate_capacity", "utilization_factor",
+    })
+
+    def get_successful_run_ids(self) -> list[int]:
+        """Return list of run IDs for successful runs (no error), ordered by id."""
+        cursor = self.conn.execute(
+            "SELECT id FROM runs WHERE error IS NULL ORDER BY id"
+        )
+        return [row[0] for row in cursor.fetchall()]
+
+    def get_all_time_series_column(self, column: str) -> list[tuple]:
+        """Return (run_id, time_min, value) tuples for a column across all successful runs.
+
+        Column name is validated against a whitelist to prevent SQL injection.
+        """
+        if column not in self.TIME_SERIES_COLUMNS:
+            raise ValueError(f"Invalid time_series column: {column!r}")
+        cursor = self.conn.execute(
+            f"""SELECT ts.run_id, ts.time_min, ts.{column}
+                FROM time_series ts
+                JOIN runs r ON r.id = ts.run_id
+                WHERE r.error IS NULL
+                ORDER BY ts.run_id, ts.time_min""",
+        )
+        return cursor.fetchall()
+
+    def get_time_grid(self, run_id: int) -> list[float]:
+        """Return sorted list of time_min values for a run."""
+        cursor = self.conn.execute(
+            "SELECT time_min FROM time_series WHERE run_id = ? ORDER BY time_min",
+            (run_id,),
+        )
+        return [row[0] for row in cursor.fetchall()]
+
+    def get_time_of_max_uf(self, run_id: int) -> Optional[float]:
+        """Return the time_min at which utilization_factor is maximum for a run."""
+        cursor = self.conn.execute(
+            """SELECT time_min FROM time_series
+               WHERE run_id = ?
+               ORDER BY utilization_factor DESC, time_min ASC
+               LIMIT 1""",
+            (run_id,),
+        )
+        row = cursor.fetchone()
+        return row[0] if row else None
+
+    def get_time_exceed_one(self, run_id: int) -> Optional[float]:
+        """Return the first time_min where utilization_factor >= 1.0, or None."""
+        cursor = self.conn.execute(
+            """SELECT time_min FROM time_series
+               WHERE run_id = ? AND utilization_factor >= 1.0
+               ORDER BY time_min ASC
+               LIMIT 1""",
+            (run_id,),
+        )
+        row = cursor.fetchone()
+        return row[0] if row else None
+
+    def get_successful_runs(self) -> list[dict]:
+        """Return all successful runs as list of dicts."""
+        self.conn.row_factory = sqlite3.Row
+        cursor = self.conn.execute(
+            "SELECT * FROM runs WHERE error IS NULL ORDER BY id"
+        )
+        rows = [dict(row) for row in cursor.fetchall()]
+        self.conn.row_factory = None
+        return rows

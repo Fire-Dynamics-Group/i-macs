@@ -1,0 +1,26 @@
+/* MACS+ Dashboard Styles */
+
+.pass { color: #2ecc71; font-weight: bold; }
+.fail { color: #e74c3c; font-weight: bold; }
+
+.chart-container {
+    min-height: 380px;
+    width: 100%;
+}
+
+#progress-card progress {
+    width: 100%;
+    height: 24px;
+}
+
+article {
+    text-align: center;
+}
+article strong {
+    font-size: 1.4em;
+}
+
+/* Let chart articles be left-aligned */
+.grid article {
+    text-align: left;
+}

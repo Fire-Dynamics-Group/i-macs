@@ -171,10 +171,10 @@ class TestRealDataXml:
 
     @pytest.fixture
     def real_data_path(self):
-        path = Path(r"C:\Program Files (x86)\MACS+\EN\Data\Data.xml")
-        if not path.exists():
+        from macs_automation.data_loader import DEFAULT_DATA_PATH
+        if not DEFAULT_DATA_PATH.exists():
             pytest.skip("MACS+ Data.xml not found — skipping real data tests")
-        return path
+        return DEFAULT_DATA_PATH
 
     def test_loads_all_section_families(self, real_data_path):
         data = load_data(real_data_path)

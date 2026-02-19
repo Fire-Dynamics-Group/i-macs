@@ -1,10 +1,12 @@
 """Parse MACS+ Data.xml for steel sections, deck types, and mesh types."""
 
+import os
 import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Optional
 
-DEFAULT_DATA_PATH = Path(r"C:\Program Files (x86)\MACS+\EN\Data\Data.xml")
+_FALLBACK_DATA_PATH = Path(r"C:\Program Files (x86)\MACS+\EN\Data\Data.xml")
+DEFAULT_DATA_PATH = Path(os.environ["MACS_DATA_PATH"]) if "MACS_DATA_PATH" in os.environ else _FALLBACK_DATA_PATH
 
 SECTION_FAMILIES = ["IPE", "HE", "HL", "HD", "UB", "UC", "UBP", "HPUK", "W", "HPUS", "H"]
 

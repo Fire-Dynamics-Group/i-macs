@@ -174,10 +174,10 @@ class TestCOMIntegration:
     @pytest.fixture
     def real_data(self):
         from macs_automation.data_loader import load_data
-        data_path = Path(r"C:\Program Files (x86)\MACS+\EN\Data\Data.xml")
-        if not data_path.exists():
+        from macs_automation.data_loader import DEFAULT_DATA_PATH
+        if not DEFAULT_DATA_PATH.exists():
             pytest.skip("MACS+ not installed")
-        return load_data(data_path)
+        return load_data(DEFAULT_DATA_PATH)
 
     def test_iso_fire_default_params(self, real_data):
         """Run a single ISO fire analysis with defaults and verify outputs."""

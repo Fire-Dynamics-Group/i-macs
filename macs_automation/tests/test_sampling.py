@@ -272,3 +272,69 @@ class TestGenerateLhsSamples:
         assert len(samples) == 50
         for s in samples:
             assert s["_seed"] is None
+
+    def test_geometry_distributions(self):
+        """LHS should handle arbitrary geometry params like span1 and slab_depth."""
+        config = {
+            "analysis_method": "parametric",
+            "sampling": "lhs",
+            "n_samples": 20,
+            "seed": 42,
+            "distributions": {
+                "span1": {"type": "lognormal", "mean": 9.0, "cov": 0.2},
+                "slab_depth": {"type": "lognormal", "mean": 130, "cov": 0.15},
+            },
+            "fixed": {"span2": 9, "fck": 25},
+        }
+        samples = generate_lhs_samples(config)
+        assert len(samples) == 20
+        # span1 should vary
+        span1_values = [s["span1"] for s in samples]
+        assert len(set(span1_values)) > 1
+        # slab_depth should vary
+        sd_values = [s["slab_depth"] for s in samples]
+        assert len(set(sd_values)) > 1
+        # Fixed params preserved
+        assert all(s["span2"] == 9 for s in samples)
+        assert all(s["fck"] == 25 for s in samples)
+
+    def test_single_distribution(self):
+        """LHS should work with just one distribution."""
+        config = {
+            "analysis_method": "parametric",
+            "sampling": "lhs",
+            "n_samples": 10,
+            "seed": 42,
+            "distributions": {
+                "Lc": {"type": "lognormal", "mean": 27, "cov": 0.3},
+            },
+        }
+        samples = generate_lhs_samples(config)
+        assert len(samples) == 10
+        lc_values = [s["Lc"] for s in samples]
+        assert len(set(lc_values)) > 1
+        assert all(v > 0 for v in lc_values)
+
+    def test_three_plus_distributions(self):
+        """LHS should handle 3+ simultaneous distributions."""
+        config = {
+            "analysis_method": "parametric",
+            "sampling": "lhs",
+            "n_samples": 30,
+            "seed": 42,
+            "distributions": {
+                "qf": {"preset": "Office"},
+                "window_percent": {"preset": "Opening Factor", "transform": "opening_factor"},
+                "span1": {"type": "lognormal", "mean": 9.0, "cov": 0.2},
+                "slab_depth": {"type": "lognormal", "mean": 130, "cov": 0.15},
+            },
+            "fixed": {"span2": 9},
+        }
+        samples = generate_lhs_samples(config)
+        assert len(samples) == 30
+        # All four should vary
+        for param in ["qf", "window_percent", "span1", "slab_depth"]:
+            values = [s[param] for s in samples]
+            assert len(set(values)) > 1, f"{param} should vary"
+        # Fixed preserved
+        assert all(s["span2"] == 9 for s in samples)

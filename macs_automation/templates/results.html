@@ -1,0 +1,90 @@
+{% extends "base.html" %}
+{% block title %}MACS+ — Results{% endblock %}
+
+{% block content %}
+<h2>Results Browser</h2>
+
+<div class="grid">
+    <article>
+        <strong>{{ stats.total }}</strong><br><small>Total Runs</small>
+    </article>
+    <article>
+        <strong class="pass">{{ stats.pass_count }}</strong><br><small>Pass (UF &le; 1.0)</small>
+    </article>
+    <article>
+        <strong class="fail">{{ stats.fail_count }}</strong><br><small>Fail (UF &gt; 1.0)</small>
+    </article>
+    <article>
+        <strong>{{ stats.errors }}</strong><br><small>Errors</small>
+    </article>
+</div>
+
+{% if runs %}
+<figure>
+<table role="grid">
+    <thead>
+        <tr>
+            <th>ID</th>
+            <th>Timestamp</th>
+            <th>Span1</th>
+            <th>Span2</th>
+            <th>Slab Depth</th>
+            <th>fck</th>
+            <th>Section</th>
+            <th>Time Limit</th>
+            <th>UF Max</th>
+            <th>Status</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for run in runs %}
+        <tr class="clickable-row" data-href="/results/{{ run.id }}" style="cursor:pointer;">
+            <td>{{ run.id }}</td>
+            <td>{{ run.run_timestamp[:19] if run.run_timestamp else '—' }}</td>
+            <td>{{ run.span1 if run.span1 is not none else '—' }}</td>
+            <td>{{ run.span2 if run.span2 is not none else '—' }}</td>
+            <td>{{ run.slab_depth if run.slab_depth is not none else '—' }}</td>
+            <td>{{ run.fck if run.fck is not none else '—' }}</td>
+            <td>{{ run.u_sec_size if run.u_sec_size else '—' }}</td>
+            <td>{{ run.time_limit if run.time_limit is not none else '—' }}</td>
+            <td>
+                {% if run.error %}
+                    <span class="error-badge">ERR</span>
+                {% elif run.uf_max is not none %}
+                    <span class="{{ 'pass' if run.uf_max <= 1.0 else 'fail' }}">
+                        {{ "%.3f"|format(run.uf_max) }}
+                    </span>
+                {% else %}
+                    —
+                {% endif %}
+            </td>
+            <td>
+                {% if run.error %}
+                    <span class="error-badge">Error</span>
+                {% elif run.uf_max is not none and run.uf_max <= 1.0 %}
+                    <span class="pass-badge">Pass</span>
+                {% elif run.uf_max is not none %}
+                    <span class="fail-badge">Fail</span>
+                {% else %}
+                    —
+                {% endif %}
+            </td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+</figure>
+{% else %}
+<p>No runs found. <a href="/">Run a configuration</a> to see results here.</p>
+{% endif %}
+{% endblock %}
+
+{% block scripts %}
+<script>
+document.querySelectorAll('.clickable-row').forEach(row => {
+    row.addEventListener('click', () => {
+        window.location.href = row.dataset.href;
+    });
+});
+</script>
+{% endblock %}

@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+{% block title %}MACS+ Dashboard — Home{% endblock %}
+
+{% block content %}
+<h2>MACS+ Automation</h2>
+
+<div class="grid">
+    <article>
+        <header>Total Runs</header>
+        <strong>{{ stats.total }}</strong>
+    </article>
+    <article>
+        <header>Successful</header>
+        <strong class="pass">{{ stats.successful }}</strong>
+    </article>
+    <article>
+        <header>Pass (UF &le; 1.0)</header>
+        <strong class="pass">{{ stats.pass_count }}</strong>
+    </article>
+    <article>
+        <header>Fail (UF &gt; 1.0)</header>
+        <strong class="fail">{{ stats.fail_count }}</strong>
+    </article>
+</div>
+
+<div class="grid">
+    <article>
+        <header>Actions</header>
+        <p>
+            <a href="/dashboard" role="button">Open Live Dashboard</a>
+        </p>
+        <p>
+            <a href="/api/report" role="button" class="outline">Download Report ZIP</a>
+        </p>
+    </article>
+</div>
+{% endblock %}

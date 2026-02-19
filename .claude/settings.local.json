@@ -13,7 +13,13 @@
       "Bash(git remote add:*)",
       "Bash(git fetch:*)",
       "Bash(wc:*)",
-      "Bash(git add:*)"
+      "Bash(git add:*)",
+      "Bash(pip install:*)",
+      "Bash(git commit:*)",
+      "Bash(git branch:*)",
+      "Bash(git push:*)",
+      "Bash(curl:*)",
+      "Bash(pip show:*)"
     ]
   }
 }

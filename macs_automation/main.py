@@ -1,15 +1,13 @@
 """MACS+ Batch Automation Tool — CLI entry point."""
 
 import argparse
-import sys
-import traceback
 from pathlib import Path
 
 from tqdm import tqdm
 
 from macs_automation.data_loader import load_data
 from macs_automation.db import ResultsDB
-from macs_automation.engine import MACSEngine
+from macs_automation.runner import run_batch_with_callback
 from macs_automation.sweep import generate_combinations, load_config, resolve_deck, resolve_mesh
 
 
@@ -63,20 +61,20 @@ def list_meshes(data: dict):
 
 def run_batch(config_path: str, db_path: str, resume: bool = True):
     """Run a batch of MACS+ calculations from a sweep config."""
-    print(f"Loading reference data...")
+    print("Loading reference data...")
     data = load_data()
 
     print(f"Loading config: {config_path}")
     config = load_config(config_path)
 
-    print(f"Generating parameter combinations...")
+    print("Generating parameter combinations...")
     sampling_mode = config.get("sampling", "grid")
     if sampling_mode == "lhs":
         n_samples = config.get("n_samples", "?")
         seed = config.get("seed", "none")
         print(f"Sampling mode: LHS (n_samples={n_samples}, seed={seed})")
     else:
-        print(f"Sampling mode: grid")
+        print("Sampling mode: grid")
 
     combinations = generate_combinations(config)
 
@@ -88,17 +86,15 @@ def run_batch(config_path: str, db_path: str, resume: bool = True):
     print(f"Total combinations: {len(combinations)}")
 
     db = ResultsDB(db_path)
-    skipped = 0
 
+    # Use tqdm as the callback for the batch runner
+    remaining = len(combinations)
     if resume:
-        # Count how many already exist
-        for params in combinations:
-            if db.run_exists(params):
-                skipped += 1
+        skipped = sum(1 for p in combinations if db.run_exists(p))
+        remaining -= skipped
         if skipped:
             print(f"Resuming: skipping {skipped} already-completed runs")
 
-    remaining = len(combinations) - skipped
     print(f"Runs to execute: {remaining}")
 
     if remaining == 0:
@@ -106,30 +102,24 @@ def run_batch(config_path: str, db_path: str, resume: bool = True):
         db.close()
         return
 
-    success = 0
-    errors = 0
+    pbar = tqdm(total=remaining, desc="Running MACS+", unit="run")
 
-    with tqdm(total=remaining, desc="Running MACS+", unit="run") as pbar:
-        for params in combinations:
-            if resume and db.run_exists(params):
-                continue
+    def _on_run_complete(run_id, params, outputs, error, progress):
+        pbar.update(1)
+        if error:
+            tqdm.write(f"  ERROR: {error}")
 
-            try:
-                engine = MACSEngine()
-                engine.set_inputs(params, data["sections"])
-                outputs = engine.run(method=params.get("method", "iso"))
-                db.insert_run(params, outputs=outputs)
-                success += 1
-            except Exception as e:
-                error_msg = f"{type(e).__name__}: {e}"
-                db.insert_run(params, error=error_msg)
-                errors += 1
-                tqdm.write(f"  ERROR: {error_msg}")
+    result = run_batch_with_callback(
+        combinations, db, data["sections"],
+        resume=resume,
+        on_run_complete=_on_run_complete,
+    )
 
-            pbar.update(1)
-
+    pbar.close()
     db.close()
-    print(f"\nComplete: {success} succeeded, {errors} failed")
+
+    success = result.completed - result.errors
+    print(f"\nComplete: {success} succeeded, {result.errors} failed")
     print(f"Results stored in: {db_path}")
 
 

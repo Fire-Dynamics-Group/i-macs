@@ -1,0 +1,136 @@
+{% extends "base.html" %}
+{% block title %}MACS+ — Run #{{ run.id }}{% endblock %}
+{% block head %}
+<script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+{% endblock %}
+
+{% block content %}
+<h2>
+    Run #{{ run.id }}
+    {% if run.error %}
+        <span class="error-badge">Error</span>
+    {% elif run.uf_max is not none and run.uf_max <= 1.0 %}
+        <span class="pass-badge">PASS</span>
+    {% elif run.uf_max is not none %}
+        <span class="fail-badge">FAIL</span>
+    {% endif %}
+</h2>
+
+<p><a href="/results">&larr; Back to Results</a></p>
+
+{% if run.error %}
+<article>
+    <header>Error</header>
+    <code>{{ run.error }}</code>
+</article>
+{% endif %}
+
+<!-- Summary cards -->
+<div class="grid">
+    <article>
+        <header>Key Inputs</header>
+        <table>
+            <tr><td>Span 1</td><td>{{ run.span1 }} m</td></tr>
+            <tr><td>Span 2</td><td>{{ run.span2 }} m</td></tr>
+            <tr><td>Slab Depth</td><td>{{ run.slab_depth }} mm</td></tr>
+            <tr><td>fck</td><td>{{ run.fck }} MPa</td></tr>
+            <tr><td>Section</td><td>{{ run.u_sec_size }}</td></tr>
+            <tr><td>Mesh</td><td>{{ run.mesh_type }}</td></tr>
+            <tr><td>Fire Method</td><td>{{ run.method }}</td></tr>
+            <tr><td>Time Limit</td><td>{{ run.time_limit }} min</td></tr>
+        </table>
+    </article>
+    <article>
+        <header>Key Outputs</header>
+        <table>
+            {% if run.uf_max is not none %}
+            <tr>
+                <td>UF Max</td>
+                <td><strong class="{{ 'pass' if run.uf_max <= 1.0 else 'fail' }}">{{ "%.3f"|format(run.uf_max) }}</strong></td>
+            </tr>
+            {% endif %}
+            <tr><td>Max Temperature</td><td>{{ "%.1f"|format(run.max_temperature) if run.max_temperature is not none else '—' }} &deg;C</td></tr>
+            <tr><td>Max Deflection</td><td>{{ "%.1f"|format(run.max_deflection) if run.max_deflection is not none else '—' }} mm</td></tr>
+            <tr><td>Composite Failure</td><td>{{ 'Yes' if run.comp_failure else 'No' }}</td></tr>
+            <tr><td>MB1 Required</td><td>{{ "%.1f"|format(run.mb1_reqd) if run.mb1_reqd is not none else '—' }}</td></tr>
+            <tr><td>MB2 Required</td><td>{{ "%.1f"|format(run.mb2_reqd) if run.mb2_reqd is not none else '—' }}</td></tr>
+            <tr><td>Factored Hot</td><td>{{ "%.1f"|format(run.factored_hot) if run.factored_hot is not none else '—' }}</td></tr>
+            <tr><td>Duration</td><td>{{ "%.0f"|format(run.duration_ms) if run.duration_ms is not none else '—' }} ms</td></tr>
+        </table>
+    </article>
+</div>
+
+<!-- Perimeter beams -->
+<article>
+    <header>Perimeter Beam Results</header>
+    <table>
+        <thead>
+            <tr><th>Side</th><th>Section</th><th>Load Ratio</th><th>Critical Temp (&deg;C)</th></tr>
+        </thead>
+        <tbody>
+            <tr><td>A</td><td>{{ run.side_a_sec or '—' }}</td><td>{{ "%.3f"|format(run.side_a_load_ratio) if run.side_a_load_ratio is not none else '—' }}</td><td>{{ "%.0f"|format(run.side_a_critical_temp) if run.side_a_critical_temp is not none else '—' }}</td></tr>
+            <tr><td>B</td><td>{{ run.side_b_sec or '—' }}</td><td>{{ "%.3f"|format(run.side_b_load_ratio) if run.side_b_load_ratio is not none else '—' }}</td><td>{{ "%.0f"|format(run.side_b_critical_temp) if run.side_b_critical_temp is not none else '—' }}</td></tr>
+            <tr><td>C</td><td>{{ run.side_c_sec or '—' }}</td><td>{{ "%.3f"|format(run.side_c_load_ratio) if run.side_c_load_ratio is not none else '—' }}</td><td>{{ "%.0f"|format(run.side_c_critical_temp) if run.side_c_critical_temp is not none else '—' }}</td></tr>
+            <tr><td>D</td><td>{{ run.side_d_sec or '—' }}</td><td>{{ "%.3f"|format(run.side_d_load_ratio) if run.side_d_load_ratio is not none else '—' }}</td><td>{{ "%.0f"|format(run.side_d_critical_temp) if run.side_d_critical_temp is not none else '—' }}</td></tr>
+        </tbody>
+    </table>
+</article>
+
+{% if time_series %}
+<!-- Plots -->
+<div class="grid">
+    <div id="plot-uf"></div>
+    <div id="plot-temp"></div>
+</div>
+<div class="grid">
+    <div id="plot-deflection"></div>
+    <div id="plot-capacity"></div>
+</div>
+{% endif %}
+{% endblock %}
+
+{% block scripts %}
+{% if time_series %}
+<script>
+const ts = {{ time_series | tojson }};
+const time_min = ts.map(r => r.time_min);
+const plotConfig = {responsive: true, displayModeBar: false};
+const plotLayout = (title, yTitle) => ({
+    title: title,
+    xaxis: {title: 'Time (min)'},
+    yaxis: {title: yTitle},
+    margin: {t: 40, r: 20, b: 50, l: 60},
+    legend: {orientation: 'h', y: -0.25},
+});
+
+// 1. Utilization Factor vs Time
+Plotly.newPlot('plot-uf', [
+    {x: time_min, y: ts.map(r => r.utilization_factor), name: 'UF', type: 'scatter'},
+    {x: [time_min[0], time_min[time_min.length-1]], y: [1, 1], name: 'UF = 1.0', type: 'scatter',
+     line: {dash: 'dash', color: 'red'}},
+], plotLayout('Utilization Factor', 'UF'), plotConfig);
+
+// 2. Temperature Profiles
+Plotly.newPlot('plot-temp', [
+    {x: time_min, y: ts.map(r => r.fire_temp), name: 'Fire', type: 'scatter'},
+    {x: time_min, y: ts.map(r => r.lofl_temp), name: 'Lower Flange', type: 'scatter'},
+    {x: time_min, y: ts.map(r => r.mesh_temp), name: 'Mesh', type: 'scatter'},
+    {x: time_min, y: ts.map(r => r.slabtop_temp), name: 'Slab Top', type: 'scatter'},
+    {x: time_min, y: ts.map(r => r.slabbot_temp), name: 'Slab Bottom', type: 'scatter'},
+], plotLayout('Temperature Profiles', 'Temperature (\u00B0C)'), plotConfig);
+
+// 3. Deflection
+Plotly.newPlot('plot-deflection', [
+    {x: time_min, y: ts.map(r => r.deflection), name: 'Deflection', type: 'scatter',
+     line: {color: '#e67e22'}},
+], plotLayout('Deflection', 'Deflection (mm)'), plotConfig);
+
+// 4. Capacity
+Plotly.newPlot('plot-capacity', [
+    {x: time_min, y: ts.map(r => r.slab_cap), name: 'Slab Capacity', type: 'scatter'},
+    {x: time_min, y: ts.map(r => r.beam_hot_capacity), name: 'Beam Capacity', type: 'scatter'},
+    {x: time_min, y: ts.map(r => r.total_plate_capacity), name: 'Total Capacity', type: 'scatter'},
+], plotLayout('Capacity', 'Capacity (kNm)'), plotConfig);
+</script>
+{% endif %}
+{% endblock %}

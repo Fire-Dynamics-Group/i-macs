@@ -1,0 +1,95 @@
+{% extends "base.html" %}
+{% block title %}MACS+ — Dashboard{% endblock %}
+
+{% block content %}
+<h2>Sweep Dashboard</h2>
+
+<div id="sweep-status">
+    <article>
+        <header>
+            <span id="status-label">Checking status...</span>
+        </header>
+        <div>
+            <progress id="progress-bar" value="0" max="100"></progress>
+            <div class="grid">
+                <div>
+                    <strong>Completed:</strong> <span id="completed">0</span> / <span id="total">0</span>
+                </div>
+                <div>
+                    <strong>Errors:</strong> <span id="errors" class="fail">0</span>
+                </div>
+                <div>
+                    <strong>Elapsed:</strong> <span id="elapsed">—</span>
+                </div>
+                <div>
+                    <strong>ETA:</strong> <span id="eta">—</span>
+                </div>
+            </div>
+        </div>
+    </article>
+
+    <article id="error-log-card" style="display:none;">
+        <header>Recent Errors</header>
+        <ul id="error-log"></ul>
+    </article>
+
+    <div id="done-actions" style="display:none;">
+        <a href="/results" role="button">View Results</a>
+        <a href="/" role="button" class="outline">New Configuration</a>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+let polling = null;
+
+function formatTime(seconds) {
+    if (!seconds && seconds !== 0) return '—';
+    const m = Math.floor(seconds / 60);
+    const s = Math.round(seconds % 60);
+    return m > 0 ? `${m}m ${s}s` : `${s}s`;
+}
+
+async function pollStatus() {
+    try {
+        const resp = await fetch('/api/sweeps/status');
+        const data = await resp.json();
+
+        document.getElementById('completed').textContent = data.completed;
+        document.getElementById('total').textContent = data.total;
+        document.getElementById('errors').textContent = data.errors;
+        document.getElementById('elapsed').textContent = formatTime(data.elapsed_s);
+        document.getElementById('eta').textContent = formatTime(data.eta_s);
+
+        const pct = data.total > 0 ? (data.completed / data.total * 100) : 0;
+        document.getElementById('progress-bar').value = pct;
+
+        if (data.active) {
+            document.getElementById('status-label').textContent =
+                `Running... ${data.completed}/${data.total} (${Math.round(pct)}%)`;
+        } else if (data.total > 0 && data.completed >= data.total) {
+            document.getElementById('status-label').textContent = 'Sweep Complete';
+            document.getElementById('done-actions').style.display = 'block';
+            clearInterval(polling);
+        } else if (data.total === 0) {
+            document.getElementById('status-label').textContent = 'No active sweep';
+            clearInterval(polling);
+        }
+
+        // Error log
+        if (data.error_log && data.error_log.length > 0) {
+            const card = document.getElementById('error-log-card');
+            card.style.display = 'block';
+            const ul = document.getElementById('error-log');
+            ul.innerHTML = data.error_log.map(e => `<li><code>${e}</code></li>`).join('');
+        }
+    } catch (err) {
+        console.error('Poll error:', err);
+    }
+}
+
+polling = setInterval(pollStatus, 2000);
+pollStatus();
+</script>
+{% endblock %}

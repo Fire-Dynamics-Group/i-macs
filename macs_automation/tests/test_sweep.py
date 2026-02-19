@@ -215,3 +215,49 @@ class TestSamplingDispatch:
         assert len(combos) == 10
         assert "_sample_index" in combos[0]
         assert combos[0]["_seed"] == 42
+
+
+class TestSweepWithFireParams:
+    """Verify sweep handles fire/loading params (not just geometry)."""
+
+    def test_sweep_qf_and_window_percent(self):
+        config = {
+            "analysis_method": "parametric",
+            "sweep": {
+                "qf": [300, 500, 700],
+                "window_percent": [50, 80],
+            },
+            "fixed": {"span1": 9, "span2": 9},
+        }
+        combos = generate_combinations(config)
+        assert len(combos) == 6  # 3 x 2
+        qf_values = sorted(set(c["qf"] for c in combos))
+        assert qf_values == [300, 500, 700]
+        wp_values = sorted(set(c["window_percent"] for c in combos))
+        assert wp_values == [50, 80]
+        assert all(c["span1"] == 9 for c in combos)
+
+    def test_sweep_combustion_factor(self):
+        config = {
+            "analysis_method": "parametric",
+            "sweep": {
+                "combustion_factor": [0.6, 0.8, 1.0],
+            },
+        }
+        combos = generate_combinations(config)
+        assert len(combos) == 3
+        cf_values = [c["combustion_factor"] for c in combos]
+        assert cf_values == [0.6, 0.8, 1.0]
+
+    def test_sweep_loading_params(self):
+        config = {
+            "analysis_method": "iso",
+            "sweep": {
+                "lead_var_act": [3.0, 5.0, 7.5],
+                "cold_perm": [0.5, 1.2],
+            },
+        }
+        combos = generate_combinations(config)
+        assert len(combos) == 6  # 3 x 2
+        lva_values = sorted(set(c["lead_var_act"] for c in combos))
+        assert lva_values == [3.0, 5.0, 7.5]
