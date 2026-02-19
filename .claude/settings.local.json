@@ -1,0 +1,19 @@
+{
+  "permissions": {
+    "allow": [
+      "WebSearch",
+      "Bash(test:*)",
+      "Bash(python:*)",
+      "Bash(python3:*)",
+      "Bash(cygpath:*)",
+      "Bash(ls:*)",
+      "Bash(sqlite3:*)",
+      "Bash(pdftotext:*)",
+      "Bash(git init:*)",
+      "Bash(git remote add:*)",
+      "Bash(git fetch:*)",
+      "Bash(wc:*)",
+      "Bash(git add:*)"
+    ]
+  }
+}

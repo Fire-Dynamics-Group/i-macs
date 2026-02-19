@@ -1,0 +1,49 @@
+# MACS+ Batch Automation - Example Sweep Configuration
+# Defines parameter ranges for batch analysis
+
+analysis_method: "iso"  # "parametric", "iso", or "udf"
+
+# Parameters to sweep — all combinations will be run
+sweep:
+  span1: [6, 9, 12]
+  span2: [6, 9, 12]
+  slab_depth: [130, 150, 180]
+  fck: [25, 30, 40]
+  u_sec_size: ["IPE_300", "IPE_400", "IPE_500"]
+  time_limit: [60, 90, 120]
+
+# Fixed overrides (non-default values that stay constant across all runs)
+fixed:
+  numbeam: 2
+  conc_type: "NW"
+  deck_id: "T14"  # COFRAPLUS 60
+  mesh_type: "A393"
+  lead_var_act: 5.0
+  cold_perm: 1.2
+
+# Beam configuration for perimeter beams
+beams:
+  side_a:
+    sec_size: "IPE_500"
+    fy: 355
+    edge: true
+    composite: false
+    sh_con: 80
+  side_b:
+    sec_size: "IPE_500"
+    fy: 355
+    edge: false
+    composite: true
+    sh_con: 80
+  side_c:
+    sec_size: "IPE_500"
+    fy: 355
+    edge: false
+    composite: true
+    sh_con: 80
+  side_d:
+    sec_size: "IPE_500"
+    fy: 355
+    edge: true
+    composite: false
+    sh_con: 80

@@ -1,0 +1,22 @@
+[project]
+name = "macs-automation"
+version = "0.1.0"
+description = "MACS+ Batch Automation Tool — parameter sweep runner for FRACOF fire engineering"
+requires-python = ">=3.10"
+dependencies = [
+    "pywin32>=306",
+    "pyyaml>=6.0",
+    "tqdm>=4.66",
+    "numpy>=1.24",
+    "scipy>=1.10",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+]
+
+[tool.pytest.ini_options]
+markers = [
+    "com: tests that require the SCTI9.FRACOF COM engine to be registered",
+]

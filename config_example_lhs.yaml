@@ -1,0 +1,45 @@
+# LHS (Latin Hypercube Sampling) configuration example
+# Probabilistic fire analysis with sampled fire load and opening percentage
+
+analysis_method: "parametric"
+sampling: "lhs"
+n_samples: 1000
+seed: 42  # optional — set for reproducibility
+
+# Statistical distributions to sample from
+distributions:
+  qf:
+    # Use an occupancy preset from EN 1991-1-2 Table E.4
+    # Available presets: Dwelling, Hospital, Hotel room, Library, Office, School,
+    #   Fast food outlet, Clothing store, Restaurant, Kitchen,
+    #   Retail unit storage area
+    preset: "Office"
+    # Or specify an explicit distribution:
+    # type: "gumbel"   # or "lognormal"
+    # mean: 420
+    # cov: 0.3
+
+  window_percent:
+    preset: "Opening Factor"
+    transform: "opening_factor"  # clamp >1, invert, scale to %
+
+# Fixed parameters (not sampled)
+fixed:
+  span1: 9
+  span2: 9
+  numbeam: 2
+  slab_depth: 130
+  fck: 25
+  Lc: 27
+  Bc: 18
+  Hc: 3.6
+  Hw: 1.8
+  Lw: 30
+  combustion_factor: 0.8
+
+# Beam configuration
+beams:
+  side_a: { sec_size: "IPE_500", fy: 355, edge: true, composite: false, sh_con: 80 }
+  side_b: { sec_size: "IPE_500", fy: 355, edge: false, composite: true, sh_con: 80 }
+  side_c: { sec_size: "IPE_500", fy: 355, edge: false, composite: true, sh_con: 80 }
+  side_d: { sec_size: "IPE_500", fy: 355, edge: true, composite: false, sh_con: 80 }

@@ -1,0 +1,43 @@
+# 1K benchmark sweep: 4 x 5 x 5 x 5 x 2 = 1000 combinations
+analysis_method: "iso"
+
+sweep:
+  span1: [6, 7.5, 9, 12]
+  span2: [6, 7.5, 9, 10.5, 12]
+  slab_depth: [100, 120, 130, 150, 180]
+  fck: [25, 30, 35, 40, 45]
+  time_limit: [60, 120]
+
+fixed:
+  numbeam: 2
+  conc_type: "NW"
+  deck_id: "T14"
+  mesh_type: "A393"
+  lead_var_act: 5.0
+  cold_perm: 1.2
+
+beams:
+  side_a:
+    sec_size: "IPE_500"
+    fy: 355
+    edge: true
+    composite: false
+    sh_con: 80
+  side_b:
+    sec_size: "IPE_500"
+    fy: 355
+    edge: false
+    composite: true
+    sh_con: 80
+  side_c:
+    sec_size: "IPE_500"
+    fy: 355
+    edge: false
+    composite: true
+    sh_con: 80
+  side_d:
+    sec_size: "IPE_500"
+    fy: 355
+    edge: true
+    composite: false
+    sh_con: 80
