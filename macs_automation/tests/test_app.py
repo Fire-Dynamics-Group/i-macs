@@ -183,7 +183,7 @@ class TestSweepLHS:
         }
         combinations = []
 
-        def capture_combinations(combos, sections_db):
+        def capture_combinations(combos, sections_db, mode="sweep"):
             combinations.extend(combos)
 
         with patch("macs_automation.app._run_sweep_background", side_effect=capture_combinations):
@@ -225,6 +225,77 @@ class TestSweepStatus:
         assert resp.status_code == 200
         data = resp.json()
         assert data["active"] is False
+
+    def test_sweep_state_includes_mode_key(self):
+        """_sweep_state dict includes 'mode' key."""
+        assert "mode" in _sweep_state
+
+    def test_sweep_status_returns_mode(self, client):
+        """GET /api/sweeps/status includes mode in response."""
+        with _sweep_lock:
+            _sweep_state["mode"] = "lhs"
+        resp = client.get("/api/sweeps/status")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["mode"] == "lhs"
+
+    def test_sweep_status_returns_sweep_mode(self, client):
+        """GET /api/sweeps/status returns 'sweep' mode for grid sweeps."""
+        with _sweep_lock:
+            _sweep_state["mode"] = "sweep"
+        resp = client.get("/api/sweeps/status")
+        data = resp.json()
+        assert data["mode"] == "sweep"
+
+    def test_lhs_submit_sets_mode_lhs(self, client):
+        """POST /api/sweeps with sampling=lhs passes mode='lhs' to background."""
+        payload = {
+            "sampling": "lhs",
+            "analysis_method": "parametric",
+            "n_samples": 3,
+            "seed": 42,
+            "distributions": {"qf": {"preset": "Office"}},
+            "fixed": {"span1": 9, "span2": 9},
+        }
+        with patch("macs_automation.app._run_sweep_background") as mock_run:
+            with patch("threading.Thread") as mock_thread:
+                def start_side_effect():
+                    args = mock_thread.call_args
+                    target = args[1]["target"] if "target" in args[1] else args[0][0]
+                    target_args = args[1].get("args", ())
+                    target(*target_args)
+                mock_instance = MagicMock()
+                mock_instance.start = start_side_effect
+                mock_thread.return_value = mock_instance
+                resp = client.post("/api/sweeps", json=payload)
+                assert resp.status_code == 200
+                # Verify mode='lhs' was passed to background function
+                mock_run.assert_called_once()
+                _, _, mode_arg = mock_run.call_args[0]
+                assert mode_arg == "lhs"
+
+    def test_grid_sweep_submit_sets_mode_sweep(self, client):
+        """POST /api/sweeps without sampling=lhs passes mode='sweep' to background."""
+        payload = {
+            "analysis_method": "iso",
+            "sweep": {"qf": [300, 500]},
+            "fixed": {"span1": 9, "span2": 9},
+        }
+        with patch("macs_automation.app._run_sweep_background") as mock_run:
+            with patch("threading.Thread") as mock_thread:
+                def start_side_effect():
+                    args = mock_thread.call_args
+                    target = args[1]["target"] if "target" in args[1] else args[0][0]
+                    target_args = args[1].get("args", ())
+                    target(*target_args)
+                mock_instance = MagicMock()
+                mock_instance.start = start_side_effect
+                mock_thread.return_value = mock_instance
+                resp = client.post("/api/sweeps", json=payload)
+                assert resp.status_code == 200
+                mock_run.assert_called_once()
+                _, _, mode_arg = mock_run.call_args[0]
+                assert mode_arg == "sweep"
 
 
 class TestFrcImport:
@@ -381,6 +452,13 @@ class TestPageRoutes:
         resp = client.get("/dashboard")
         assert resp.status_code == 200
 
+    def test_dashboard_has_dynamic_mode_label(self, client):
+        """Dashboard heading uses a dynamic mode-label span, not hardcoded 'Sweep'."""
+        resp = client.get("/dashboard")
+        assert resp.status_code == 200
+        assert 'id="mode-label"' in resp.text
+        assert ">Sweep Dashboard<" not in resp.text
+
     def test_results_page(self, client):
         resp = client.get("/results")
         assert resp.status_code == 200
@@ -399,19 +477,28 @@ class TestPageRoutes:
         assert resp.status_code == 200
         assert 'name="combustion_factor"' in resp.text
 
-    def test_config_page_has_vary_pills(self, client):
+    def test_config_page_has_param_picker(self, client):
         resp = client.get("/")
         assert resp.status_code == 200
-        assert 'class="vary-pill"' in resp.text
-        assert 'class="vary-check"' in resp.text
+        assert 'id="param-picker"' in resp.text
+        assert 'class="picker-chip"' in resp.text
         assert 'data-param="qf"' in resp.text
         assert 'data-param="span1"' in resp.text
+        assert 'data-param="growth_rate"' in resp.text
+        assert 'data-param="window_percent"' in resp.text
 
     def test_config_page_has_lhs_extras(self, client):
         resp = client.get("/")
         assert resp.status_code == 200
         assert 'class="lhs-extra"' in resp.text
         assert 'class="lhs-input"' in resp.text
+
+    def test_config_page_lhs_options_hidden_by_default(self, client):
+        """LHS options fieldset should NOT have class='visible' when page loads."""
+        resp = client.get("/")
+        assert resp.status_code == 200
+        assert 'id="lhs-options" class="visible"' not in resp.text
+        assert 'id="lhs-options"' in resp.text
 
 
 class TestSweepWithArbitraryParams:
@@ -435,7 +522,7 @@ class TestSweepWithArbitraryParams:
         }
         combinations = []
 
-        def capture_combinations(combos, sections_db):
+        def capture_combinations(combos, sections_db, mode="sweep"):
             combinations.extend(combos)
 
         with patch("macs_automation.app._run_sweep_background", side_effect=capture_combinations):
@@ -475,7 +562,7 @@ class TestSweepWithArbitraryParams:
         }
         combinations = []
 
-        def capture_combinations(combos, sections_db):
+        def capture_combinations(combos, sections_db, mode="sweep"):
             combinations.extend(combos)
 
         with patch("macs_automation.app._run_sweep_background", side_effect=capture_combinations):

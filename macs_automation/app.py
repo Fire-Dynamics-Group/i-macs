@@ -49,11 +49,12 @@ _sweep_state = {
     "errors": 0,
     "error_log": [],
     "start_time": None,
+    "mode": None,
 }
 _sweep_lock = threading.Lock()
 
 
-def _run_sweep_background(combinations: list[dict], sections_db: dict):
+def _run_sweep_background(combinations: list[dict], sections_db: dict, mode: str = "sweep"):
     """Run a sweep in a background thread with COM init per run."""
     import pythoncom
 
@@ -64,6 +65,7 @@ def _run_sweep_background(combinations: list[dict], sections_db: dict):
         _sweep_state["errors"] = 0
         _sweep_state["error_log"] = []
         _sweep_state["start_time"] = time.time()
+        _sweep_state["mode"] = mode
 
     db = _get_db()
     try:
@@ -170,6 +172,9 @@ def api_submit_sweep(request_body: dict):
 
     data = _get_ref_data()
 
+    # Detect mode from request
+    mode = "lhs" if request_body.get("sampling") == "lhs" else "sweep"
+
     # Dispatch to generate_combinations() which handles both grid sweep and LHS
     combinations = generate_combinations(request_body)
 
@@ -181,7 +186,7 @@ def api_submit_sweep(request_body: dict):
     # Start background thread
     t = threading.Thread(
         target=_run_sweep_background,
-        args=(combinations, data["sections"]),
+        args=(combinations, data["sections"], mode),
         daemon=True,
     )
     t.start()
@@ -209,6 +214,7 @@ def api_sweep_status():
         "error_log": state["error_log"],
         "elapsed_s": round(elapsed, 1),
         "eta_s": eta,
+        "mode": state["mode"],
     }
 
 

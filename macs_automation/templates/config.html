@@ -1,18 +1,12 @@
 {% extends "base.html" %}
 {% block title %}MACS+ — Config Builder{% endblock %}
 
-{# ── Macro: numeric parameter field with vary/sweep/LHS extras ── #}
+{# ── Macro: numeric field with sweep/LHS extras (shown when param is selected to vary) ── #}
 {% macro param_field(name, label, default, step="1", min_val="", max_val="", sweep_step="") %}
 <label data-param="{{ name }}">{{ label }}
     <input type="number" name="{{ name }}" value="{{ default }}" step="{{ step }}"
         {% if min_val != "" %}min="{{ min_val }}"{% endif %}
         {% if max_val != "" %}max="{{ max_val }}"{% endif %}>
-    <input type="checkbox" class="vary-check" data-param="{{ name }}"
-           onchange="updateVaryState(this)" hidden>
-    <span class="vary-pill" data-param="{{ name }}" style="display:none;"
-          onclick="toggleVaryPill(this)">
-        <span class="vary-pill-text">+ Sweep</span>
-    </span>
     <span class="sweep-extra" style="display:none;">
         min <input type="number" name="{{ name }}_min" step="{{ step }}" class="sweep-input">
         max <input type="number" name="{{ name }}_max" step="{{ step }}" class="sweep-input">
@@ -62,8 +56,55 @@
         </label>
     </fieldset>
 
+    <!-- ── Parameter picker: which params vary between runs ── -->
+    <fieldset id="param-picker" style="display:none;">
+        <legend>Parameters to vary between runs</legend>
+        <p class="picker-help">Click to select which parameters change per run. Everything else stays fixed.</p>
+        <div class="picker-group">
+            <strong>Geometry</strong>
+            <span class="picker-chip" data-param="span1">Span 1</span>
+            <span class="picker-chip" data-param="span2">Span 2</span>
+            <span class="picker-chip" data-param="numbeam">Num Beams</span>
+        </div>
+        <div class="picker-group">
+            <strong>Slab</strong>
+            <span class="picker-chip" data-param="fck">fck</span>
+            <span class="picker-chip" data-param="slab_depth">Slab Depth</span>
+        </div>
+        <div class="picker-group">
+            <strong>Deck</strong>
+            <span class="picker-chip" data-param="mesh_axis">Mesh Axis</span>
+        </div>
+        <div class="picker-group">
+            <strong>Beams</strong>
+            <span class="picker-chip" data-param="ush_con">Shear Conn.</span>
+        </div>
+        <div class="picker-group">
+            <strong>Loading</strong>
+            <span class="picker-chip" data-param="lead_var_act">Leading Var.</span>
+            <span class="picker-chip" data-param="othr_var_act">Other Var.</span>
+            <span class="picker-chip" data-param="cold_perm">Cold Perm.</span>
+            <span class="picker-chip" data-param="lead_var_fac">Leading Factor</span>
+            <span class="picker-chip" data-param="othr_var_fac">Other Factor</span>
+        </div>
+        <div class="picker-group">
+            <strong>Fire</strong>
+            <span class="picker-chip" data-param="time_limit">Time Limit</span>
+            <span class="picker-chip" data-param="Lc">Lc</span>
+            <span class="picker-chip" data-param="Bc">Bc</span>
+            <span class="picker-chip" data-param="Hc">Hc</span>
+            <span class="picker-chip" data-param="Hw">Hw</span>
+            <span class="picker-chip" data-param="Lw">Lw</span>
+            <span class="picker-chip" data-param="window_percent">Window %</span>
+            <span class="picker-chip" data-param="qf">qf</span>
+            <span class="picker-chip" data-param="Bfac">B factor</span>
+            <span class="picker-chip" data-param="growth_rate">Growth Rate</span>
+            <span class="picker-chip" data-param="combustion_factor">Combust. Factor</span>
+        </div>
+    </fieldset>
+
     <!-- LHS Sampling options (hidden by default) -->
-    <fieldset id="lhs-options" class="visible">
+    <fieldset id="lhs-options">
         <legend>LHS Sampling</legend>
         <div class="grid">
             <label>Occupancy Type
@@ -275,7 +316,7 @@
 
 {% block scripts %}
 <script>
-/* ── All numeric parameter names (matches the macro-generated fields) ── */
+/* ── All numeric parameter names ── */
 const NUMERIC_PARAMS = [
     'span1', 'span2', 'numbeam',
     'fck', 'slab_depth',
@@ -289,6 +330,9 @@ const NUMERIC_PARAMS = [
 
 /* ── Select (non-numeric) fields — always go to fixed ── */
 const SELECT_FIELDS = ['conc_type', 'method', 'deck_id', 'mesh_type', 'u_sec_size', 'u_sec_fy'];
+
+/* ── Track which params are selected to vary ── */
+const varyingParams = new Set();
 
 /* ── FRC import ── */
 async function importFrc() {
@@ -319,11 +363,9 @@ async function importFrc() {
             return;
         }
 
-        // Pre-populate form fields from parsed params
         const params = data.params;
         const form = document.getElementById('config-form');
 
-        // Simple numeric/string fields
         const directFields = [
             'span1', 'span2', 'numbeam', 'fck', 'slab_depth', 'mesh_axis',
             'lead_var_act', 'othr_var_act', 'cold_perm', 'lead_var_fac', 'othr_var_fac',
@@ -336,85 +378,49 @@ async function importFrc() {
             }
         });
 
-        // Select fields
-        if (params.conc_type && form.elements['conc_type']) {
-            form.elements['conc_type'].value = params.conc_type;
-        }
-        if (params.method && form.elements['method']) {
-            form.elements['method'].value = params.method;
-        }
+        if (params.conc_type && form.elements['conc_type']) form.elements['conc_type'].value = params.conc_type;
+        if (params.method && form.elements['method']) form.elements['method'].value = params.method;
 
-        // Deck — try to match DeckId
         if (params.DeckId && form.elements['deck_id']) {
             const deckSel = form.elements['deck_id'];
             for (let i = 0; i < deckSel.options.length; i++) {
-                if (deckSel.options[i].value === params.DeckId) {
-                    deckSel.value = params.DeckId;
-                    break;
-                }
+                if (deckSel.options[i].value === params.DeckId) { deckSel.value = params.DeckId; break; }
             }
         }
-
-        // Mesh type
         if (params.mesh_type && form.elements['mesh_type']) {
             const meshSel = form.elements['mesh_type'];
             for (let i = 0; i < meshSel.options.length; i++) {
-                if (meshSel.options[i].value === params.mesh_type) {
-                    meshSel.value = params.mesh_type;
-                    break;
-                }
+                if (meshSel.options[i].value === params.mesh_type) { meshSel.value = params.mesh_type; break; }
             }
         }
-
-        // Unprotected beam
         if (params.uSecSize && form.elements['u_sec_size']) {
             const secSel = form.elements['u_sec_size'];
             for (let i = 0; i < secSel.options.length; i++) {
-                if (secSel.options[i].value === params.uSecSize) {
-                    secSel.value = params.uSecSize;
-                    break;
-                }
+                if (secSel.options[i].value === params.uSecSize) { secSel.value = params.uSecSize; break; }
             }
         }
-        if (params.fy5 && form.elements['u_sec_fy']) {
-            form.elements['u_sec_fy'].value = params.fy5;
-        }
-        if (params.ush_con !== undefined && form.elements['ush_con']) {
-            form.elements['ush_con'].value = params.ush_con;
-        }
+        if (params.fy5 && form.elements['u_sec_fy']) form.elements['u_sec_fy'].value = params.fy5;
+        if (params.ush_con !== undefined && form.elements['ush_con']) form.elements['ush_con'].value = params.ush_con;
 
-        // Perimeter beams (sides A-D)
         const sides = ['a', 'b', 'c', 'd'];
         const sideUpper = ['A', 'B', 'C', 'D'];
         const fyKeys = ['fy1', 'fy2', 'fy3', 'fy4'];
         sides.forEach((side, idx) => {
             const S = sideUpper[idx];
-            // Section
             const secKey = `Side${S}SecSize`;
             const secField = form.elements[`side_${side}_sec`];
             if (params[secKey] && secField) {
                 for (let i = 0; i < secField.options.length; i++) {
-                    if (secField.options[i].value === params[secKey]) {
-                        secField.value = params[secKey];
-                        break;
-                    }
+                    if (secField.options[i].value === params[secKey]) { secField.value = params[secKey]; break; }
                 }
             }
-            // fy
-            if (params[fyKeys[idx]] && form.elements[`side_${side}_fy`]) {
-                form.elements[`side_${side}_fy`].value = params[fyKeys[idx]];
-            }
-            // Edge flag (checkbox)
-            const edgeKey = `Side${S}EdgeFlag`;
+            if (params[fyKeys[idx]] && form.elements[`side_${side}_fy`]) form.elements[`side_${side}_fy`].value = params[fyKeys[idx]];
             const edgeCb = form.elements[`side_${side}_edge`];
-            if (edgeCb) edgeCb.checked = params[edgeKey] === 1;
-            // Composite flag (checkbox)
-            const compoKey = `Side${S}CompoFlag`;
+            if (edgeCb) edgeCb.checked = params[`Side${S}EdgeFlag`] === 1;
             const compoCb = form.elements[`side_${side}_composite`];
-            if (compoCb) compoCb.checked = params[compoKey] === 1;
+            if (compoCb) compoCb.checked = params[`Side${S}CompoFlag`] === 1;
         });
 
-        // Show success with project info
         const proj = data.project || {};
         let msg = '<p class="pass">Imported successfully!</p>';
         if (proj.ProjectName) {
@@ -435,43 +441,84 @@ async function importFrc() {
     }
 }
 
-/* ── Pill click handler ── */
-function toggleVaryPill(pill) {
-    const paramName = pill.dataset.param;
-    const cb = document.querySelector(`.vary-check[data-param="${paramName}"]`);
-    if (!cb) return;
-    cb.checked = !cb.checked;
-    updateVaryState(cb);
+/* ── Chip click — toggle param selection ── */
+function onChipClick(chip) {
+    const param = chip.dataset.param;
+    if (varyingParams.has(param)) {
+        varyingParams.delete(param);
+        chip.classList.remove('active');
+    } else {
+        varyingParams.add(param);
+        chip.classList.add('active');
+    }
+    syncExtras();
 }
 
-/* ── Mode toggle — show/hide pills, auto-check defaults ── */
+// Attach click handlers to all chips
+document.querySelectorAll('.picker-chip').forEach(chip => {
+    chip.addEventListener('click', () => onChipClick(chip));
+});
+
+/* ── Show/hide sweep-extra or lhs-extra on the matching form field ── */
+function syncExtras() {
+    const mode = document.querySelector('input[name="run_mode"]:checked').value;
+    const isSweep = mode === 'sweep';
+    const isLHS = mode === 'lhs';
+
+    NUMERIC_PARAMS.forEach(name => {
+        const label = document.querySelector(`label[data-param="${name}"]`);
+        if (!label) return;
+        const sweepExtra = label.querySelector('.sweep-extra');
+        const lhsExtra = label.querySelector('.lhs-extra');
+        const isVarying = varyingParams.has(name);
+
+        if (isVarying && isSweep) {
+            if (sweepExtra) sweepExtra.style.display = 'block';
+            if (lhsExtra) lhsExtra.style.display = 'none';
+        } else if (isVarying && isLHS) {
+            if (sweepExtra) sweepExtra.style.display = 'none';
+            // qf and window_percent use presets — no manual distribution inputs
+            if (name === 'qf' || name === 'window_percent') {
+                if (lhsExtra) lhsExtra.style.display = 'none';
+            } else {
+                if (lhsExtra) {
+                    lhsExtra.style.display = 'block';
+                    // Pre-fill mean from current field value
+                    const meanInput = label.querySelector(`input[name="${name}_mean"]`);
+                    const valueInput = label.querySelector(`input[name="${name}"]`);
+                    if (meanInput && valueInput && !meanInput.value) {
+                        meanInput.value = valueInput.value;
+                    }
+                }
+            }
+        } else {
+            if (sweepExtra) sweepExtra.style.display = 'none';
+            if (lhsExtra) lhsExtra.style.display = 'none';
+        }
+    });
+}
+
+/* ── Mode toggle ── */
 function toggleMode() {
     const mode = document.querySelector('input[name="run_mode"]:checked').value;
     const isSweep = mode === 'sweep';
     const isLHS = mode === 'lhs';
     const isBatch = isSweep || isLHS;
 
-    const pillLabel = isSweep ? 'Sweep' : 'Sample';
-
-    // Show/hide pills + reset state
-    document.querySelectorAll('.vary-pill').forEach(pill => {
-        pill.style.display = isBatch ? 'inline-block' : 'none';
-        pill.classList.remove('active');
-        pill.querySelector('.vary-pill-text').textContent = '+ ' + pillLabel;
-    });
-
-    // Reset all hidden checkboxes
-    document.querySelectorAll('.vary-check').forEach(cb => {
-        cb.checked = false;
-    });
-
-    // Hide all extras when switching modes
-    document.querySelectorAll('.sweep-extra, .lhs-extra').forEach(el => {
-        el.style.display = 'none';
-    });
+    // Show/hide picker panel
+    document.getElementById('param-picker').style.display = isBatch ? 'block' : 'none';
 
     // LHS options panel
     document.getElementById('lhs-options').classList.toggle('visible', isLHS);
+
+    // Reset selections
+    varyingParams.clear();
+    document.querySelectorAll('.picker-chip').forEach(c => c.classList.remove('active'));
+
+    // Hide all extras
+    document.querySelectorAll('.sweep-extra, .lhs-extra').forEach(el => {
+        el.style.display = 'none';
+    });
 
     if (isLHS) {
         document.getElementById('submit-btn').textContent = 'Start LHS Sampling';
@@ -482,64 +529,16 @@ function toggleMode() {
         document.getElementById('submit-btn').textContent = 'Run';
     }
 
-    // Auto-check default varying params in batch modes
+    // Default: growth_rate and window_percent selected
     if (isBatch) {
-        ['growth_rate', 'window_percent'].forEach(name => {
-            const cb = document.querySelector(`.vary-check[data-param="${name}"]`);
-            if (cb) {
-                cb.checked = true;
-                updateVaryState(cb);
+        ['qf', 'window_percent'].forEach(name => {
+            const chip = document.querySelector(`.picker-chip[data-param="${name}"]`);
+            if (chip) {
+                varyingParams.add(name);
+                chip.classList.add('active');
             }
         });
-    }
-}
-
-/* ── Sync pill + extras when vary state changes ── */
-function updateVaryState(cb) {
-    const mode = document.querySelector('input[name="run_mode"]:checked').value;
-    const paramName = cb.dataset.param;
-    const label = cb.closest('label[data-param]');
-    if (!label) return;
-
-    const pill = label.querySelector(`.vary-pill[data-param="${paramName}"]`);
-    const sweepExtra = label.querySelector('.sweep-extra');
-    const lhsExtra = label.querySelector('.lhs-extra');
-    const pillLabel = mode === 'sweep' ? 'Sweep' : 'Sample';
-
-    if (cb.checked) {
-        // Activate pill
-        if (pill) {
-            pill.classList.add('active');
-            pill.querySelector('.vary-pill-text').textContent = pillLabel + ' \u00d7';
-        }
-        if (mode === 'sweep') {
-            if (sweepExtra) sweepExtra.style.display = 'block';
-            if (lhsExtra) lhsExtra.style.display = 'none';
-        } else if (mode === 'lhs') {
-            if (sweepExtra) sweepExtra.style.display = 'none';
-            // qf and window_percent use presets — no manual dist input
-            if (paramName === 'qf' || paramName === 'window_percent') {
-                if (lhsExtra) lhsExtra.style.display = 'none';
-            } else {
-                if (lhsExtra) {
-                    lhsExtra.style.display = 'block';
-                    // Pre-fill mean from current field value
-                    const meanInput = label.querySelector(`input[name="${paramName}_mean"]`);
-                    const valueInput = label.querySelector(`input[name="${paramName}"]`);
-                    if (meanInput && valueInput && !meanInput.value) {
-                        meanInput.value = valueInput.value;
-                    }
-                }
-            }
-        }
-    } else {
-        // Deactivate pill
-        if (pill) {
-            pill.classList.remove('active');
-            pill.querySelector('.vary-pill-text').textContent = '+ ' + pillLabel;
-        }
-        if (sweepExtra) sweepExtra.style.display = 'none';
-        if (lhsExtra) lhsExtra.style.display = 'none';
+        syncExtras();
     }
 }
 
@@ -569,47 +568,33 @@ document.getElementById('config-form').addEventListener('submit', async function
     btn.disabled = true;
 
     if (isLHS) {
-        // ── Build LHS payload dynamically ──
         const distributions = {};
         const fixed = {};
 
-        // Collect varied params from checked vary-checkboxes
-        document.querySelectorAll('.vary-check:checked').forEach(cb => {
-            const name = cb.dataset.param;
+        varyingParams.forEach(name => {
             if (name === 'qf') {
-                // Use occupancy preset
                 distributions.qf = {preset: form.elements['occupancy_preset'].value};
             } else if (name === 'window_percent') {
-                // Use Opening Factor preset with transform
                 distributions.window_percent = {preset: 'Opening Factor', transform: 'opening_factor'};
             } else {
-                // Explicit distribution from user inputs
                 const distType = form.elements[name + '_dist']?.value || 'lognormal';
                 let mean = parseFloat(form.elements[name + '_mean']?.value);
                 const cov = parseFloat(form.elements[name + '_cov']?.value);
-                // Fall back to current field value if mean not filled
-                if (isNaN(mean)) {
-                    mean = parseFloat(form.elements[name]?.value);
-                }
+                if (isNaN(mean)) mean = parseFloat(form.elements[name]?.value);
                 if (!isNaN(mean) && !isNaN(cov) && cov > 0) {
                     distributions[name] = {type: distType, mean: mean, cov: cov};
                 }
             }
         });
 
-        // All unchecked numeric params go to fixed
         NUMERIC_PARAMS.forEach(name => {
             if (!distributions[name] && form.elements[name]) {
                 const v = parseFloat(form.elements[name].value);
                 if (!isNaN(v)) fixed[name] = v;
             }
         });
-
-        // Select fields always go to fixed
         SELECT_FIELDS.forEach(name => {
-            if (form.elements[name]) {
-                fixed[name] = form.elements[name].value;
-            }
+            if (form.elements[name]) fixed[name] = form.elements[name].value;
         });
 
         const payload = {
@@ -628,41 +613,27 @@ document.getElementById('config-form').addEventListener('submit', async function
                 body: JSON.stringify(payload),
             });
             const data = await resp.json();
-            if (resp.ok) {
-                window.location.href = '/dashboard';
-            } else {
-                alert(data.error || 'LHS sampling failed');
-            }
-        } catch (err) {
-            alert('Request failed: ' + err.message);
-        }
+            if (resp.ok) { window.location.href = '/dashboard'; }
+            else { alert(data.error || 'LHS sampling failed'); }
+        } catch (err) { alert('Request failed: ' + err.message); }
+
     } else if (isSweep) {
-        // ── Build sweep payload dynamically ──
         const sweep = {};
         const fixed = {};
 
-        // Collect varied params from checked vary-checkboxes
-        document.querySelectorAll('.vary-check:checked').forEach(cb => {
-            const name = cb.dataset.param;
+        varyingParams.forEach(name => {
             const range = buildSweepRange(name);
-            if (range) {
-                sweep[name] = range;
-            }
+            if (range) sweep[name] = range;
         });
 
-        // All unchecked numeric params go to fixed
         NUMERIC_PARAMS.forEach(name => {
             if (!sweep[name] && form.elements[name]) {
                 const v = parseFloat(form.elements[name].value);
                 if (!isNaN(v)) fixed[name] = v;
             }
         });
-
-        // Select fields always go to fixed
         SELECT_FIELDS.forEach(name => {
-            if (form.elements[name]) {
-                fixed[name] = form.elements[name].value;
-            }
+            if (form.elements[name]) fixed[name] = form.elements[name].value;
         });
 
         const payload = {
@@ -678,16 +649,11 @@ document.getElementById('config-form').addEventListener('submit', async function
                 body: JSON.stringify(payload),
             });
             const data = await resp.json();
-            if (resp.ok) {
-                window.location.href = '/dashboard';
-            } else {
-                alert(data.error || 'Sweep failed');
-            }
-        } catch (err) {
-            alert('Request failed: ' + err.message);
-        }
+            if (resp.ok) { window.location.href = '/dashboard'; }
+            else { alert(data.error || 'Sweep failed'); }
+        } catch (err) { alert('Request failed: ' + err.message); }
+
     } else {
-        // ── Single run ──
         const params = {};
         NUMERIC_PARAMS.forEach(name => {
             const el = form.elements[name];
@@ -697,12 +663,9 @@ document.getElementById('config-form').addEventListener('submit', async function
             }
         });
         SELECT_FIELDS.forEach(name => {
-            if (form.elements[name]) {
-                params[name] = form.elements[name].value;
-            }
+            if (form.elements[name]) params[name] = form.elements[name].value;
         });
 
-        // Perimeter beams
         ['a', 'b', 'c', 'd'].forEach(side => {
             const sel = form.elements[`side_${side}_sec`];
             if (sel) params[`side_${side}_sec`] = sel.value;
@@ -733,18 +696,17 @@ document.getElementById('config-form').addEventListener('submit', async function
                 document.getElementById('single-result-link').href = '/results/' + data.id;
             } else {
                 body.innerHTML = `<p class="fail"><strong>Error:</strong> ${data.error}</p>`;
-                if (data.id) {
-                    document.getElementById('single-result-link').href = '/results/' + data.id;
-                }
+                if (data.id) document.getElementById('single-result-link').href = '/results/' + data.id;
             }
             resultDiv.style.display = 'block';
-        } catch (err) {
-            alert('Request failed: ' + err.message);
-        }
+        } catch (err) { alert('Request failed: ' + err.message); }
     }
 
     btn.removeAttribute('aria-busy');
     btn.disabled = false;
 });
+
+/* ── Sync UI on page load ── */
+toggleMode();
 </script>
 {% endblock %}

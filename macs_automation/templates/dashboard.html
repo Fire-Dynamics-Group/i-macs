@@ -2,7 +2,7 @@
 {% block title %}MACS+ — Dashboard{% endblock %}
 
 {% block content %}
-<h2>Sweep Dashboard</h2>
+<h2><span id="mode-label">Batch</span> Dashboard</h2>
 
 <div id="sweep-status">
     <article>
@@ -65,15 +65,20 @@ async function pollStatus() {
         const pct = data.total > 0 ? (data.completed / data.total * 100) : 0;
         document.getElementById('progress-bar').value = pct;
 
+        // Update mode label from API response
+        const modeNames = {lhs: 'LHS Sampling', sweep: 'Parameter Sweep'};
+        const modeLabel = modeNames[data.mode] || 'Batch';
+        document.getElementById('mode-label').textContent = modeLabel;
+
         if (data.active) {
             document.getElementById('status-label').textContent =
                 `Running... ${data.completed}/${data.total} (${Math.round(pct)}%)`;
         } else if (data.total > 0 && data.completed >= data.total) {
-            document.getElementById('status-label').textContent = 'Sweep Complete';
+            document.getElementById('status-label').textContent = modeLabel + ' Complete';
             document.getElementById('done-actions').style.display = 'block';
             clearInterval(polling);
         } else if (data.total === 0) {
-            document.getElementById('status-label').textContent = 'No active sweep';
+            document.getElementById('status-label').textContent = 'No active batch';
             clearInterval(polling);
         }
 
