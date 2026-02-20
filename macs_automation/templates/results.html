@@ -19,7 +19,84 @@
     </article>
 </div>
 
-{% if runs %}
+{# ── Batch groups (most recent first) ── #}
+{% for batch in batch_groups %}
+<details class="batch-group" open>
+    <summary>
+        <strong>Batch {{ batch.batch_id[:8] }}</strong>
+        &mdash; {{ batch.mode | upper }}
+        &mdash; {{ batch.run_count }} runs
+        (<span class="pass">{{ batch.pass_count }} pass</span>,
+         {{ batch.run_count - batch.pass_count - batch.error_count }} fail,
+         {{ batch.error_count }} error)
+    </summary>
+
+    {% if batch.fixed_params %}
+    <div class="fixed-params">
+        <h4>Fixed Parameters</h4>
+        <div class="fixed-params-grid">
+            {% for col, label, value in batch.fixed_params %}
+            <div class="fixed-param">
+                <span class="param-label">{{ label }}</span>
+                <span class="param-value">{{ value }}</span>
+            </div>
+            {% endfor %}
+        </div>
+    </div>
+    {% endif %}
+
+    <figure>
+    <table role="grid">
+        <thead>
+            <tr>
+                <th>#</th>
+                {% for col in batch.varying_cols %}
+                <th>{{ display_columns.get(col, col) }}</th>
+                {% endfor %}
+                <th>UF Max</th>
+                <th>Status</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for run in batch.runs %}
+            <tr class="clickable-row" data-href="/results/{{ run.id }}" style="cursor:pointer;">
+                <td>{{ loop.index }}</td>
+                {% for col in batch.varying_cols %}
+                <td>{% if run[col] is not none %}{{ "%.2f"|format(run[col]) if run[col] is number else run[col] }}{% else %}&mdash;{% endif %}</td>
+                {% endfor %}
+                <td>
+                    {% if run.error %}
+                        <span class="error-badge">ERR</span>
+                    {% elif run.uf_max is not none %}
+                        <span class="{{ 'pass' if run.uf_max <= 1.0 else 'fail' }}">
+                            {{ "%.3f"|format(run.uf_max) }}
+                        </span>
+                    {% else %}
+                        &mdash;
+                    {% endif %}
+                </td>
+                <td>
+                    {% if run.error %}
+                        <span class="error-badge">Error</span>
+                    {% elif run.uf_max is not none and run.uf_max <= 1.0 %}
+                        <span class="pass-badge">Pass</span>
+                    {% elif run.uf_max is not none %}
+                        <span class="fail-badge">Fail</span>
+                    {% else %}
+                        &mdash;
+                    {% endif %}
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    </figure>
+</details>
+{% endfor %}
+
+{# ── Individual (ungrouped) runs ── #}
+{% if ungrouped_runs %}
+<h3>Individual Runs</h3>
 <figure>
 <table role="grid">
     <thead>
@@ -37,7 +114,7 @@
         </tr>
     </thead>
     <tbody>
-        {% for run in runs %}
+        {% for run in ungrouped_runs %}
         <tr class="clickable-row" data-href="/results/{{ run.id }}" style="cursor:pointer;">
             <td>{{ run.id }}</td>
             <td>{{ run.run_timestamp[:19] if run.run_timestamp else '—' }}</td>
@@ -74,7 +151,9 @@
     </tbody>
 </table>
 </figure>
-{% else %}
+{% endif %}
+
+{% if not batch_groups and not ungrouped_runs %}
 <p>No runs found. <a href="/">Run a configuration</a> to see results here.</p>
 {% endif %}
 {% endblock %}

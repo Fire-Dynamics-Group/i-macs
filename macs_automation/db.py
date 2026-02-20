@@ -42,8 +42,17 @@ CREATE TABLE IF NOT EXISTS runs (
     side_d_load_ratio REAL, side_d_critical_temp REAL,
     -- LHS metadata
     sample_index INTEGER, seed INTEGER,
+    -- Batch grouping
+    batch_id TEXT,
     -- Metadata
     error TEXT, duration_ms REAL
+);
+
+CREATE TABLE IF NOT EXISTS batches (
+    batch_id TEXT PRIMARY KEY,
+    created_at TEXT,
+    mode TEXT,
+    total_expected INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS time_series (
@@ -77,12 +86,20 @@ class ResultsDB:
         self.conn.commit()
 
     def _ensure_schema(self):
-        """Add columns that may be missing in older databases."""
+        """Add columns/tables that may be missing in older databases."""
         cursor = self.conn.execute("PRAGMA table_info(runs)")
         existing_cols = {row[1] for row in cursor.fetchall()}
-        for col, col_type in [("sample_index", "INTEGER"), ("seed", "INTEGER")]:
+        for col, col_type in [
+            ("sample_index", "INTEGER"),
+            ("seed", "INTEGER"),
+            ("batch_id", "TEXT"),
+        ]:
             if col not in existing_cols:
                 self.conn.execute(f"ALTER TABLE runs ADD COLUMN {col} {col_type}")
+        # Ensure batch_id index exists
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_runs_batch_id ON runs(batch_id)"
+        )
 
     def close(self):
         self.conn.close()
@@ -170,6 +187,8 @@ class ResultsDB:
             # LHS metadata
             "sample_index": params.get("_sample_index"),
             "seed": params.get("_seed"),
+            # Batch grouping
+            "batch_id": params.get("_batch_id"),
             # Error
             "error": error,
         }
@@ -342,6 +361,64 @@ class ResultsDB:
             "pass_count": pass_count,
             "fail_count": fail_count,
         }
+
+    # ─── Batch query methods ─────────────────────────────────────────────
+
+    def insert_batch(self, batch_id: str, mode: str, total_expected: int):
+        """Record batch metadata."""
+        now = datetime.now(timezone.utc).isoformat()
+        self.conn.execute(
+            "INSERT INTO batches (batch_id, created_at, mode, total_expected) VALUES (?, ?, ?, ?)",
+            (batch_id, now, mode, total_expected),
+        )
+        self.conn.commit()
+
+    def get_batches(self) -> list[dict]:
+        """Return all batches with aggregated run stats, newest first."""
+        cursor = self.conn.execute("""
+            SELECT b.batch_id, b.created_at, b.mode, b.total_expected,
+                   COUNT(r.id) AS run_count,
+                   SUM(CASE WHEN r.error IS NULL AND r.uf_max <= 1.0 THEN 1 ELSE 0 END) AS pass_count,
+                   SUM(CASE WHEN r.error IS NOT NULL THEN 1 ELSE 0 END) AS error_count
+            FROM batches b
+            LEFT JOIN runs r ON r.batch_id = b.batch_id
+            GROUP BY b.batch_id
+            ORDER BY b.created_at DESC
+        """)
+        return [
+            {
+                "batch_id": row[0],
+                "created_at": row[1],
+                "mode": row[2],
+                "total_expected": row[3],
+                "run_count": row[4],
+                "pass_count": row[5],
+                "error_count": row[6],
+            }
+            for row in cursor.fetchall()
+        ]
+
+    def get_batch_runs(self, batch_id: str) -> list[dict]:
+        """Return all runs for a batch, ordered by id."""
+        self.conn.row_factory = sqlite3.Row
+        cursor = self.conn.execute(
+            "SELECT * FROM runs WHERE batch_id = ? ORDER BY id",
+            (batch_id,),
+        )
+        rows = [dict(row) for row in cursor.fetchall()]
+        self.conn.row_factory = None
+        return rows
+
+    def get_ungrouped_runs(self, limit: int = 100, offset: int = 0) -> list[dict]:
+        """Return runs where batch_id IS NULL, newest first."""
+        self.conn.row_factory = sqlite3.Row
+        cursor = self.conn.execute(
+            "SELECT * FROM runs WHERE batch_id IS NULL ORDER BY id DESC LIMIT ? OFFSET ?",
+            (limit, offset),
+        )
+        rows = [dict(row) for row in cursor.fetchall()]
+        self.conn.row_factory = None
+        return rows
 
     # ─── Report query methods ──────────────────────────────────────────────
 

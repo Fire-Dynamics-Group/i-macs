@@ -2,6 +2,7 @@
 
 import asyncio
 import threading
+import uuid
 from typing import Optional
 
 from fastapi import APIRouter, Request
@@ -144,6 +145,13 @@ async def api_batch_start(request: Request):
                 resolve_mesh(params, data["meshes"])
 
             db = request.app.state.db
+
+            # Generate batch_id and record batch metadata
+            mode = config.get("sampling", "sweep")
+            batch_id = uuid.uuid4().hex
+            db.insert_batch(batch_id, mode=mode, total_expected=len(combinations))
+            for params in combinations:
+                params["_batch_id"] = batch_id
 
             def on_complete(run_id, params, outputs, error, progress):
                 # Build SSE payload

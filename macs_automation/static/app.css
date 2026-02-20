@@ -35,31 +35,47 @@
     display: none;
 }
 
-/* Vary pill toggle */
-.vary-pill {
+/* Parameter picker panel */
+#param-picker {
+    margin-bottom: 0;
+}
+.picker-help {
+    margin: 0 0 12px 0;
+    font-size: 0.85em;
+    color: var(--pico-muted-color, #7b8794);
+}
+.picker-group {
+    margin-bottom: 8px;
+    line-height: 2.2;
+}
+.picker-group strong {
+    font-size: 0.8em;
+    margin-right: 6px;
+    color: var(--pico-muted-color, #7b8794);
+}
+.picker-chip {
     display: inline-block;
-    font-size: 0.75em;
-    padding: 2px 10px;
-    border-radius: 12px;
+    font-size: 0.8em;
+    padding: 3px 12px;
+    border-radius: 14px;
     cursor: pointer;
     user-select: none;
-    vertical-align: middle;
-    margin-left: 6px;
-    border: 1.5px solid #7c8a97;
-    color: #7c8a97;
+    margin: 2px 4px 2px 0;
+    border: 1.5px solid var(--pico-muted-border-color, #bcc3cd);
+    color: var(--pico-color, #373c44);
     background: transparent;
     transition: all 0.15s ease;
 }
-.vary-pill:hover {
-    border-color: #546e7a;
-    color: #546e7a;
+.picker-chip:hover {
+    border-color: var(--pico-primary, #1095c1);
+    color: var(--pico-primary, #1095c1);
 }
-.vary-pill.active {
+.picker-chip.active {
     background: var(--pico-primary-background, #1095c1);
     border-color: var(--pico-primary-background, #1095c1);
     color: #fff;
 }
-.vary-pill.active:hover {
+.picker-chip.active:hover {
     opacity: 0.85;
 }
 
@@ -85,6 +101,44 @@
     width: 90px;
     padding: 4px 6px;
     font-size: 0.85em;
+}
+
+/* Batch group details */
+.batch-group {
+    margin-bottom: 24px;
+}
+.batch-group summary {
+    cursor: pointer;
+    padding: 8px 0;
+    font-size: 1.05em;
+}
+.fixed-params {
+    margin: 12px 0;
+    padding: 12px 16px;
+    border-radius: 8px;
+    background: var(--pico-card-background-color, #f8f9fa);
+    border: 1px solid var(--pico-muted-border-color, #dee2e6);
+}
+.fixed-params h4 {
+    margin: 0 0 8px 0;
+    font-size: 0.9em;
+    color: var(--pico-muted-color, #7b8794);
+}
+.fixed-params-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+    gap: 6px 16px;
+}
+.fixed-param {
+    display: flex;
+    justify-content: space-between;
+    font-size: 0.85em;
+}
+.param-label {
+    color: var(--pico-muted-color, #7b8794);
+}
+.param-value {
+    font-weight: 600;
 }
 
 /* Results table hover */

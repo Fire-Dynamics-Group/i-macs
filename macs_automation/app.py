@@ -2,6 +2,7 @@
 
 import threading
 import time
+import uuid
 from pathlib import Path
 from typing import Optional
 
@@ -39,6 +40,61 @@ def _get_ref_data() -> dict:
 
 def _get_db() -> ResultsDB:
     return ResultsDB(DB_PATH)
+
+
+# ─── Display columns for batch results ────────────────────────────────────────
+_DISPLAY_COLUMNS = {
+    "span1": "Span 1 (m)",
+    "span2": "Span 2 (m)",
+    "numbeam": "No. Beams",
+    "slab_depth": "Slab Depth (mm)",
+    "fck": "fck (MPa)",
+    "u_sec_size": "UB Section",
+    "method": "Method",
+    "time_limit": "Time Limit (min)",
+    "qf": "Fire Load (MJ/m²)",
+    "window_percent": "Window %",
+    "Lc": "Lc (m)",
+    "Bc": "Bc (m)",
+    "Hc": "Hc (m)",
+    "Hw": "Hw (m)",
+    "Lw": "Lw (m)",
+    "Bfac": "B Factor",
+    "combustion_factor": "Combustion Factor",
+    "growth_rate": "Growth Rate",
+    "lead_var_act": "Lead Variable Action",
+    "othr_var_act": "Other Variable Action",
+    "cold_perm": "Cold Permanent",
+    "mesh_type": "Mesh Type",
+    "conc_type": "Concrete Type",
+    "deck_name": "Deck",
+}
+
+
+def _detect_varying_columns(runs: list[dict]) -> tuple[list[str], list[tuple[str, str]]]:
+    """Detect which display columns vary across runs.
+
+    Returns (varying_col_names, fixed_params) where:
+      - varying_col_names: list of DB column names that differ across runs
+      - fixed_params: list of (column_name, value) for columns that are constant
+    """
+    if not runs:
+        return [], []
+
+    varying = []
+    fixed = []
+    for col, label in _DISPLAY_COLUMNS.items():
+        values = {r.get(col) for r in runs}
+        # Exclude columns where all values are None
+        non_none = {v for v in values if v is not None}
+        if not non_none:
+            continue
+        if len(values) > 1:
+            varying.append(col)
+        else:
+            fixed.append((col, label, next(iter(non_none))))
+
+    return varying, fixed
 
 
 # ─── Sweep state (in-memory, shared across threads) ──────────────────────────
@@ -201,6 +257,16 @@ def api_submit_sweep(request_body: dict):
     # Dispatch to generate_combinations() which handles both grid sweep and LHS
     combinations = generate_combinations(request_body)
 
+    # Generate batch_id and record batch metadata
+    batch_id = uuid.uuid4().hex
+    db = _get_db()
+    db.insert_batch(batch_id, mode=mode, total_expected=len(combinations))
+    db.close()
+
+    # Inject batch_id into each combination
+    for p in combinations:
+        p["_batch_id"] = batch_id
+
     # Resolve deck/mesh for each
     for p in combinations:
         resolve_deck(p, data["decks"])
@@ -214,7 +280,7 @@ def api_submit_sweep(request_body: dict):
     )
     t.start()
 
-    return {"total": len(combinations), "message": "Sweep started"}
+    return {"total": len(combinations), "message": "Sweep started", "batch_id": batch_id}
 
 
 @app.get("/api/sweeps/status")
@@ -320,12 +386,29 @@ def page_dashboard(request: Request):
 @app.get("/results", response_class=HTMLResponse)
 def page_results(request: Request):
     db = _get_db()
-    runs = db.get_runs(limit=100)
     stats = db.get_stats()
+
+    # Build batch groups
+    batches = db.get_batches()
+    batch_groups = []
+    for b in batches:
+        runs = db.get_batch_runs(b["batch_id"])
+        varying_cols, fixed_params = _detect_varying_columns(runs)
+        batch_groups.append({
+            **b,
+            "runs": runs,
+            "varying_cols": varying_cols,
+            "fixed_params": fixed_params,
+        })
+
+    ungrouped_runs = db.get_ungrouped_runs(limit=100)
     db.close()
+
     return templates.TemplateResponse(request, "results.html", {
-        "runs": runs,
         "stats": stats,
+        "batch_groups": batch_groups,
+        "ungrouped_runs": ungrouped_runs,
+        "display_columns": _DISPLAY_COLUMNS,
     })
 
 

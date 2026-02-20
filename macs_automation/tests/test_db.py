@@ -437,3 +437,110 @@ class TestReportQueries:
         assert all(isinstance(r, dict) for r in runs)
         assert runs[0]["span1"] == 1.0
         assert runs[1]["span1"] == 3.0
+
+
+class TestBatches:
+    """Tests for batch grouping functionality."""
+
+    def test_insert_batch(self, db):
+        """insert_batch creates a row in the batches table."""
+        db.insert_batch("abc123", mode="lhs", total_expected=10)
+        row = db.conn.execute(
+            "SELECT batch_id, mode, total_expected FROM batches WHERE batch_id = ?",
+            ("abc123",),
+        ).fetchone()
+        assert row is not None
+        assert row[0] == "abc123"
+        assert row[1] == "lhs"
+        assert row[2] == 10
+
+    def test_batch_id_stored_on_run(self, db):
+        """_batch_id in params maps to batch_id column on runs."""
+        db.insert_batch("batch42", mode="sweep", total_expected=1)
+        params = {
+            "span1": 9.0, "uSecSize": "IPE_500", "method": "iso",
+            "time_limit": 60, "_batch_id": "batch42",
+        }
+        run_id = db.insert_run(params, outputs={"comp_failure": 0, "time_series": []})
+        row = db.conn.execute(
+            "SELECT batch_id FROM runs WHERE id = ?", (run_id,)
+        ).fetchone()
+        assert row[0] == "batch42"
+
+    def test_get_batches(self, db):
+        """get_batches returns aggregated stats per batch."""
+        db.insert_batch("b1", mode="lhs", total_expected=3)
+        # 2 pass, 1 error
+        db.insert_run(
+            {"span1": 1.0, "uSecSize": "IPE_500", "method": "iso",
+             "time_limit": 60, "_batch_id": "b1"},
+            outputs={"comp_failure": 0, "uf_max": 0.5, "time_series": []},
+        )
+        db.insert_run(
+            {"span1": 2.0, "uSecSize": "IPE_500", "method": "iso",
+             "time_limit": 60, "_batch_id": "b1"},
+            outputs={"comp_failure": 0, "uf_max": 1.2, "time_series": []},
+        )
+        db.insert_run(
+            {"span1": 3.0, "uSecSize": "IPE_500", "method": "iso",
+             "time_limit": 60, "_batch_id": "b1"},
+            error="COM error",
+        )
+        batches = db.get_batches()
+        assert len(batches) == 1
+        b = batches[0]
+        assert b["batch_id"] == "b1"
+        assert b["mode"] == "lhs"
+        assert b["run_count"] == 3
+        assert b["pass_count"] == 1
+        assert b["error_count"] == 1
+
+    def test_get_batch_runs(self, db):
+        """get_batch_runs returns correct runs for a batch, ordered by id."""
+        db.insert_batch("b1", mode="sweep", total_expected=2)
+        db.insert_run(
+            {"span1": 1.0, "uSecSize": "IPE_500", "method": "iso",
+             "time_limit": 60, "_batch_id": "b1"},
+            outputs={"comp_failure": 0, "uf_max": 0.5, "time_series": []},
+        )
+        db.insert_run(
+            {"span1": 2.0, "uSecSize": "IPE_500", "method": "iso",
+             "time_limit": 60, "_batch_id": "b1"},
+            outputs={"comp_failure": 0, "uf_max": 0.8, "time_series": []},
+        )
+        # Another run NOT in batch
+        db.insert_run(
+            {"span1": 3.0, "uSecSize": "IPE_500", "method": "iso", "time_limit": 60},
+            outputs={"comp_failure": 0, "uf_max": 0.9, "time_series": []},
+        )
+        runs = db.get_batch_runs("b1")
+        assert len(runs) == 2
+        assert runs[0]["span1"] == 1.0
+        assert runs[1]["span1"] == 2.0
+
+    def test_get_ungrouped_runs(self, db):
+        """get_ungrouped_runs excludes batched runs."""
+        db.insert_batch("b1", mode="sweep", total_expected=1)
+        db.insert_run(
+            {"span1": 1.0, "uSecSize": "IPE_500", "method": "iso",
+             "time_limit": 60, "_batch_id": "b1"},
+            outputs={"comp_failure": 0, "uf_max": 0.5, "time_series": []},
+        )
+        db.insert_run(
+            {"span1": 2.0, "uSecSize": "IPE_500", "method": "iso", "time_limit": 60},
+            outputs={"comp_failure": 0, "uf_max": 0.9, "time_series": []},
+        )
+        ungrouped = db.get_ungrouped_runs()
+        assert len(ungrouped) == 1
+        assert ungrouped[0]["span1"] == 2.0
+
+    def test_null_batch_id_for_legacy_runs(self, db):
+        """Runs without _batch_id have NULL batch_id."""
+        run_id = db.insert_run(
+            {"span1": 9.0, "uSecSize": "IPE_500", "method": "iso", "time_limit": 60},
+            outputs={"comp_failure": 0, "time_series": []},
+        )
+        row = db.conn.execute(
+            "SELECT batch_id FROM runs WHERE id = ?", (run_id,)
+        ).fetchone()
+        assert row[0] is None

@@ -596,6 +596,83 @@ class TestSweepWithArbitraryParams:
             assert data["total"] == 3
 
 
+class TestBatchResults:
+    """Tests for batch-aware results page."""
+
+    def test_sweep_submit_returns_batch_id(self, client):
+        """POST /api/sweeps response includes a 32-char hex batch_id."""
+        payload = {
+            "analysis_method": "parametric",
+            "sweep": {"qf": [300, 500]},
+            "fixed": {"span1": 9, "span2": 9},
+        }
+        with patch("macs_automation.app._run_sweep_background"):
+            with patch("threading.Thread") as mock_thread:
+                def start_side_effect():
+                    args = mock_thread.call_args
+                    target = args[1]["target"] if "target" in args[1] else args[0][0]
+                    target_args = args[1].get("args", ())
+                    target(*target_args)
+                mock_instance = MagicMock()
+                mock_instance.start = start_side_effect
+                mock_thread.return_value = mock_instance
+                resp = client.post("/api/sweeps", json=payload)
+                assert resp.status_code == 200
+                data = resp.json()
+                assert "batch_id" in data
+                assert len(data["batch_id"]) == 32
+                assert all(c in "0123456789abcdef" for c in data["batch_id"])
+
+    def test_detect_varying_columns(self, client):
+        """_detect_varying_columns correctly identifies varying vs fixed columns."""
+        from macs_automation.app import _detect_varying_columns
+        runs = [
+            {"span1": 9.0, "span2": 9.0, "qf": 300, "window_percent": 50, "uf_max": 0.5},
+            {"span1": 9.0, "span2": 9.0, "qf": 500, "window_percent": 50, "uf_max": 0.8},
+            {"span1": 9.0, "span2": 9.0, "qf": 700, "window_percent": 80, "uf_max": 1.1},
+        ]
+        varying, fixed = _detect_varying_columns(runs)
+        assert "qf" in varying
+        assert "window_percent" in varying
+        assert "span1" not in varying
+        # Fixed params should include span1 (tuples are col, label, value)
+        assert any(col == "span1" for col, label, value in fixed)
+
+    def test_results_page_shows_batch_group(self, use_tmp_db):
+        """Batch runs render with 'Fixed Parameters' card."""
+        from macs_automation.db import ResultsDB
+        db = ResultsDB(use_tmp_db)
+        db.insert_batch("aabb0011" * 4, mode="lhs", total_expected=2)
+        for qf_val in [300, 500]:
+            db.insert_run(
+                {"span1": 9.0, "span2": 9.0, "uSecSize": "IPE_500", "method": "parametric",
+                 "time_limit": 60, "qf": qf_val, "window_percent": 50,
+                 "_batch_id": "aabb0011" * 4},
+                outputs={"comp_failure": 0, "uf_max": 0.5 + qf_val / 1000, "time_series": []},
+            )
+        db.close()
+        client = TestClient(app)
+        resp = client.get("/results")
+        assert resp.status_code == 200
+        assert "Fixed Parameters" in resp.text
+        assert "aabb0011" in resp.text  # first 8 chars of batch_id
+
+    def test_results_page_shows_ungrouped_runs(self, use_tmp_db):
+        """Single runs (no batch_id) appear in 'Individual Runs' section."""
+        from macs_automation.db import ResultsDB
+        db = ResultsDB(use_tmp_db)
+        db.insert_run(
+            {"span1": 9.0, "span2": 9.0, "uSecSize": "IPE_500", "method": "iso",
+             "time_limit": 60},
+            outputs={"comp_failure": 0, "uf_max": 0.7, "time_series": []},
+        )
+        db.close()
+        client = TestClient(app)
+        resp = client.get("/results")
+        assert resp.status_code == 200
+        assert "Individual Runs" in resp.text
+
+
 class TestCOMRetry:
     """Tests for COM retry logic in _run_single_com."""
 
