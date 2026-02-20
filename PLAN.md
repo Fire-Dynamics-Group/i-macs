@@ -82,6 +82,15 @@ backend stays on the Windows machine exposed via a tunnel.
 
 ---
 
+## Investigations / TODO
+
+### Time-Series Resolution (Chart Smoothness)
+FRACOF currently outputs data at ~10 minute intervals, which makes the time-series charts quite jagged. A colleague has asked whether we can get data every minute instead.
+
+**Action**: Check FRACOF COM API to see if timestep size is configurable (e.g. 1 min instead of 10 min). If so, expose it as an option. If not, consider interpolation as a fallback for smoother charts.
+
+---
+
 ## Benchmark Results (1,000 runs)
 
 | Metric | Value |
