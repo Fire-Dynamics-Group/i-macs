@@ -53,7 +53,7 @@ def main():
     threading.Timer(2.0, lambda: webbrowser.open(URL)).start()
 
     import uvicorn
-    uvicorn.run("macs_automation.app:app", host=HOST, port=PORT)
+    uvicorn.run("macs_automation.app:app", host=HOST, port=PORT, reload=True)
 
 
 if __name__ == "__main__":

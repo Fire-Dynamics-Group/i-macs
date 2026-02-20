@@ -161,10 +161,47 @@
     <!-- Deck -->
     <fieldset>
         <legend>Deck</legend>
+        <details id="custom-deck-form">
+            <summary>Add Custom Deck</summary>
+            <div class="grid">
+                <label>Name <input type="text" id="cd-name" placeholder="e.g. My Custom Deck"></label>
+                <label>Type
+                    <select id="cd-type">
+                        <option value="T">Trapezoidal (T)</option>
+                        <option value="R">Re-entrant (R)</option>
+                    </select>
+                </label>
+                <label>Depth (mm) <input type="number" id="cd-depth" step="0.1" min="0"></label>
+                <label>Trough (mm) <input type="number" id="cd-trug" step="0.1" min="0"></label>
+                <label>Top (mm) <input type="number" id="cd-top" step="0.1" min="0"></label>
+                <label>Bottom (mm) <input type="number" id="cd-bot" step="0.1" min="0"></label>
+                <label>Stiffener Height (mm) <input type="number" id="cd-stiff" step="0.1" min="0" value="0"></label>
+            </div>
+            <button type="button" id="cd-add-btn" onclick="addCustomDeck()">Add</button>
+            <span id="cd-status"></span>
+        </details>
+        <details id="custom-mesh-form">
+            <summary>Add Custom Mesh</summary>
+            <div class="grid">
+                <label>Name <input type="text" id="cm-name" placeholder="e.g. A393"></label>
+                <label>Main Area (mm²/m) <input type="number" id="cm-main" step="0.1" min="0"></label>
+                <label>Trans Area (mm²/m) <input type="number" id="cm-trans" step="0.1" min="0"></label>
+            </div>
+            <button type="button" id="cm-add-btn" onclick="addCustomMesh()">Add</button>
+            <span id="cm-status"></span>
+        </details>
         <div class="grid">
             <label>Deck Type
                 <select name="deck_id">
-                    {% for deck_id, deck in decks.items() %}
+                    {% if custom_decks %}
+                    {% for deck_id, deck in decks.items() if deck.name and '(Custom)' in deck.name %}
+                    <option value="{{ deck_id }}" {% if deck_id == defaults.DeckId %}selected{% endif %}>
+                        {{ deck.name }} ({{ deck_id }})
+                    </option>
+                    {% endfor %}
+                    <option disabled>──────────────</option>
+                    {% endif %}
+                    {% for deck_id, deck in decks.items() if not (deck.name and '(Custom)' in deck.name) %}
                     <option value="{{ deck_id }}" {% if deck_id == defaults.DeckId %}selected{% endif %}>
                         {{ deck.name|default(deck_id) }} ({{ deck_id }})
                     </option>
@@ -173,7 +210,15 @@
             </label>
             <label>Mesh Type
                 <select name="mesh_type">
-                    {% for mesh_id, mesh in meshes.items() %}
+                    {% if custom_meshes %}
+                    {% for mesh_id, mesh in meshes.items() if mesh.name is defined and '(Custom)' in mesh.name %}
+                    <option value="{{ mesh_id }}" {% if mesh_id == defaults.mesh_type %}selected{% endif %}>
+                        {{ mesh.name }} — {{ mesh.mainArea }}mm&sup2;/m
+                    </option>
+                    {% endfor %}
+                    <option disabled>──────────────</option>
+                    {% endif %}
+                    {% for mesh_id, mesh in meshes.items() if not (mesh.name is defined and '(Custom)' in mesh.name) %}
                     <option value="{{ mesh_id }}" {% if mesh_id == defaults.mesh_type %}selected{% endif %}>
                         {{ mesh_id }} — {{ mesh.mainArea }}mm&sup2;/m
                     </option>
@@ -187,10 +232,36 @@
     <!-- Beams -->
     <fieldset>
         <legend>Beams — Unprotected</legend>
+        <details id="custom-section-form">
+            <summary>Add Custom Section</summary>
+            <div class="grid">
+                <label>Name <input type="text" id="cs-name" placeholder="e.g. PFC 300x90"></label>
+                <label>h (mm) <input type="number" id="cs-h" step="0.1" min="0"></label>
+                <label>b (mm) <input type="number" id="cs-b" step="0.1" min="0"></label>
+                <label>tw (mm) <input type="number" id="cs-tw" step="0.01" min="0"></label>
+                <label>tf (mm) <input type="number" id="cs-tf" step="0.01" min="0"></label>
+            </div>
+            <button type="button" id="cs-add-btn" onclick="addCustomSection()">Add</button>
+            <span id="cs-status"></span>
+        </details>
         <div class="grid">
             <label>Section Size
                 <select name="u_sec_size">
-                    {% for sec_id, sec in sections.items() %}
+                    {% if custom_sections %}
+                    {% for sec_id, sec in sections.items() if sec.family == 'Custom' %}
+                    <option value="{{ sec_id }}" {% if sec_id == defaults.uSecSize %}selected{% endif %}>
+                        {{ sec.name|default(sec_id) }} (h={{ sec.h }}mm)
+                    </option>
+                    {% endfor %}
+                    <option disabled>──────────────</option>
+                    {% endif %}
+                    {% for sec_id, sec in sections.items() if sec.family == 'UB' %}
+                    <option value="{{ sec_id }}" {% if sec_id == defaults.uSecSize %}selected{% endif %}>
+                        {{ sec.name|default(sec_id) }}{% if sec.mass_per_m is defined %} — {{ sec.mass_per_m }} kg/m{% endif %} (h={{ sec.h }}mm)
+                    </option>
+                    {% endfor %}
+                    <option disabled>──────────────</option>
+                    {% for sec_id, sec in sections.items() if sec.family not in ('Custom', 'UB') %}
                     <option value="{{ sec_id }}" {% if sec_id == defaults.uSecSize %}selected{% endif %}>
                         {{ sec.name|default(sec_id) }} (h={{ sec.h }}mm)
                     </option>
@@ -209,46 +280,52 @@
         </div>
     </fieldset>
 
-    <!-- Perimeter Beams -->
+    <!-- Perimeter Beams (all sides share the same settings) -->
     <fieldset>
         <legend>Beams — Perimeter</legend>
-        <details>
-            <summary>Side A / B / C / D configuration</summary>
-            {% for side in ['A', 'B', 'C', 'D'] %}
-            <fieldset>
-                <legend>Side {{ side }}</legend>
-                <div class="grid">
-                    <label>Section
-                        <select name="side_{{ side|lower }}_sec">
-                            {% for sec_id, sec in sections.items() %}
-                            <option value="{{ sec_id }}" {% if sec_id == defaults['Side' + side + 'SecSize'] %}selected{% endif %}>
-                                {{ sec.name|default(sec_id) }}
-                            </option>
-                            {% endfor %}
-                        </select>
-                    </label>
-                    <label>fy
-                        <select name="side_{{ side|lower }}_fy">
-                            <option value="235">S235</option>
-                            <option value="275">S275</option>
-                            <option value="355" selected>S355</option>
-                            <option value="460">S460</option>
-                        </select>
-                    </label>
-                    <label>
-                        <input type="checkbox" name="side_{{ side|lower }}_edge" value="1"
-                            {% if defaults['Side' + side + 'EdgeFlag'] == 1 %}checked{% endif %}>
-                        Edge beam
-                    </label>
-                    <label>
-                        <input type="checkbox" name="side_{{ side|lower }}_composite" value="1"
-                            {% if defaults['Side' + side + 'CompoFlag'] == 1 %}checked{% endif %}>
-                        Composite
-                    </label>
-                </div>
-            </fieldset>
-            {% endfor %}
-        </details>
+        <div class="grid">
+            <label>Section
+                <select name="perim_sec">
+                    {% if custom_sections %}
+                    {% for sec_id, sec in sections.items() if sec.family == 'Custom' %}
+                    <option value="{{ sec_id }}" {% if sec_id == defaults.SideASecSize %}selected{% endif %}>
+                        {{ sec.name|default(sec_id) }}
+                    </option>
+                    {% endfor %}
+                    <option disabled>──────────────</option>
+                    {% endif %}
+                    {% for sec_id, sec in sections.items() if sec.family == 'UB' %}
+                    <option value="{{ sec_id }}" {% if sec_id == defaults.SideASecSize %}selected{% endif %}>
+                        {{ sec.name|default(sec_id) }}{% if sec.mass_per_m is defined %} — {{ sec.mass_per_m }} kg/m{% endif %}
+                    </option>
+                    {% endfor %}
+                    <option disabled>──────────────</option>
+                    {% for sec_id, sec in sections.items() if sec.family not in ('Custom', 'UB') %}
+                    <option value="{{ sec_id }}" {% if sec_id == defaults.SideASecSize %}selected{% endif %}>
+                        {{ sec.name|default(sec_id) }}
+                    </option>
+                    {% endfor %}
+                </select>
+            </label>
+            <label>Steel Grade (fy)
+                <select name="perim_fy">
+                    <option value="235">S235</option>
+                    <option value="275">S275</option>
+                    <option value="355" {% if defaults.fy1|string == '355' %}selected{% endif %}>S355</option>
+                    <option value="460">S460</option>
+                </select>
+            </label>
+            <label>
+                <input type="checkbox" name="perim_edge" value="1"
+                    {% if defaults.SideAEdgeFlag == 1 %}checked{% endif %}>
+                Edge beam
+            </label>
+            <label>
+                <input type="checkbox" name="perim_composite" value="1"
+                    {% if defaults.SideACompoFlag == 1 %}checked{% endif %}>
+                Composite
+            </label>
+        </div>
     </fieldset>
 
     <!-- Loading -->
@@ -316,6 +393,129 @@
 
 {% block scripts %}
 <script>
+/* ── Add Custom Section ── */
+async function addCustomSection() {
+    const name = document.getElementById('cs-name').value.trim();
+    const h = parseFloat(document.getElementById('cs-h').value);
+    const b = parseFloat(document.getElementById('cs-b').value);
+    const tw = parseFloat(document.getElementById('cs-tw').value);
+    const tf = parseFloat(document.getElementById('cs-tf').value);
+    const status = document.getElementById('cs-status');
+
+    if (!name || isNaN(h) || isNaN(b) || isNaN(tw) || isNaN(tf)) {
+        status.textContent = 'Please fill all fields.';
+        status.className = 'fail';
+        return;
+    }
+
+    const btn = document.getElementById('cs-add-btn');
+    btn.disabled = true;
+    btn.setAttribute('aria-busy', 'true');
+
+    try {
+        const resp = await fetch('/api/custom-sections', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({name, h, b, tw, tf}),
+        });
+        if (resp.ok) {
+            window.location.reload();
+        } else {
+            const data = await resp.json();
+            status.textContent = data.detail || 'Failed to add section.';
+            status.className = 'fail';
+        }
+    } catch (err) {
+        status.textContent = 'Request failed: ' + err.message;
+        status.className = 'fail';
+    } finally {
+        btn.disabled = false;
+        btn.removeAttribute('aria-busy');
+    }
+}
+
+/* ── Add Custom Deck ── */
+async function addCustomDeck() {
+    const name = document.getElementById('cd-name').value.trim();
+    const deck_type = document.getElementById('cd-type').value;
+    const deck_depth = parseFloat(document.getElementById('cd-depth').value);
+    const deck_trug = parseFloat(document.getElementById('cd-trug').value);
+    const deck_top = parseFloat(document.getElementById('cd-top').value);
+    const deck_bot = parseFloat(document.getElementById('cd-bot').value);
+    const deck_stiff_height = parseFloat(document.getElementById('cd-stiff').value);
+    const status = document.getElementById('cd-status');
+
+    if (!name || isNaN(deck_depth) || isNaN(deck_trug) || isNaN(deck_top) || isNaN(deck_bot)) {
+        status.textContent = 'Please fill all fields.';
+        status.className = 'fail';
+        return;
+    }
+
+    const btn = document.getElementById('cd-add-btn');
+    btn.disabled = true;
+    btn.setAttribute('aria-busy', 'true');
+
+    try {
+        const resp = await fetch('/api/custom-decks', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({name, deck_type, deck_depth, deck_trug, deck_top, deck_bot, deck_stiff_height: deck_stiff_height || 0}),
+        });
+        if (resp.ok) {
+            window.location.reload();
+        } else {
+            const data = await resp.json();
+            status.textContent = data.detail || 'Failed to add deck.';
+            status.className = 'fail';
+        }
+    } catch (err) {
+        status.textContent = 'Request failed: ' + err.message;
+        status.className = 'fail';
+    } finally {
+        btn.disabled = false;
+        btn.removeAttribute('aria-busy');
+    }
+}
+
+/* ── Add Custom Mesh ── */
+async function addCustomMesh() {
+    const name = document.getElementById('cm-name').value.trim();
+    const main_area = parseFloat(document.getElementById('cm-main').value);
+    const trans_area = parseFloat(document.getElementById('cm-trans').value);
+    const status = document.getElementById('cm-status');
+
+    if (!name || isNaN(main_area) || isNaN(trans_area)) {
+        status.textContent = 'Please fill all fields.';
+        status.className = 'fail';
+        return;
+    }
+
+    const btn = document.getElementById('cm-add-btn');
+    btn.disabled = true;
+    btn.setAttribute('aria-busy', 'true');
+
+    try {
+        const resp = await fetch('/api/custom-meshes', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({name, main_area, trans_area}),
+        });
+        if (resp.ok) {
+            window.location.reload();
+        } else {
+            const data = await resp.json();
+            status.textContent = data.detail || 'Failed to add mesh.';
+            status.className = 'fail';
+        }
+    } catch (err) {
+        status.textContent = 'Request failed: ' + err.message;
+        status.className = 'fail';
+    } finally {
+        btn.disabled = false;
+        btn.removeAttribute('aria-busy');
+    }
+}
+
 /* ── All numeric parameter names ── */
 const NUMERIC_PARAMS = [
     'span1', 'span2', 'numbeam',
@@ -402,24 +602,18 @@ async function importFrc() {
         if (params.fy5 && form.elements['u_sec_fy']) form.elements['u_sec_fy'].value = params.fy5;
         if (params.ush_con !== undefined && form.elements['ush_con']) form.elements['ush_con'].value = params.ush_con;
 
-        const sides = ['a', 'b', 'c', 'd'];
-        const sideUpper = ['A', 'B', 'C', 'D'];
-        const fyKeys = ['fy1', 'fy2', 'fy3', 'fy4'];
-        sides.forEach((side, idx) => {
-            const S = sideUpper[idx];
-            const secKey = `Side${S}SecSize`;
-            const secField = form.elements[`side_${side}_sec`];
-            if (params[secKey] && secField) {
-                for (let i = 0; i < secField.options.length; i++) {
-                    if (secField.options[i].value === params[secKey]) { secField.value = params[secKey]; break; }
-                }
+        // Populate unified perimeter fields from Side A of the imported file
+        const perimSecField = form.elements['perim_sec'];
+        if (params.SideASecSize && perimSecField) {
+            for (let i = 0; i < perimSecField.options.length; i++) {
+                if (perimSecField.options[i].value === params.SideASecSize) { perimSecField.value = params.SideASecSize; break; }
             }
-            if (params[fyKeys[idx]] && form.elements[`side_${side}_fy`]) form.elements[`side_${side}_fy`].value = params[fyKeys[idx]];
-            const edgeCb = form.elements[`side_${side}_edge`];
-            if (edgeCb) edgeCb.checked = params[`Side${S}EdgeFlag`] === 1;
-            const compoCb = form.elements[`side_${side}_composite`];
-            if (compoCb) compoCb.checked = params[`Side${S}CompoFlag`] === 1;
-        });
+        }
+        if (params.fy1 && form.elements['perim_fy']) form.elements['perim_fy'].value = params.fy1;
+        const perimEdgeCb = form.elements['perim_edge'];
+        if (perimEdgeCb) perimEdgeCb.checked = params.SideAEdgeFlag === 1;
+        const perimCompoCb = form.elements['perim_composite'];
+        if (perimCompoCb) perimCompoCb.checked = params.SideACompoFlag === 1;
 
         const proj = data.project || {};
         let msg = '<p class="pass">Imported successfully!</p>';
@@ -666,15 +860,16 @@ document.getElementById('config-form').addEventListener('submit', async function
             if (form.elements[name]) params[name] = form.elements[name].value;
         });
 
+        // Replicate unified perimeter beam settings to all 4 sides
+        const perimSec = form.elements['perim_sec']?.value;
+        const perimFy = form.elements['perim_fy']?.value;
+        const perimEdge = form.elements['perim_edge']?.checked ? 1 : 0;
+        const perimComposite = form.elements['perim_composite']?.checked ? 1 : 0;
         ['a', 'b', 'c', 'd'].forEach(side => {
-            const sel = form.elements[`side_${side}_sec`];
-            if (sel) params[`side_${side}_sec`] = sel.value;
-            const fy = form.elements[`side_${side}_fy`];
-            if (fy) params[`side_${side}_fy`] = fy.value;
-            const edge = form.elements[`side_${side}_edge`];
-            if (edge) params[`side_${side}_edge`] = edge.checked ? 1 : 0;
-            const comp = form.elements[`side_${side}_composite`];
-            if (comp) params[`side_${side}_composite`] = comp.checked ? 1 : 0;
+            params[`side_${side}_sec`] = perimSec;
+            params[`side_${side}_fy`] = perimFy;
+            params[`side_${side}_edge`] = perimEdge;
+            params[`side_${side}_composite`] = perimComposite;
         });
 
         try {
