@@ -4,7 +4,7 @@ import pytest
 from unittest.mock import patch, MagicMock
 from fastapi.testclient import TestClient
 
-from macs_automation.app import app, _sweep_state, _sweep_lock, DB_PATH
+from macs_automation.app import app, _sweep_state, _sweep_lock, _run_single_com, DB_PATH
 
 
 @pytest.fixture(autouse=True)
@@ -594,3 +594,78 @@ class TestSweepWithArbitraryParams:
             assert resp.status_code == 200
             data = resp.json()
             assert data["total"] == 3
+
+
+class TestCOMRetry:
+    """Tests for COM retry logic in _run_single_com."""
+
+    def test_succeeds_on_first_attempt(self):
+        """No retries needed when COM succeeds immediately."""
+        mock_outputs = {"uf_max": 0.5, "duration_ms": 100}
+        params = {"method": "iso", "span1": 9.0}
+
+        with patch("macs_automation.engine.MACSEngine") as MockEngine, \
+             patch("pythoncom.CoInitialize"), \
+             patch("pythoncom.CoUninitialize"):
+            engine_inst = MagicMock()
+            engine_inst.run.return_value = mock_outputs
+            MockEngine.return_value = engine_inst
+
+            result = _run_single_com(params, {})
+            assert result == mock_outputs
+            assert MockEngine.call_count == 1
+
+    def test_retries_on_com_error_then_succeeds(self):
+        """Retries after COM error and succeeds on second attempt."""
+        from pywintypes import com_error
+        mock_outputs = {"uf_max": 0.5, "duration_ms": 100}
+        params = {"method": "iso"}
+
+        with patch("macs_automation.engine.MACSEngine") as MockEngine, \
+             patch("pythoncom.CoInitialize"), \
+             patch("pythoncom.CoUninitialize"), \
+             patch("time.sleep"):
+            engine_inst = MagicMock()
+            engine_inst.run.side_effect = [
+                com_error(-2147023179, "The interface is unknown.", None, None),
+                mock_outputs,
+            ]
+            MockEngine.return_value = engine_inst
+
+            result = _run_single_com(params, {})
+            assert result == mock_outputs
+            assert MockEngine.call_count == 2
+
+    def test_raises_after_max_retries(self):
+        """Raises the COM error after exhausting all retries."""
+        from pywintypes import com_error
+        params = {"method": "iso"}
+
+        with patch("macs_automation.engine.MACSEngine") as MockEngine, \
+             patch("pythoncom.CoInitialize"), \
+             patch("pythoncom.CoUninitialize"), \
+             patch("time.sleep"):
+            engine_inst = MagicMock()
+            engine_inst.run.side_effect = com_error(
+                -2147023179, "The interface is unknown.", None, None
+            )
+            MockEngine.return_value = engine_inst
+
+            with pytest.raises(com_error):
+                _run_single_com(params, {})
+            assert MockEngine.call_count == 3  # COM_MAX_RETRIES
+
+    def test_non_com_error_not_retried(self):
+        """Non-COM exceptions propagate immediately without retry."""
+        params = {"method": "iso"}
+
+        with patch("macs_automation.engine.MACSEngine") as MockEngine, \
+             patch("pythoncom.CoInitialize"), \
+             patch("pythoncom.CoUninitialize"):
+            engine_inst = MagicMock()
+            engine_inst.run.side_effect = ValueError("bad param")
+            MockEngine.return_value = engine_inst
+
+            with pytest.raises(ValueError, match="bad param"):
+                _run_single_com(params, {})
+            assert MockEngine.call_count == 1  # no retry

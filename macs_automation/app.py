@@ -54,10 +54,38 @@ _sweep_state = {
 _sweep_lock = threading.Lock()
 
 
+COM_MAX_RETRIES = 3
+COM_RETRY_DELAY = 2.0  # seconds between retries
+COM_RUN_DELAY = 0.5    # seconds between successive runs
+
+
+def _run_single_com(params: dict, sections_db: dict) -> dict:
+    """Run a single MACS+ COM call with retries on COM errors."""
+    import pythoncom
+    from pywintypes import com_error
+
+    last_error = None
+    for attempt in range(1, COM_MAX_RETRIES + 1):
+        try:
+            pythoncom.CoInitialize()
+            try:
+                from macs_automation.engine import MACSEngine
+                eng = MACSEngine()
+                eng.set_inputs(params, sections_db)
+                return eng.run(method=params.get("method", "iso"))
+            finally:
+                pythoncom.CoUninitialize()
+        except com_error as e:
+            last_error = e
+            if attempt < COM_MAX_RETRIES:
+                time.sleep(COM_RETRY_DELAY * attempt)
+        except Exception:
+            raise
+    raise last_error
+
+
 def _run_sweep_background(combinations: list[dict], sections_db: dict, mode: str = "sweep"):
     """Run a sweep in a background thread with COM init per run."""
-    import pythoncom
-
     with _sweep_lock:
         _sweep_state["active"] = True
         _sweep_state["total"] = len(combinations)
@@ -71,15 +99,8 @@ def _run_sweep_background(combinations: list[dict], sections_db: dict, mode: str
     try:
         for params in combinations:
             try:
-                pythoncom.CoInitialize()
-                try:
-                    from macs_automation.engine import MACSEngine
-                    engine = MACSEngine()
-                    engine.set_inputs(params, sections_db)
-                    outputs = engine.run(method=params.get("method", "iso"))
-                    db.insert_run(params, outputs=outputs)
-                finally:
-                    pythoncom.CoUninitialize()
+                outputs = _run_single_com(params, sections_db)
+                db.insert_run(params, outputs=outputs)
             except Exception as e:
                 error_msg = f"{type(e).__name__}: {e}"
                 db.insert_run(params, error=error_msg)
@@ -91,6 +112,8 @@ def _run_sweep_background(combinations: list[dict], sections_db: dict, mode: str
 
             with _sweep_lock:
                 _sweep_state["completed"] += 1
+
+            time.sleep(COM_RUN_DELAY)
     finally:
         db.close()
         with _sweep_lock:
