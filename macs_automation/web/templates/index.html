@@ -30,8 +30,43 @@
             <a href="/dashboard" role="button">Open Live Dashboard</a>
         </p>
         <p>
-            <a href="/api/report" role="button" class="outline">Download Report ZIP</a>
+            <a href="/api/report/docx" role="button" class="outline">Download Report (DOCX) — All Runs</a>
+        </p>
+        <p>
+            <a href="/api/report" role="button" class="outline secondary">Download Report ZIP — All Runs</a>
         </p>
     </article>
 </div>
+
+{% if batches %}
+<article>
+    <header>Batch Results</header>
+    <table>
+        <thead>
+            <tr>
+                <th>Batch ID</th>
+                <th>Mode</th>
+                <th>Runs</th>
+                <th>Pass</th>
+                <th>Errors</th>
+                <th>Date</th>
+                <th>Report</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for b in batches %}
+            <tr>
+                <td><code>{{ b.batch_id[:12] }}</code></td>
+                <td>{{ b.mode }}</td>
+                <td>{{ b.run_count }} / {{ b.total_expected }}</td>
+                <td class="pass">{{ b.pass_count }}</td>
+                <td class="{% if b.error_count > 0 %}fail{% endif %}">{{ b.error_count }}</td>
+                <td>{{ b.created_at[:16] }}</td>
+                <td><a href="/api/report/docx?batch_id={{ b.batch_id }}" role="button" class="outline" style="padding: 0.25rem 0.75rem; font-size: 0.85rem;">DOCX</a></td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</article>
+{% endif %}
 {% endblock %}

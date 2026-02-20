@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Optional
 
 from fastapi import FastAPI, Request, UploadFile
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
@@ -417,6 +417,57 @@ def page_detail(request: Request, run_id: int):
         "run": run,
         "time_series": ts,
     })
+
+
+# ─── Report download ─────────────────────────────────────────────────────────
+
+@app.get("/api/report/docx")
+def api_report_docx(batch_id: str | None = None):
+    """Generate and download a DOCX report, optionally filtered to a batch."""
+    from macs_automation.report_docx import generate_batch_docx
+    db = _get_db()
+    docx_path = generate_batch_docx(db, batch_id=batch_id)
+    db.close()
+    filename = f"macs_report_{batch_id}.docx" if batch_id else "macs_report.docx"
+    return FileResponse(
+        docx_path,
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        filename=filename,
+    )
+
+
+@app.get("/api/report/chart/{chart_type}")
+def api_report_chart(chart_type: str, batch_id: str | None = None):
+    """Serve a PNG chart image for a batch (or all runs).
+
+    chart_type: 'scatter' or 'capacity'
+    """
+    from fastapi.responses import Response
+    from macs_automation.report_docx import _render_scatter_chart, _render_timeseries_chart
+
+    db = _get_db()
+    if batch_id:
+        runs = db.get_batch_successful_runs(batch_id)
+    else:
+        runs = db.get_successful_runs()
+
+    png_bytes = None
+    if chart_type == "scatter":
+        png_bytes = _render_scatter_chart(runs)
+    elif chart_type == "capacity":
+        factored_hot = runs[0].get("factored_hot") if runs else None
+        png_bytes = _render_timeseries_chart(
+            db, "total_plate_capacity",
+            "Total Slab Capacity (kN/m2)",
+            runs, batch_id=batch_id, hline_value=factored_hot,
+        )
+
+    db.close()
+
+    if png_bytes is None:
+        return JSONResponse({"error": "No data for chart"}, status_code=404)
+
+    return Response(content=png_bytes, media_type="image/png")
 
 
 if __name__ == "__main__":

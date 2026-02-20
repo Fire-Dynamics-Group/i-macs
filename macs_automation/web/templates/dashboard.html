@@ -40,7 +40,10 @@
 <article id="batch-summary" style="display:none;">
     <header>Batch Complete</header>
     <p id="summary-text"></p>
-    <a href="/api/report" role="button">Download Report ZIP</a>
+    <div class="grid">
+        <a id="download-docx-btn" href="/api/report/docx" role="button">Download Report (DOCX)</a>
+        <a href="/api/report" role="button" class="secondary">Download Report ZIP</a>
+    </div>
 </article>
 {% endblock %}
 

@@ -493,3 +493,56 @@ class ResultsDB:
         rows = [dict(row) for row in cursor.fetchall()]
         self.conn.row_factory = None
         return rows
+
+    # ─── Batch-scoped report methods ──────────────────────────────────────
+
+    def get_batch_successful_runs(self, batch_id: str) -> list[dict]:
+        """Return successful runs for a specific batch."""
+        self.conn.row_factory = sqlite3.Row
+        cursor = self.conn.execute(
+            "SELECT * FROM runs WHERE error IS NULL AND batch_id = ? ORDER BY id",
+            (batch_id,),
+        )
+        rows = [dict(row) for row in cursor.fetchall()]
+        self.conn.row_factory = None
+        return rows
+
+    def get_batch_time_series_column(self, batch_id: str, column: str) -> list[tuple]:
+        """Return (run_id, time_min, value) for a column across successful runs in a batch."""
+        if column not in self.TIME_SERIES_COLUMNS:
+            raise ValueError(f"Invalid time_series column: {column!r}")
+        cursor = self.conn.execute(
+            f"""SELECT ts.run_id, ts.time_min, ts.{column}
+                FROM time_series ts
+                JOIN runs r ON r.id = ts.run_id
+                WHERE r.error IS NULL AND r.batch_id = ?
+                ORDER BY ts.run_id, ts.time_min""",
+            (batch_id,),
+        )
+        return cursor.fetchall()
+
+    def get_batch_stats(self, batch_id: str) -> dict:
+        """Return summary statistics for a specific batch."""
+        cursor = self.conn.execute(
+            "SELECT COUNT(*) FROM runs WHERE batch_id = ?", (batch_id,)
+        )
+        total = cursor.fetchone()[0]
+        cursor = self.conn.execute(
+            "SELECT COUNT(*) FROM runs WHERE batch_id = ? AND error IS NULL",
+            (batch_id,),
+        )
+        successful = cursor.fetchone()[0]
+        errors = total - successful
+        cursor = self.conn.execute(
+            "SELECT COUNT(*) FROM runs WHERE batch_id = ? AND error IS NULL AND uf_max <= 1.0",
+            (batch_id,),
+        )
+        pass_count = cursor.fetchone()[0]
+        fail_count = successful - pass_count
+        return {
+            "total": total,
+            "successful": successful,
+            "errors": errors,
+            "pass_count": pass_count,
+            "fail_count": fail_count,
+        }

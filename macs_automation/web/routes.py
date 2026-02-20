@@ -24,8 +24,10 @@ _batch_lock = threading.Lock()
 def page_index(request: Request):
     db = request.app.state.db
     stats = db.get_stats()
+    batches = db.get_batches()
     return request.app.state.templates.TemplateResponse(request, "index.html", {
         "stats": stats,
+        "batches": batches,
     })
 
 
@@ -200,6 +202,7 @@ async def api_batch_start(request: Request):
                 "completed": result.completed,
                 "errors": result.errors,
                 "elapsed_seconds": round(result.elapsed_seconds, 1),
+                "batch_id": batch_id,
             }, loop)
 
         except Exception as e:
@@ -240,4 +243,18 @@ def api_report(request: Request):
         zip_path,
         media_type="application/zip",
         filename="macs_report.zip",
+    )
+
+
+@router.get("/api/report/docx")
+def api_report_docx(request: Request, batch_id: Optional[str] = None):
+    """Generate and download a DOCX report, optionally filtered to a batch."""
+    from macs_automation.report_docx import generate_batch_docx
+    db = request.app.state.db
+    docx_path = generate_batch_docx(db, batch_id=batch_id)
+    filename = f"macs_report_{batch_id}.docx" if batch_id else "macs_report.docx"
+    return FileResponse(
+        docx_path,
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        filename=filename,
     )

@@ -66,6 +66,7 @@ const capacityData = [];    // [{times, values}]
 const beamTempData = [];
 const meshTempData = [];
 let factoredHot = null;
+let currentBatchId = null;
 
 function formatTime(seconds) {
     if (!seconds && seconds !== 0) return '—';
@@ -200,6 +201,13 @@ function handleBatchComplete(data) {
     document.getElementById('summary-text').textContent = cancelled
         ? `Stopped after ${data.completed} runs (${data.errors} errors) in ${formatTime(data.elapsed_seconds)}.`
         : `Completed ${data.completed} runs with ${data.errors} errors in ${formatTime(data.elapsed_seconds)}.`;
+
+    // Update DOCX download link with batch_id
+    currentBatchId = data.batch_id || null;
+    const docxBtn = document.getElementById('download-docx-btn');
+    if (docxBtn && currentBatchId) {
+        docxBtn.href = `/api/report/docx?batch_id=${encodeURIComponent(currentBatchId)}`;
+    }
 }
 
 function connectSSE() {
