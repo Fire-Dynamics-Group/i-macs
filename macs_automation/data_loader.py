@@ -5,8 +5,19 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Optional
 
-_FALLBACK_DATA_PATH = Path(r"C:\Program Files (x86)\MACS+\EN\Data\Data.xml")
-DEFAULT_DATA_PATH = Path(os.environ["MACS_DATA_PATH"]) if "MACS_DATA_PATH" in os.environ else _FALLBACK_DATA_PATH
+def _find_macs_data_xml() -> Path:
+    """Auto-detect Data.xml by searching for MACS+* folders in Program Files (x86)."""
+    prog_x86 = Path(r"C:\Program Files (x86)")
+    if prog_x86.is_dir():
+        matches = sorted(prog_x86.glob("MACS+*"), reverse=True)
+        for macs_dir in matches:
+            candidate = macs_dir / "EN" / "Data" / "Data.xml"
+            if candidate.is_file():
+                return candidate
+    return Path(r"C:\Program Files (x86)\MACS+\EN\Data\Data.xml")
+
+
+DEFAULT_DATA_PATH = Path(os.environ["MACS_DATA_PATH"]) if "MACS_DATA_PATH" in os.environ else _find_macs_data_xml()
 
 SECTION_FAMILIES = ["IPE", "HE", "HL", "HD", "UB", "UC", "UBP", "HPUK", "W", "HPUS", "H"]
 
