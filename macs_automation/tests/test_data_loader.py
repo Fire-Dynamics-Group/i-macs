@@ -98,8 +98,10 @@ class TestLoadSections:
         assert he200["h"] == 200.0
 
     def test_total_section_count(self, sample_root):
+        from macs_automation.blue_book_sections import UB_SECTIONS
         sections = _load_all_sections(sample_root)
-        assert len(sections) == 3  # IPE_300, IPE_500, HE_200B
+        # 3 from sample XML + all Blue Book UB sections (no overlap)
+        assert len(sections) == 3 + len(UB_SECTIONS)
 
 
 class TestLoadDecks:

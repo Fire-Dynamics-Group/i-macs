@@ -5,6 +5,8 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Optional
 
+from macs_automation.blue_book_sections import get_blue_book_sections
+
 def _find_macs_data_xml() -> Path:
     """Auto-detect Data.xml by searching for MACS+* folders in Program Files (x86)."""
     prog_x86 = Path(r"C:\Program Files (x86)")
@@ -48,6 +50,8 @@ def _load_all_sections(root: ET.Element) -> dict:
     """Load all section families into a single flat dict keyed by section ID.
 
     Each value is a dict with: family, grade, h, b, tw, tf, name.
+    Blue Book UB sections are merged in, filling any gaps not present in
+    Data.xml so the complete UB catalogue is always available.
     """
     sections = {}
     for family in SECTION_FAMILIES:
@@ -67,6 +71,12 @@ def _load_all_sections(root: ET.Element) -> dict:
                 "tf": float(sec.get("tf", 0)),
                 "name": (sec.text or "").strip(),
             }
+
+    # Merge Blue Book UB sections — add any not already present in Data.xml
+    for sec_id, sec in get_blue_book_sections().items():
+        if sec_id not in sections:
+            sections[sec_id] = sec
+
     return sections
 
 

@@ -70,6 +70,36 @@ CREATE TABLE IF NOT EXISTS time_series (
 );
 
 CREATE INDEX IF NOT EXISTS idx_time_series_run_id ON time_series(run_id);
+
+CREATE TABLE IF NOT EXISTS custom_sections (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    h REAL NOT NULL,
+    b REAL NOT NULL,
+    tw REAL NOT NULL,
+    tf REAL NOT NULL,
+    created_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS custom_decks (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    deck_type TEXT NOT NULL,
+    deck_depth REAL NOT NULL,
+    deck_trug REAL NOT NULL,
+    deck_top REAL NOT NULL,
+    deck_bot REAL NOT NULL,
+    deck_stiff_height REAL NOT NULL,
+    created_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS custom_meshes (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    main_area REAL NOT NULL,
+    trans_area REAL NOT NULL,
+    created_at TEXT
+);
 """
 
 
@@ -520,6 +550,138 @@ class ResultsDB:
             (batch_id,),
         )
         return cursor.fetchall()
+
+    # ─── Custom sections CRUD ─────────────────────────────────────────────
+
+    def add_custom_section(self, name: str, h: float, b: float,
+                           tw: float, tf: float) -> str:
+        """Add a custom beam section and return its generated ID (e.g. CUSTOM_1)."""
+        # Find next available number
+        cursor = self.conn.execute(
+            "SELECT id FROM custom_sections ORDER BY id"
+        )
+        existing_ids = [row[0] for row in cursor.fetchall()]
+        next_num = 1
+        for eid in existing_ids:
+            try:
+                num = int(eid.split("_", 1)[1])
+                if num >= next_num:
+                    next_num = num + 1
+            except (IndexError, ValueError):
+                pass
+        sec_id = f"CUSTOM_{next_num}"
+        now = datetime.now(timezone.utc).isoformat()
+        self.conn.execute(
+            "INSERT INTO custom_sections (id, name, h, b, tw, tf, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (sec_id, name, h, b, tw, tf, now),
+        )
+        self.conn.commit()
+        return sec_id
+
+    def get_custom_sections(self) -> list[dict]:
+        """Return all custom sections ordered by name."""
+        self.conn.row_factory = sqlite3.Row
+        cursor = self.conn.execute(
+            "SELECT * FROM custom_sections ORDER BY name"
+        )
+        rows = [dict(row) for row in cursor.fetchall()]
+        self.conn.row_factory = None
+        return rows
+
+    def delete_custom_section(self, sec_id: str):
+        """Delete a custom section by ID. No error if not found."""
+        self.conn.execute("DELETE FROM custom_sections WHERE id = ?", (sec_id,))
+        self.conn.commit()
+
+    # ─── Custom decks CRUD ───────────────────────────────────────────────
+
+    def add_custom_deck(self, name: str, deck_type: str, deck_depth: float,
+                        deck_trug: float, deck_top: float, deck_bot: float,
+                        deck_stiff_height: float) -> str:
+        """Add a custom deck profile and return its generated ID (e.g. CDECK_1)."""
+        cursor = self.conn.execute(
+            "SELECT id FROM custom_decks ORDER BY id"
+        )
+        existing_ids = [row[0] for row in cursor.fetchall()]
+        next_num = 1
+        for eid in existing_ids:
+            try:
+                num = int(eid.split("_", 1)[1])
+                if num >= next_num:
+                    next_num = num + 1
+            except (IndexError, ValueError):
+                pass
+        deck_id = f"CDECK_{next_num}"
+        now = datetime.now(timezone.utc).isoformat()
+        self.conn.execute(
+            "INSERT INTO custom_decks (id, name, deck_type, deck_depth, deck_trug, "
+            "deck_top, deck_bot, deck_stiff_height, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (deck_id, name, deck_type, deck_depth, deck_trug, deck_top, deck_bot,
+             deck_stiff_height, now),
+        )
+        self.conn.commit()
+        return deck_id
+
+    def get_custom_decks(self) -> list[dict]:
+        """Return all custom decks ordered by name."""
+        self.conn.row_factory = sqlite3.Row
+        cursor = self.conn.execute(
+            "SELECT * FROM custom_decks ORDER BY name"
+        )
+        rows = [dict(row) for row in cursor.fetchall()]
+        self.conn.row_factory = None
+        return rows
+
+    def delete_custom_deck(self, deck_id: str):
+        """Delete a custom deck by ID. No error if not found."""
+        self.conn.execute("DELETE FROM custom_decks WHERE id = ?", (deck_id,))
+        self.conn.commit()
+
+    # ─── Custom meshes CRUD ──────────────────────────────────────────────
+
+    def add_custom_mesh(self, name: str, main_area: float,
+                        trans_area: float) -> str:
+        """Add a custom mesh and return its generated ID (e.g. CMESH_1)."""
+        cursor = self.conn.execute(
+            "SELECT id FROM custom_meshes ORDER BY id"
+        )
+        existing_ids = [row[0] for row in cursor.fetchall()]
+        next_num = 1
+        for eid in existing_ids:
+            try:
+                num = int(eid.split("_", 1)[1])
+                if num >= next_num:
+                    next_num = num + 1
+            except (IndexError, ValueError):
+                pass
+        mesh_id = f"CMESH_{next_num}"
+        now = datetime.now(timezone.utc).isoformat()
+        self.conn.execute(
+            "INSERT INTO custom_meshes (id, name, main_area, trans_area, created_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (mesh_id, name, main_area, trans_area, now),
+        )
+        self.conn.commit()
+        return mesh_id
+
+    def get_custom_meshes(self) -> list[dict]:
+        """Return all custom meshes ordered by name."""
+        self.conn.row_factory = sqlite3.Row
+        cursor = self.conn.execute(
+            "SELECT * FROM custom_meshes ORDER BY name"
+        )
+        rows = [dict(row) for row in cursor.fetchall()]
+        self.conn.row_factory = None
+        return rows
+
+    def delete_custom_mesh(self, mesh_id: str):
+        """Delete a custom mesh by ID. No error if not found."""
+        self.conn.execute("DELETE FROM custom_meshes WHERE id = ?", (mesh_id,))
+        self.conn.commit()
+
+    # ─── Batch-scoped report methods ──────────────────────────────────────
 
     def get_batch_stats(self, batch_id: str) -> dict:
         """Return summary statistics for a specific batch."""
