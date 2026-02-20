@@ -82,12 +82,11 @@ def run_batch_with_callback(
         try:
             if engine_factory:
                 engine = engine_factory()
+                engine.set_inputs(params, sections_db)
+                outputs = engine.run(method=params.get("method", "iso"))
             else:
-                from macs_automation.engine import MACSEngine
-                engine = MACSEngine()
-
-            engine.set_inputs(params, sections_db)
-            outputs = engine.run(method=params.get("method", "iso"))
+                from macs_automation.engine import run_one_com
+                outputs = run_one_com(params, sections_db)
             run_id = db.insert_run(params, outputs=outputs)
         except Exception as e:
             error = f"{type(e).__name__}: {e}"

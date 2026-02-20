@@ -14,7 +14,7 @@ The tool provides a COM-based calculation engine (`FRACOF`) that this automation
 
 - **Version:** MACS+ with the `SCTI11.FRACOF` COM ProgID (current/recent versions)
 - **Download:** MACS+ is available from [the ArcelorMittal sections website](https://sections.arcelormittal.com/design-tools/macs)
-- **Default install path:** `C:\Program Files (x86)\MACS+\`
+- **Default install path:** `C:\Program Files (x86)\MACS+\` or `C:\Program Files (x86)\MACS+_304\` (versioned)
 - **Platform:** Windows only (32-bit COM component)
 
 ### What MACS+ Provides
@@ -68,10 +68,11 @@ The tool provides a COM-based calculation engine (`FRACOF`) that this automation
 To verify MACS+ is correctly installed and accessible:
 
 ```bash
-# Check Data.xml exists at the default path
-python -c "from pathlib import Path; p = Path(r'C:\Program Files (x86)\MACS+\EN\Data\Data.xml'); print(f'Data.xml: {\"FOUND\" if p.exists() else \"NOT FOUND\"}')"
+# Check Data.xml exists (tries MACS+*, then MACS+_304, MACS+)
+python -c "from macs_automation.data_loader import _find_macs_data_xml; p = _find_macs_data_xml(); print(f'Data.xml: {p} ({\"FOUND\" if p.exists() else \"NOT FOUND\"})')"
 
 # Check COM engine is registered
+# Requires 32-bit Python (COM is 32-bit only)
 python -c "import win32com.client; obj = win32com.client.Dispatch('SCTI11.FRACOF'); print('COM engine: OK')"
 ```
 
@@ -106,11 +107,11 @@ The default `Data.xml` path is `C:\Program Files (x86)\MACS+\EN\Data\Data.xml`. 
 
 ### COM ProgID Version
 
-The COM ProgID is hardcoded to `SCTI11.FRACOF` in `engine.py`. Older MACS+ versions may use a different ProgID (e.g., `SCTI9.FRACOF`). If using an older version, update `MACSEngine.PROG_ID` in `engine.py`.
+The engine tries `SCTI11.FRACOF` first, then `SCTI9.FRACOF`, so both current and older MACS+ versions work without configuration.
 
-### Windows Only
+### Windows Only / 32-bit Python Required
 
-The FRACOF COM engine is a Windows-only 32-bit .NET component. This tool cannot run on macOS or Linux.
+The FRACOF COM engine is a Windows-only **32-bit** .NET component. It is registered only in the 32-bit registry (e.g. under `HKLM\SOFTWARE\WOW6432Node\Classes`). **You must use 32-bit Python** to run this automation; 64-bit Python will get "Invalid class string" or "Class not registered" because it cannot see the 32-bit COM registration. This tool cannot run on macOS or Linux.
 
 ## Troubleshooting
 
@@ -118,5 +119,6 @@ The FRACOF COM engine is a Windows-only 32-bit .NET component. This tool cannot 
 |-------|-------|-----|
 | `FileNotFoundError: ...Data.xml` | MACS+ not installed or installed to non-default path | Install MACS+ or set `--data-path` |
 | `pywintypes.com_error: Class not registered` | MACS+ COM engine not registered | Reinstall MACS+ or run `regsvr32` on the DLL |
+| `pywintypes.com_error: Invalid class string` | ProgID not found or 32/64-bit mismatch | Use **32-bit Python** (FRACOF is 32-bit); or reinstall MACS+ |
 | `pywintypes.com_error: ...RPC...` | DllSurrogate configuration issue | Check DCOM settings in Component Services |
 | `AttributeError: module 'win32com' has no attribute 'client'` | pywin32 not installed | `pip install pywin32` |

@@ -15,8 +15,13 @@ dependencies = [
 dev = [
     "pytest>=8.0",
 ]
+# For 32-bit Python when used only as COM bridge (no numpy/scipy needed)
+com-bridge = [
+    "pywin32>=306",
+]
 
 [tool.pytest.ini_options]
 markers = [
-    "com: tests that require the SCTI9.FRACOF COM engine to be registered",
+    "com: tests that require the FRACOF COM engine (32-bit Python + MACS+ installed)",
+    "e2e: end-to-end tests; with COM available run real calculations, otherwise skip with reason",
 ]

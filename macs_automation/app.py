@@ -116,22 +116,24 @@ COM_RUN_DELAY = 0.5    # seconds between successive runs
 
 
 def _run_single_com(params: dict, sections_db: dict) -> dict:
-    """Run a single MACS+ COM call with retries on COM errors."""
-    import pythoncom
+    """Run a single MACS+ COM call with retries on COM errors.
+
+    Uses engine.run_one_com() so it works on both 32-bit (in-process) and
+    64-bit Python (32-bit subprocess bridge).
+    """
+    from macs_automation.engine import run_one_com
     from pywintypes import com_error
 
     last_error = None
     for attempt in range(1, COM_MAX_RETRIES + 1):
         try:
-            pythoncom.CoInitialize()
-            try:
-                from macs_automation.engine import MACSEngine
-                eng = MACSEngine()
-                eng.set_inputs(params, sections_db)
-                return eng.run(method=params.get("method", "iso"))
-            finally:
-                pythoncom.CoUninitialize()
+            return run_one_com(params, sections_db)
         except com_error as e:
+            last_error = e
+            if attempt < COM_MAX_RETRIES:
+                time.sleep(COM_RETRY_DELAY * attempt)
+        except RuntimeError as e:
+            # Bridge or COM failure; retry once in case transient
             last_error = e
             if attempt < COM_MAX_RETRIES:
                 time.sleep(COM_RETRY_DELAY * attempt)
@@ -205,9 +207,7 @@ def api_meshes():
 
 @app.post("/api/runs")
 def api_submit_run(request_body: dict):
-    """Submit a single MACS+ run (synchronous)."""
-    import pythoncom
-
+    """Submit a single MACS+ run (synchronous). Uses run_one_com so 32/64-bit work."""
     data = _get_ref_data()
     params = dict(DEFAULTS)
 
@@ -221,14 +221,7 @@ def api_submit_run(request_body: dict):
     resolve_mesh(params, data["meshes"])
 
     try:
-        pythoncom.CoInitialize()
-        try:
-            from macs_automation.engine import MACSEngine
-            engine = MACSEngine()
-            engine.set_inputs(params, data["sections"])
-            outputs = engine.run(method=params.get("method", "iso"))
-        finally:
-            pythoncom.CoUninitialize()
+        outputs = _run_single_com(params, data["sections"])
     except Exception as e:
         error_msg = f"{type(e).__name__}: {e}"
         db = _get_db()

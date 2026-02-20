@@ -165,31 +165,36 @@ class TestSetInputs:
 
 
 @pytest.mark.com
+@pytest.mark.e2e
 class TestCOMIntegration:
-    """Integration tests requiring the actual COM engine.
+    """Integration tests requiring the actual COM engine (32-bit Python + MACS+).
 
-    Run with: pytest -m com
+    Run with: pytest -m com   (skips with clear reason if COM/Data not available)
     """
 
     @pytest.fixture
     def real_data(self):
-        from macs_automation.data_loader import load_data
-        from macs_automation.data_loader import DEFAULT_DATA_PATH
-        if not DEFAULT_DATA_PATH.exists():
-            pytest.skip("MACS+ not installed")
+        from macs_automation.tests.conftest import com_and_data_available
+        from macs_automation.data_loader import load_data, DEFAULT_DATA_PATH
+
+        ok, reason = com_and_data_available()
+        if not ok:
+            pytest.skip(reason)
         return load_data(DEFAULT_DATA_PATH)
 
     def test_iso_fire_default_params(self, real_data):
-        """Run a single ISO fire analysis with defaults and verify outputs."""
+        """Run a single ISO fire analysis with defaults and verify outputs.
+
+        Uses run_one_com() so it works on both 32-bit (in-process) and 64-bit (bridge).
+        """
         from macs_automation.sweep import DEFAULTS, resolve_deck, resolve_mesh
+        from macs_automation.engine import run_one_com
 
         params = dict(DEFAULTS)
         resolve_deck(params, real_data["decks"])
         resolve_mesh(params, real_data["meshes"])
 
-        engine = MACSEngine()
-        engine.set_inputs(params, real_data["sections"])
-        outputs = engine.run(method="iso")
+        outputs = run_one_com(params, real_data["sections"])
 
         assert "comp_failure" in outputs
         assert "uf_max" in outputs

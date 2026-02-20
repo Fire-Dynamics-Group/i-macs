@@ -2,9 +2,18 @@
 
 Uses explicit IDispatch.Invoke calls to work reliably through the
 DllSurrogate (32-bit .NET COM called from 64-bit Python).
+
+When running on 64-bit Python, run_one_com() uses a 32-bit Python subprocess
+(com_bridge) so the main app can stay on 64-bit. Set PYTHON32 to the path of
+your 32-bit Python executable if auto-detection fails.
 """
 
+import json
+import os
+import subprocess
+import sys
 import time
+from pathlib import Path
 from typing import Optional
 
 import pythoncom
@@ -31,7 +40,10 @@ class COMProxy:
         cache = object.__getattribute__(self, "_cache")
         if name not in cache:
             disp = object.__getattribute__(self, "_disp")
-            cache[name] = disp.GetIDsOfNames(0, name)
+            try:
+                cache[name] = disp.GetIDsOfNames(0, name)
+            except Exception as e:
+                raise RuntimeError(f"Unknown COM name {name!r}: {e}") from e
         return cache[name]
 
     def __setattr__(self, name: str, value):
@@ -60,12 +72,33 @@ class COMProxy:
 class MACSEngine:
     """Wrapper around the FRACOF COM object."""
 
-    # ProgID for the FRACOF COM engine. Newer MACS+ versions use SCTI11.
-    PROG_ID = "SCTI11.FRACOF"
+    # ProgIDs for the FRACOF COM engine. Try SCTI11 (newer) first, then SCTI9 (older MACS+).
+    PROG_IDS = ("SCTI11.FRACOF", "SCTI9.FRACOF")
 
     def __init__(self):
         import win32com.client
-        raw = win32com.client.Dispatch(self.PROG_ID)
+        from pywintypes import com_error
+        raw = None
+        last_error = None
+        # -2147221164 = REGDB_E_CLASSNOTREG "Class not registered"
+        # -2147221005 = CO_E_INVALID_OBJECT "Invalid class string" (ProgID not found / 32-bit vs 64-bit)
+        retryable_codes = (-2147221164, -2147221005)
+        for prog_id in self.PROG_IDS:
+            try:
+                raw = win32com.client.Dispatch(prog_id)
+                break
+            except com_error as e:
+                if e.args[0] in retryable_codes:
+                    last_error = e
+                    continue
+                raise
+        if raw is None:
+            raise RuntimeError(
+                "FRACOF COM engine not available (Class not registered / Invalid class string). "
+                "MACS+ must be installed; the installer registers SCTI11.FRACOF or SCTI9.FRACOF. "
+                "If you see this with MACS+ installed, try 32-bit Python (the COM engine is 32-bit). "
+                "Check: python -c \"import win32com.client; win32com.client.Dispatch('SCTI11.FRACOF')\""
+            ) from last_error
         self.engine = COMProxy(raw)
 
     def set_inputs(self, params: dict, sections_db: dict):
@@ -193,16 +226,26 @@ class MACSEngine:
         outputs["duration_ms"] = duration_ms
         return outputs
 
+    def _get_output(self, *com_names: str, default: float = 0.0):
+        """Try reading a COM property with several name variants (MACS+ version differences)."""
+        eng = self.engine
+        for name in com_names:
+            try:
+                return float(getattr(eng, name))
+            except (RuntimeError, TypeError, AttributeError):
+                continue
+        return default
+
     def _read_outputs(self) -> dict:
         """Read all output values from the engine after a calculation."""
         eng = self.engine
         result = {}
 
-        # Summary outputs (Calc.js lines 343-349)
+        # Summary outputs (Calc.js lines 343-349); try name variants for MACS+ version differences
         result["comp_failure"] = int(eng.COMPFAILURE)
-        result["mb1_reqd"] = float(eng.Mb1_Reqd)
-        result["mb2_reqd"] = float(eng.Mb2_Reqd)
-        result["factored_hot"] = float(eng.factored_hot)
+        result["mb1_reqd"] = self._get_output("Mb1_Reqd", "Mb1Reqd", "mb1_reqd")
+        result["mb2_reqd"] = self._get_output("Mb2_Reqd", "Mb2Reqd", "mb2_reqd")
+        result["factored_hot"] = self._get_output("factored_hot", "Factored_hot")
 
         # Perimeter beam results (Calc.js lines 407-414)
         result["side_a_load_ratio"] = float(eng.SideALoadRatio)
@@ -312,3 +355,85 @@ def _set_cell_beam_data(eng, sections_db: dict, params: dict, sec_size: str,
     setattr(eng, width_prop, sec["b"])
     setattr(eng, web_prop, sec["tw"])
     setattr(eng, flange_prop, sec["tf"])
+
+
+def _find_python32() -> Optional[str]:
+    """Return path to 32-bit Python, or None. Prefer PYTHON32 env; else try py -3-32."""
+    exe = os.environ.get("PYTHON32")
+    if exe and Path(exe).exists():
+        return exe
+    if sys.platform != "win32":
+        return None
+    try:
+        r = subprocess.run(
+            ["py", "-3-32", "-c", "import sys; print(sys.executable)"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if r.returncode == 0 and r.stdout:
+            exe = r.stdout.strip()
+            if exe and Path(exe).exists():
+                return exe
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        pass
+    return None
+
+
+def run_one_com(params: dict, sections_db: dict) -> dict:
+    """Run one FRACOF calculation. Works on 32-bit (in-process) or 64-bit (subprocess).
+
+    On 64-bit Python, spawns a 32-bit Python subprocess (macs_automation.com_bridge)
+    so the COM engine can load. Requires 32-bit Python installed; set PYTHON32
+    to its path if auto-detection fails.
+
+    Returns:
+        Output dict from the engine (comp_failure, uf_max, time_series, etc.).
+
+    Raises:
+        RuntimeError: If 64-bit and no 32-bit Python found, or bridge returns an error.
+    """
+    if sys.maxsize <= 2**32:
+        # 32-bit: run in-process
+        import pythoncom
+        pythoncom.CoInitialize()
+        try:
+            eng = MACSEngine()
+            eng.set_inputs(params, sections_db)
+            return eng.run(method=params.get("method", "iso"))
+        finally:
+            pythoncom.CoUninitialize()
+
+    # 64-bit: run via 32-bit subprocess
+    python32 = _find_python32()
+    if not python32:
+        raise RuntimeError(
+            "FRACOF COM is 32-bit only. On 64-bit Python we need a 32-bit Python for COM. "
+            "Install 32-bit Python, then either set PYTHON32 to its path "
+            "(e.g. C:\\Python310-32\\python.exe) or use the Windows 'py' launcher with a 32-bit "
+            "install (e.g. py -3-32)."
+        )
+    pkg_dir = Path(__file__).resolve().parent
+    payload = json.dumps({"params": params, "sections_db": sections_db})
+    try:
+        proc = subprocess.run(
+            [python32, "-m", "macs_automation.com_bridge"],
+            input=payload,
+            capture_output=True,
+            text=True,
+            timeout=300,
+            cwd=pkg_dir.parent,
+        )
+    except subprocess.TimeoutExpired:
+        raise RuntimeError("COM bridge timed out (32-bit subprocess)")
+    out_line = (proc.stdout or "").strip()
+    if not out_line:
+        err = (proc.stderr or "").strip() or "No output from COM bridge"
+        raise RuntimeError(f"COM bridge failed: {err}")
+    try:
+        result = json.loads(out_line)
+    except json.JSONDecodeError as e:
+        raise RuntimeError(f"COM bridge invalid output: {e}")
+    if "error" in result:
+        raise RuntimeError(result["error"])
+    return result

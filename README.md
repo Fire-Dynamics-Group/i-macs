@@ -2,83 +2,120 @@
 
 Automated parameter sweep runner for the [MACS+](https://www.macs-steel.org/) / FRACOF fire engineering calculation engine. Run hundreds or thousands of composite floor slab analyses via CLI or live web dashboard, with results stored in SQLite for reporting.
 
+---
+
+## How to run the dashboard (quick start)
+
+From the project folder in PowerShell or Command Prompt:
+
+```bash
+python run_dashboard.py
+```
+
+- Starts the server at **http://localhost:8000**
+- Opens that URL in your default browser
+- If you use 64-bit Python, the script sets **PYTHON32** automatically when it finds 32-bit Python (so COM calculations work)
+
+To stop the server: press **Ctrl+C** in the terminal. If you get “port 8000 already in use”, another instance is still running — close that terminal or run `taskkill /PID <pid> /F` after finding the PID with `netstat -ano | findstr :8000`.
+
+---
+
+## First-time setup
+
+1. **Clone and install (main Python — 64-bit or 32-bit):**
+   ```bash
+   git clone https://github.com/<your-org>/macs-automation.git
+   cd macs-automation
+   pip install -e .
+   ```
+
+2. **If you use 64-bit Python** — install 32-bit Python and this project into it (needed for COM):
+   - Install [32-bit Python](https://www.python.org/downloads/) (e.g. “Windows installer (32-bit)”).
+   - From the project folder, run (use your actual 32-bit path):
+     ```bash
+     path\to\python32\python.exe -m pip install -e . --no-deps
+     path\to\python32\python.exe -m pip install "pywin32>=306"
+     ```
+   - Optional: set **PYTHON32** so the dashboard finds it (e.g. in PowerShell):
+     ```powershell
+     $env:PYTHON32 = "C:\Users\YOU\AppData\Local\Programs\Python\Python313-32\python.exe"
+     ```
+     If you don’t set it, `run_dashboard.py` will try to use `py -3-32` when available.
+
+3. **MACS+** must be installed (e.g. `C:\Program Files (x86)\MACS+_304\`) for real calculations. Without it, the dashboard still runs but runs will fail with a COM error.
+
+---
+
+## Running the dashboard (all options)
+
+| What you want | Command |
+|---------------|--------|
+| **Easiest** — start server + open browser, auto-detect 32-bit Python | `python run_dashboard.py` |
+| **Manual** — start server only (then open http://localhost:8000 yourself) | `python -m uvicorn macs_automation.app:app --host localhost --port 8000` |
+| **With reload** (code changes restart server) | `python -m uvicorn macs_automation.app:app --host localhost --port 8000 --reload` |
+
+If you use 64-bit Python and have set **PYTHON32**, start the server in the same terminal (or the same environment) so it sees the variable. Or use `run_dashboard.py`, which sets it for you when possible.
+
+---
+
 ## Prerequisites
 
 - **Windows** (required — the FRACOF engine is a Windows COM server)
-- **Python 3.10+**
-- **MACS+ installed** — the installer registers the `SCTI11.FRACOF` COM object that this tool drives. Without it, real calculations cannot run (tests still pass via mocks).
+- **Python 3.10+** (32-bit or 64-bit)
+- **MACS+ installed** (e.g. `C:\Program Files (x86)\MACS+_304\`) for real calculations; the dashboard runs without it but runs will error until MACS+ is installed.
 
-## Setup
+The FRACOF COM engine is 32-bit only: use 32-bit Python, or 64-bit Python with 32-bit Python also installed and the setup above.
 
-```bash
-git clone https://github.com/<your-org>/macs-automation.git
-cd macs-automation
-pip install -r requirements.txt
-```
+---
 
-### Verify installation
+## Verify installation
 
 ```bash
 python -m pytest macs_automation/tests/
 ```
 
-All tests should pass without MACS+ installed — COM calls are mocked.
+All tests should pass without MACS+ installed (COM calls are mocked).
 
-## Environment Variables
+### End-to-end tests (real COM)
 
-| Variable | Default | Description |
-|---|---|---|
-| `MACS_DATA_PATH` | `C:\Program Files (x86)\MACS+\EN\Data\Data.xml` | Path to the MACS+ reference data XML (sections, decks, meshes) |
-| `MACS_DB_PATH` | `results.db` | SQLite database path (used by the web dashboard) |
+```bash
+python -m pytest macs_automation/tests/test_e2e_real.py macs_automation/tests/test_engine.py -m e2e -v
+```
 
-If MACS+ is installed in the default location, no environment variables are needed.
+- With 32-bit Python + MACS+, or 64-bit + 32-bit + MACS+: runs one real calculation.
+- Otherwise: tests skip with a clear reason.
+
+---
+
+## Environment variables
+
+| Variable | Description |
+|----------|-------------|
+| `PYTHON32` | Path to 32-bit Python (e.g. `C:\...\Python313-32\python.exe`). Only needed if you use 64-bit Python; `run_dashboard.py` can auto-detect via `py -3-32`. |
+| `MACS_DATA_PATH` | Override path to Data.xml (default: auto-detected under `MACS+*` / `MACS+_304`). |
+| `MACS_DB_PATH` | SQLite database path (default: `results.db`). |
+
+---
 
 ## Usage
 
-### CLI — Batch Sweep
-
-Create a YAML config defining the parameter space, then run:
+### CLI — Batch sweep
 
 ```bash
 python -m macs_automation.main --config config_example.yaml --db results.db
 ```
 
-Runs are resumable by default — re-running the same command skips already-completed cases. Use `--no-resume` to force re-run.
+Runs are resumable by default. Use `--no-resume` to force re-run.
 
-#### CLI Options
+**Options:** `--config`, `--db`, `--no-resume`, `--list-sections`, `--list-decks`, `--list-meshes`, `--data-path`.
 
-```
---config CONFIG    Path to sweep configuration YAML (required for batch runs)
---db DB            Path to SQLite results database (default: results.db)
---no-resume        Don't skip already-completed runs
---list-sections    List all available steel sections
---list-decks       List all available deck types
---list-meshes      List all available mesh types
---data-path PATH   Override path to Data.xml
-```
+### Web dashboard (already described above)
 
-### Web Dashboard
+Use `python run_dashboard.py` or the uvicorn commands above. The dashboard provides:
 
-Launch the live dashboard to monitor runs and download reports:
-
-```bash
-uvicorn macs_automation.web.app:create_app --factory --reload
-```
-
-Then open http://localhost:8000. The dashboard shows:
-
-- Real-time progress via Server-Sent Events (SSE)
-- Interactive Plotly.js charts (temperatures, capacities, pass/fail scatter)
-- Batch control (start/stop runs from the browser)
-- Report download (ZIP with 9 CSVs + 4 PNG plots)
-
-### Desktop GUI
-
-A Tkinter-based desktop interface for configuring and launching single analyses or sweeps:
-
-```bash
-python -m macs_automation.app
-```
+- Config page (grid sweep or LHS), run single or batch
+- Real-time progress (SSE), charts, stop button
+- Results and report download (ZIP)
 
 ## Sweep Configuration
 

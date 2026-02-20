@@ -85,6 +85,11 @@ function updateProgress(progress) {
     document.getElementById('progress-bar').value = pct;
     document.getElementById('status-label').textContent =
         `Running... ${progress.completed}/${progress.total} (${Math.round(pct)}%)`;
+
+    const stopBtn = document.getElementById('stop-batch-btn');
+    if (stopBtn) {
+        stopBtn.style.display = (progress.total > 0 && progress.completed < progress.total) ? 'inline-block' : 'none';
+    }
 }
 
 function addRunToScatter(data) {
@@ -188,10 +193,13 @@ function handleRunComplete(data) {
 }
 
 function handleBatchComplete(data) {
-    document.getElementById('status-label').textContent = 'Batch Complete';
+    const cancelled = data.status === 'cancelled';
+    document.getElementById('status-label').textContent = cancelled ? 'Cancelled' : 'Batch Complete';
+    document.getElementById('stop-batch-btn').style.display = 'none';
     document.getElementById('batch-summary').style.display = 'block';
-    document.getElementById('summary-text').textContent =
-        `Completed ${data.completed} runs with ${data.errors} errors in ${formatTime(data.elapsed_seconds)}.`;
+    document.getElementById('summary-text').textContent = cancelled
+        ? `Stopped after ${data.completed} runs (${data.errors} errors) in ${formatTime(data.elapsed_seconds)}.`
+        : `Completed ${data.completed} runs with ${data.errors} errors in ${formatTime(data.elapsed_seconds)}.`;
 }
 
 function connectSSE() {
@@ -210,6 +218,7 @@ function connectSSE() {
     evtSource.addEventListener('batch_error', (e) => {
         const data = JSON.parse(e.data);
         document.getElementById('status-label').textContent = `Error: ${data.error}`;
+        document.getElementById('stop-batch-btn').style.display = 'none';
     });
 
     evtSource.onerror = () => {
@@ -217,8 +226,22 @@ function connectSSE() {
     };
 }
 
+// ─── Stop button ────────────────────────────────────────────────────────────
+function setupStopButton() {
+    document.getElementById('stop-batch-btn').addEventListener('click', () => {
+        const btn = document.getElementById('stop-batch-btn');
+        btn.disabled = true;
+        btn.textContent = 'Stopping…';
+        fetch('/api/batch/cancel', { method: 'POST' })
+            .then((r) => r.json())
+            .then(() => { btn.textContent = 'Stop'; btn.disabled = false; })
+            .catch(() => { btn.textContent = 'Stop'; btn.disabled = false; });
+    });
+}
+
 // ─── Initialize ────────────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', () => {
     initCharts();
+    setupStopButton();
     connectSSE();
 });

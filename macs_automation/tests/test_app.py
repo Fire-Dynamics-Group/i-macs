@@ -138,6 +138,16 @@ class TestRunEndpoints:
         assert len(data) == 1
         assert data[0]["time_min"] == 5.0
 
+    def test_post_runs_uses_run_one_com(self, client):
+        """POST /api/runs must use _run_single_com (run_one_com) so 32/64-bit bridge works."""
+        with patch("macs_automation.app._run_single_com") as mock_run:
+            mock_run.return_value = {"uf_max": 0.5, "duration_ms": 100, "comp_failure": 0, "time_series": []}
+            resp = client.post("/api/runs", json={"method": "iso"})
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "id" in data and data.get("uf_max") == 0.5
+        mock_run.assert_called_once()
+
 
 class TestSweepLHS:
     def test_lhs_sweep_starts(self, client):
@@ -681,16 +691,10 @@ class TestCOMRetry:
         mock_outputs = {"uf_max": 0.5, "duration_ms": 100}
         params = {"method": "iso", "span1": 9.0}
 
-        with patch("macs_automation.engine.MACSEngine") as MockEngine, \
-             patch("pythoncom.CoInitialize"), \
-             patch("pythoncom.CoUninitialize"):
-            engine_inst = MagicMock()
-            engine_inst.run.return_value = mock_outputs
-            MockEngine.return_value = engine_inst
-
+        with patch("macs_automation.engine.run_one_com", return_value=mock_outputs) as mock_run:
             result = _run_single_com(params, {})
             assert result == mock_outputs
-            assert MockEngine.call_count == 1
+            assert mock_run.call_count == 1
 
     def test_retries_on_com_error_then_succeeds(self):
         """Retries after COM error and succeeds on second attempt."""
@@ -698,51 +702,36 @@ class TestCOMRetry:
         mock_outputs = {"uf_max": 0.5, "duration_ms": 100}
         params = {"method": "iso"}
 
-        with patch("macs_automation.engine.MACSEngine") as MockEngine, \
-             patch("pythoncom.CoInitialize"), \
-             patch("pythoncom.CoUninitialize"), \
+        with patch("macs_automation.engine.run_one_com") as mock_run, \
              patch("time.sleep"):
-            engine_inst = MagicMock()
-            engine_inst.run.side_effect = [
+            mock_run.side_effect = [
                 com_error(-2147023179, "The interface is unknown.", None, None),
                 mock_outputs,
             ]
-            MockEngine.return_value = engine_inst
-
             result = _run_single_com(params, {})
             assert result == mock_outputs
-            assert MockEngine.call_count == 2
+            assert mock_run.call_count == 2
 
     def test_raises_after_max_retries(self):
         """Raises the COM error after exhausting all retries."""
         from pywintypes import com_error
         params = {"method": "iso"}
 
-        with patch("macs_automation.engine.MACSEngine") as MockEngine, \
-             patch("pythoncom.CoInitialize"), \
-             patch("pythoncom.CoUninitialize"), \
+        with patch("macs_automation.engine.run_one_com") as mock_run, \
              patch("time.sleep"):
-            engine_inst = MagicMock()
-            engine_inst.run.side_effect = com_error(
+            mock_run.side_effect = com_error(
                 -2147023179, "The interface is unknown.", None, None
             )
-            MockEngine.return_value = engine_inst
-
             with pytest.raises(com_error):
                 _run_single_com(params, {})
-            assert MockEngine.call_count == 3  # COM_MAX_RETRIES
+            assert mock_run.call_count == 3  # COM_MAX_RETRIES
 
     def test_non_com_error_not_retried(self):
         """Non-COM exceptions propagate immediately without retry."""
         params = {"method": "iso"}
 
-        with patch("macs_automation.engine.MACSEngine") as MockEngine, \
-             patch("pythoncom.CoInitialize"), \
-             patch("pythoncom.CoUninitialize"):
-            engine_inst = MagicMock()
-            engine_inst.run.side_effect = ValueError("bad param")
-            MockEngine.return_value = engine_inst
-
+        with patch("macs_automation.engine.run_one_com") as mock_run:
+            mock_run.side_effect = ValueError("bad param")
             with pytest.raises(ValueError, match="bad param"):
                 _run_single_com(params, {})
-            assert MockEngine.call_count == 1  # no retry
+            assert mock_run.call_count == 1  # no retry

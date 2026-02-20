@@ -8,6 +8,16 @@
     width: 100%;
 }
 
+#progress-card header {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+}
+#progress-card header #status-label {
+    flex: 1;
+    min-width: 0;
+}
 #progress-card progress {
     width: 100%;
     height: 24px;

@@ -1,8 +1,54 @@
 """Shared test fixtures for MACS+ automation tests."""
 
+import sys
+
 import pytest
 
 from macs_automation.db import ResultsDB
+
+
+def com_and_data_available():
+    """Check if real COM engine and Data.xml are available.
+
+    On 32-bit Python: requires MACS+ (Data.xml + COM registered).
+    On 64-bit Python: requires Data.xml + 32-bit Python for the bridge (set PYTHON32 or use py -3-32).
+
+    Returns:
+        (available: bool, skip_reason: str | None)
+        If available is False, skip_reason is a message for pytest.skip().
+    """
+    try:
+        from macs_automation.data_loader import DEFAULT_DATA_PATH, load_data
+        if not DEFAULT_DATA_PATH.exists():
+            return False, (
+                f"Data.xml not found at {DEFAULT_DATA_PATH}. "
+                "Install MACS+ or set MACS_DATA_PATH."
+            )
+        load_data(DEFAULT_DATA_PATH)
+    except Exception as e:
+        return False, f"Data.xml load failed: {e}"
+
+    if sys.maxsize <= 2**32:
+        try:
+            from macs_automation.engine import MACSEngine
+            MACSEngine()
+        except RuntimeError as e:
+            return False, (
+                f"COM engine not available: {e}. "
+                "Install MACS+ (or use 32-bit Python if already installed)."
+            )
+        except Exception as e:
+            return False, f"COM engine init failed: {type(e).__name__}: {e}"
+        return True, None
+
+    # 64-bit: need 32-bit Python for the bridge
+    from macs_automation.engine import _find_python32
+    if not _find_python32():
+        return False, (
+            "FRACOF COM is 32-bit only. On 64-bit Python, install 32-bit Python and set "
+            "PYTHON32 to its path, or use the py launcher (e.g. py -3-32)."
+        )
+    return True, None
 
 
 def _make_time_series(n_steps=12, uf_peak=0.85, capacity_base=700.0):
