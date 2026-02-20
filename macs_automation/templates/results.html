@@ -63,7 +63,7 @@
         </thead>
         <tbody>
             {% for run in batch.runs %}
-            <tr class="clickable-row" data-href="/results/{{ run.id }}" style="cursor:pointer;">
+            <tr class="clickable-row {% if loop.index > 3 %}run-row-extra{% endif %}" data-href="/results/{{ run.id }}" style="{% if loop.index > 3 %}display:none;{% endif %}cursor:pointer;">
                 <td>{{ loop.index }}</td>
                 {% for col in batch.varying_cols %}
                 <td>{% if run[col] is not none %}{{ "%.2f"|format(run[col]) if run[col] is number else run[col] }}{% else %}&mdash;{% endif %}</td>
@@ -91,6 +91,13 @@
                     {% endif %}
                 </td>
             </tr>
+            {% if loop.index == 3 and batch.runs|length > 3 %}
+            <tr class="toggle-runs-row" data-total="{{ batch.runs|length }}" style="cursor:pointer; font-weight:bold; background:var(--pico-muted-border-color, #e0e0e0);">
+                <td colspan="{{ 3 + (batch.varying_cols|length) }}" style="text-align:center; padding:0.5rem;">
+                    Show all {{ batch.runs|length }} runs &darr;
+                </td>
+            </tr>
+            {% endif %}
             {% endfor %}
         </tbody>
     </table>
@@ -176,6 +183,21 @@
 document.querySelectorAll('.clickable-row').forEach(row => {
     row.addEventListener('click', () => {
         window.location.href = row.dataset.href;
+    });
+});
+
+document.querySelectorAll('.toggle-runs-row').forEach(toggleRow => {
+    toggleRow.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const tbody = toggleRow.closest('tbody');
+        const extra = tbody.querySelectorAll('.run-row-extra');
+        const total = parseInt(toggleRow.dataset.total, 10);
+        const isHidden = extra[0] && extra[0].style.display === 'none';
+        extra.forEach(tr => {
+            tr.style.display = isHidden ? '' : 'none';
+        });
+        const td = toggleRow.querySelector('td');
+        td.textContent = isHidden ? `Show top 3 only \u2191` : `Show all ${total} runs \u2193`;
     });
 });
 </script>

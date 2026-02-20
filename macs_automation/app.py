@@ -424,16 +424,34 @@ def page_detail(request: Request, run_id: int):
 @app.get("/api/report/docx")
 def api_report_docx(batch_id: str | None = None):
     """Generate and download a DOCX report, optionally filtered to a batch."""
+    import traceback
     from macs_automation.report_docx import generate_batch_docx
     db = _get_db()
-    docx_path = generate_batch_docx(db, batch_id=batch_id)
-    db.close()
+    try:
+        docx_path = generate_batch_docx(db, batch_id=batch_id)
+    except Exception as e:
+        traceback.print_exc()
+        return JSONResponse(
+            {"detail": str(e), "traceback": traceback.format_exc()},
+            status_code=500,
+        )
+    finally:
+        db.close()
     filename = f"macs_report_{batch_id}.docx" if batch_id else "macs_report.docx"
+    # Use str(path) so FileResponse works reliably on Windows (Path can cause 500)
     return FileResponse(
-        docx_path,
+        str(docx_path),
         media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         filename=filename,
     )
+
+
+# 1x1 transparent PNG so chart <img> tags don't break when there's no data
+_PLACEHOLDER_PNG = (
+    b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01"
+    b"\x08\x06\x00\x00\x00\x1f\x15\xc4\x89\x00\x00\x00\nIDATx\x9cc\x00\x01"
+    b"\x00\x00\x05\x00\x01\r\n-\xb4\x00\x00\x00\x00IEND\xaeB`\x82"
+)
 
 
 @app.get("/api/report/chart/{chart_type}")
@@ -441,31 +459,35 @@ def api_report_chart(chart_type: str, batch_id: str | None = None):
     """Serve a PNG chart image for a batch (or all runs).
 
     chart_type: 'scatter' or 'capacity'
+    Returns a placeholder image when there is no data so <img> tags don't break.
     """
     from fastapi.responses import Response
     from macs_automation.report_docx import _render_scatter_chart, _render_timeseries_chart
 
     db = _get_db()
-    if batch_id:
-        runs = db.get_batch_successful_runs(batch_id)
-    else:
-        runs = db.get_successful_runs()
-
     png_bytes = None
-    if chart_type == "scatter":
-        png_bytes = _render_scatter_chart(runs)
-    elif chart_type == "capacity":
-        factored_hot = runs[0].get("factored_hot") if runs else None
-        png_bytes = _render_timeseries_chart(
-            db, "total_plate_capacity",
-            "Total Slab Capacity (kN/m2)",
-            runs, batch_id=batch_id, hline_value=factored_hot,
-        )
+    try:
+        if batch_id:
+            runs = db.get_batch_successful_runs(batch_id)
+        else:
+            runs = db.get_successful_runs()
 
-    db.close()
+        if chart_type == "scatter":
+            png_bytes = _render_scatter_chart(runs)
+        elif chart_type == "capacity":
+            factored_hot = runs[0].get("factored_hot") if runs else None
+            png_bytes = _render_timeseries_chart(
+                db, "total_plate_capacity",
+                "Total Slab Capacity (kN/m2)",
+                runs, batch_id=batch_id, hline_value=factored_hot,
+            )
+    except Exception:
+        png_bytes = None
+    finally:
+        db.close()
 
     if png_bytes is None:
-        return JSONResponse({"error": "No data for chart"}, status_code=404)
+        return Response(content=_PLACEHOLDER_PNG, media_type="image/png")
 
     return Response(content=png_bytes, media_type="image/png")
 

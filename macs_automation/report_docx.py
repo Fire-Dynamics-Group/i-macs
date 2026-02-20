@@ -118,6 +118,9 @@ def _render_timeseries_chart(
         ax.set_xlabel("Time (minutes)")
         ax.set_ylabel(ylabel)
         ax.set_ylim(bottom=0)
+        # Cut off x-axis at actual sim time (zero to last time, no empty extension)
+        if sorted_times:
+            ax.set_xlim(left=0, right=sorted_times[-1])
         ax.legend(loc=legend_loc)
 
         buf = io.BytesIO()
