@@ -30,3 +30,7 @@ Thumbs.db
 
 # Environment
 .env
+
+# PyInstaller
+*.exe
+*.spec
