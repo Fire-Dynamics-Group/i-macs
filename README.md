@@ -2,6 +2,14 @@
 
 Automated parameter sweep runner for the [MACS+](https://www.macs-steel.org/) / FRACOF fire engineering calculation engine. Run hundreds or thousands of composite floor slab analyses via CLI or live web dashboard, with results stored in SQLite for reporting.
 
+## Original project
+
+This automation builds on the original MACS project:
+
+- **Repository:** [https://github.com/Fire-Dynamics-Group/macs.git](https://github.com/Fire-Dynamics-Group/macs.git)
+
+That project automated button clicks for the MACS software and handled data processing, including Latin Hypercube Sampling (LHS) and related workflows. This repo extends that work with the batch runner, dashboard, and SQLite-backed reporting.
+
 ---
 
 ## How to run the dashboard (quick start)
