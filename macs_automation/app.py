@@ -3,16 +3,19 @@
 import threading
 import time
 import uuid
+from collections import OrderedDict
 from pathlib import Path
 from typing import Optional
 
 from fastapi import FastAPI, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
+from pydantic import BaseModel
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from macs_automation.db import ResultsDB
 from macs_automation.data_loader import load_data, DEFAULT_DATA_PATH
+from macs_automation.blue_book_sections import get_blue_book_sections
 from macs_automation.frc_parser import parse_frc_string
 from macs_automation.sweep import DEFAULTS, PARAM_ALIASES, BEAM_SIDE_MAP, resolve_deck, resolve_mesh, generate_combinations
 from macs_automation.sampling import FIRE_LOAD_PRESETS
@@ -40,6 +43,128 @@ def _get_ref_data() -> dict:
 
 def _get_db() -> ResultsDB:
     return ResultsDB(DB_PATH)
+
+
+class CustomSectionBody(BaseModel):
+    name: str
+    h: float
+    b: float
+    tw: float
+    tf: float
+
+
+class CustomDeckBody(BaseModel):
+    name: str
+    deck_type: str
+    deck_depth: float
+    deck_trug: float
+    deck_top: float
+    deck_bot: float
+    deck_stiff_height: float
+
+
+class CustomMeshBody(BaseModel):
+    name: str
+    main_area: float
+    trans_area: float
+
+
+def _get_all_sections() -> OrderedDict:
+    """Merge custom sections (from DB), Blue Book UB, and Data.xml sections.
+
+    Order: Custom sections first, then Blue Book UB sections (sorted by
+    descending depth), then remaining Data.xml sections by family.
+    """
+    data = _get_ref_data()
+    merged = OrderedDict()
+
+    # 1. Custom sections from DB (always first)
+    db = _get_db()
+    try:
+        customs = db.get_custom_sections()
+    finally:
+        db.close()
+
+    for sec in customs:
+        merged[sec["id"]] = {
+            "family": "Custom",
+            "name": f"{sec['name']} (Custom)",
+            "h": sec["h"],
+            "b": sec["b"],
+            "tw": sec["tw"],
+            "tf": sec["tf"],
+        }
+
+    # 2. Blue Book UB sections (sorted largest-to-smallest by h)
+    bb_sections = get_blue_book_sections()
+    for sec_id, sec in sorted(bb_sections.items(), key=lambda x: -x[1]["h"]):
+        if sec_id not in merged:
+            merged[sec_id] = sec
+
+    # 3. Remaining Data.xml sections
+    for sec_id, sec in data["sections"].items():
+        if sec_id not in merged:
+            merged[sec_id] = sec
+
+    return merged
+
+
+def _get_all_decks() -> OrderedDict:
+    """Merge custom decks (from DB) with Data.xml decks.
+
+    Custom decks appear first. Keys match the format resolve_deck() expects.
+    """
+    data = _get_ref_data()
+    merged = OrderedDict()
+
+    db = _get_db()
+    try:
+        customs = db.get_custom_decks()
+    finally:
+        db.close()
+
+    for d in customs:
+        merged[d["id"]] = {
+            "name": f"{d['name']} (Custom)",
+            "deck_type": d["deck_type"],
+            "deck_depth": d["deck_depth"],
+            "deck_trug": d["deck_trug"],
+            "deck_top": d["deck_top"],
+            "deck_bot": d["deck_bot"],
+            "deck_stiff_height": d["deck_stiff_height"],
+        }
+
+    for deck_id, deck in data["decks"].items():
+        merged[deck_id] = deck
+
+    return merged
+
+
+def _get_all_meshes() -> OrderedDict:
+    """Merge custom meshes (from DB) with Data.xml meshes.
+
+    Custom meshes appear first. Keys match the format resolve_mesh() expects.
+    """
+    data = _get_ref_data()
+    merged = OrderedDict()
+
+    db = _get_db()
+    try:
+        customs = db.get_custom_meshes()
+    finally:
+        db.close()
+
+    for m in customs:
+        merged[m["id"]] = {
+            "name": f"{m['name']} (Custom)",
+            "mainArea": m["main_area"],
+            "transArea": m["trans_area"],
+        }
+
+    for mesh_id, mesh in data["meshes"].items():
+        merged[mesh_id] = mesh
+
+    return merged
 
 
 # ─── Display columns for batch results ────────────────────────────────────────
@@ -178,14 +303,115 @@ def _run_sweep_background(combinations: list[dict], sections_db: dict, mode: str
             _sweep_state["active"] = False
 
 
+# ─── API: Custom sections ────────────────────────────────────────────────────
+
+@app.post("/api/custom-sections")
+def api_add_custom_section(body: CustomSectionBody):
+    """Create a new custom beam section."""
+    db = _get_db()
+    sec_id = db.add_custom_section(body.name, body.h, body.b, body.tw, body.tf)
+    sec = {"id": sec_id, "name": body.name, "h": body.h, "b": body.b, "tw": body.tw, "tf": body.tf}
+    db.close()
+    return sec
+
+
+@app.get("/api/custom-sections")
+def api_list_custom_sections():
+    """List all custom beam sections."""
+    db = _get_db()
+    sections = db.get_custom_sections()
+    db.close()
+    return sections
+
+
+@app.delete("/api/custom-sections/{sec_id}")
+def api_delete_custom_section(sec_id: str):
+    """Delete a custom beam section."""
+    db = _get_db()
+    db.delete_custom_section(sec_id)
+    db.close()
+    return {"ok": True}
+
+
+# ─── API: Custom decks ────────────────────────────────────────────────────────
+
+@app.post("/api/custom-decks")
+def api_add_custom_deck(body: CustomDeckBody):
+    """Create a new custom deck profile."""
+    db = _get_db()
+    deck_id = db.add_custom_deck(
+        body.name, body.deck_type, body.deck_depth, body.deck_trug,
+        body.deck_top, body.deck_bot, body.deck_stiff_height,
+    )
+    result = {
+        "id": deck_id, "name": body.name, "deck_type": body.deck_type,
+        "deck_depth": body.deck_depth, "deck_trug": body.deck_trug,
+        "deck_top": body.deck_top, "deck_bot": body.deck_bot,
+        "deck_stiff_height": body.deck_stiff_height,
+    }
+    db.close()
+    return result
+
+
+@app.get("/api/custom-decks")
+def api_list_custom_decks():
+    """List all custom deck profiles."""
+    db = _get_db()
+    decks = db.get_custom_decks()
+    db.close()
+    return decks
+
+
+@app.delete("/api/custom-decks/{deck_id}")
+def api_delete_custom_deck(deck_id: str):
+    """Delete a custom deck profile."""
+    db = _get_db()
+    db.delete_custom_deck(deck_id)
+    db.close()
+    return {"ok": True}
+
+
+# ─── API: Custom meshes ───────────────────────────────────────────────────────
+
+@app.post("/api/custom-meshes")
+def api_add_custom_mesh(body: CustomMeshBody):
+    """Create a new custom mesh."""
+    db = _get_db()
+    mesh_id = db.add_custom_mesh(body.name, body.main_area, body.trans_area)
+    result = {
+        "id": mesh_id, "name": body.name,
+        "main_area": body.main_area, "trans_area": body.trans_area,
+    }
+    db.close()
+    return result
+
+
+@app.get("/api/custom-meshes")
+def api_list_custom_meshes():
+    """List all custom meshes."""
+    db = _get_db()
+    meshes = db.get_custom_meshes()
+    db.close()
+    return meshes
+
+
+@app.delete("/api/custom-meshes/{mesh_id}")
+def api_delete_custom_mesh(mesh_id: str):
+    """Delete a custom mesh."""
+    db = _get_db()
+    db.delete_custom_mesh(mesh_id)
+    db.close()
+    return {"ok": True}
+
+
 # ─── API: Reference data endpoints ───────────────────────────────────────────
 
 @app.get("/api/sections")
 def api_sections():
-    """All sections grouped by family."""
-    data = _get_ref_data()
+    """All sections grouped by family (includes custom and Blue Book)."""
+    all_sections = _get_all_sections()
     grouped = {}
-    for sec_id, sec in data["sections"].items():
+    for sec_id, sec in all_sections.items():
         fam = sec["family"]
         if fam not in grouped:
             grouped[fam] = []
@@ -195,12 +421,12 @@ def api_sections():
 
 @app.get("/api/decks")
 def api_decks():
-    return _get_ref_data()["decks"]
+    return _get_all_decks()
 
 
 @app.get("/api/meshes")
 def api_meshes():
-    return _get_ref_data()["meshes"]
+    return _get_all_meshes()
 
 
 # ─── API: Run endpoints ──────────────────────────────────────────────────────
@@ -208,7 +434,9 @@ def api_meshes():
 @app.post("/api/runs")
 def api_submit_run(request_body: dict):
     """Submit a single MACS+ run (synchronous). Uses run_one_com so 32/64-bit work."""
-    data = _get_ref_data()
+    all_sections = _get_all_sections()
+    all_decks = _get_all_decks()
+    all_meshes = _get_all_meshes()
     params = dict(DEFAULTS)
 
     # Apply user-provided values
@@ -217,11 +445,11 @@ def api_submit_run(request_body: dict):
         params[internal_key] = value
 
     # Resolve deck and mesh
-    resolve_deck(params, data["decks"])
-    resolve_mesh(params, data["meshes"])
+    resolve_deck(params, all_decks)
+    resolve_mesh(params, all_meshes)
 
     try:
-        outputs = _run_single_com(params, data["sections"])
+        outputs = _run_single_com(params, all_sections)
     except Exception as e:
         error_msg = f"{type(e).__name__}: {e}"
         db = _get_db()
@@ -242,7 +470,9 @@ def api_submit_sweep(request_body: dict):
         if _sweep_state["active"]:
             return JSONResponse({"error": "A sweep is already running"}, status_code=409)
 
-    data = _get_ref_data()
+    all_sections = _get_all_sections()
+    all_decks = _get_all_decks()
+    all_meshes = _get_all_meshes()
 
     # Detect mode from request
     mode = "lhs" if request_body.get("sampling") == "lhs" else "sweep"
@@ -262,13 +492,13 @@ def api_submit_sweep(request_body: dict):
 
     # Resolve deck/mesh for each
     for p in combinations:
-        resolve_deck(p, data["decks"])
-        resolve_mesh(p, data["meshes"])
+        resolve_deck(p, all_decks)
+        resolve_mesh(p, all_meshes)
 
     # Start background thread
     t = threading.Thread(
         target=_run_sweep_background,
-        args=(combinations, data["sections"], mode),
+        args=(combinations, all_sections, mode),
         daemon=True,
     )
     t.start()
@@ -355,7 +585,11 @@ async def api_import_frc(file: UploadFile):
 
 @app.get("/", response_class=HTMLResponse)
 def page_config(request: Request):
-    data = _get_ref_data()
+    sections = _get_all_sections()
+    decks = _get_all_decks()
+    meshes = _get_all_meshes()
+    # So the template shows the Custom section block in dropdowns (custom_sections is used in {% if custom_sections %})
+    custom_sections = [sec_id for sec_id, s in sections.items() if s.get("family") == "Custom"]
     # Occupancy presets with distribution info (exclude "Opening Factor" — used internally)
     occupancy_presets = [
         {"name": name, "mean": info["mean"], "type": info["type"], "cov": info["cov"]}
@@ -364,10 +598,11 @@ def page_config(request: Request):
     ]
     return templates.TemplateResponse(request, "config.html", {
         "defaults": DEFAULTS,
-        "sections": data["sections"],
-        "decks": data["decks"],
-        "meshes": data["meshes"],
+        "sections": sections,
+        "decks": decks,
+        "meshes": meshes,
         "occupancy_presets": occupancy_presets,
+        "custom_sections": custom_sections,
     })
 
 

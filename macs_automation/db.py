@@ -708,3 +708,84 @@ class ResultsDB:
             "pass_count": pass_count,
             "fail_count": fail_count,
         }
+
+    # DB column name -> param key for run_row_to_params (only where they differ)
+    _RUN_ROW_PARAM_MAP = {
+        "steel_deck": "SteelDeck",
+        "deck_name": "DeckName",
+        "u_sec_size": "uSecSize",
+        "u_sec_fy": "fy5",
+        "side_a_sec": "SideASecSize",
+        "side_a_fy": "fy1",
+        "side_a_edge": "SideAEdgeFlag",
+        "side_a_composite": "SideACompoFlag",
+        "side_a_sh_con": "SideAsh_con",
+        "side_b_sec": "SideBSecSize",
+        "side_b_fy": "fy2",
+        "side_b_edge": "SideBEdgeFlag",
+        "side_b_composite": "SideBCompoFlag",
+        "side_b_sh_con": "SideBsh_con",
+        "side_c_sec": "SideCSecSize",
+        "side_c_fy": "fy3",
+        "side_c_edge": "SideCEdgeFlag",
+        "side_c_composite": "SideCCompoFlag",
+        "side_c_sh_con": "SideCsh_con",
+        "side_d_sec": "SideDSecSize",
+        "side_d_fy": "fy4",
+        "side_d_edge": "SideDEdgeFlag",
+        "side_d_composite": "SideDCompoFlag",
+        "side_d_sh_con": "SideDsh_con",
+        "sample_index": "_sample_index",
+        "seed": "_seed",
+        "batch_id": "_batch_id",
+    }
+
+    def run_row_to_params(self, run_row: dict) -> dict:
+        """Build an engine params dict from a runs table row (for re-running a failed run)."""
+        params = {}
+        for col, val in run_row.items():
+            if col == "id" or col == "run_timestamp" or col == "error":
+                continue
+            if col in (
+                "comp_failure", "mb1_reqd", "mb2_reqd", "factored_hot",
+                "uf_max", "max_temperature", "max_deflection",
+                "max_slab_cap", "max_beam_cap", "max_total_cap",
+                "side_a_load_ratio", "side_a_critical_temp",
+                "side_b_load_ratio", "side_b_critical_temp",
+                "side_c_load_ratio", "side_c_critical_temp",
+                "side_d_load_ratio", "side_d_critical_temp",
+                "duration_ms",
+            ):
+                continue
+            key = self._RUN_ROW_PARAM_MAP.get(col, col)
+            if val is not None:
+                params[key] = val
+        return params
+
+    def update_run_from_outputs(self, run_id: int, params: dict, outputs: dict) -> None:
+        """Replace a run's error/outputs with new results (e.g. after retry with clamped qf)."""
+        self.conn.execute("DELETE FROM time_series WHERE run_id = ?", (run_id,))
+        set_parts = ["error = NULL"]
+        values = []
+        for col, key in [("qf", "qf"), ("window_percent", "window_percent")]:
+            if key in params:
+                set_parts.append(f"{col} = ?")
+                values.append(params[key])
+        out_cols = [
+            "comp_failure", "mb1_reqd", "mb2_reqd", "factored_hot", "uf_max",
+            "max_temperature", "max_deflection", "max_slab_cap", "max_beam_cap", "max_total_cap",
+            "side_a_load_ratio", "side_a_critical_temp", "side_b_load_ratio", "side_b_critical_temp",
+            "side_c_load_ratio", "side_c_critical_temp", "side_d_load_ratio", "side_d_critical_temp",
+            "duration_ms",
+        ]
+        for c in out_cols:
+            set_parts.append(f"{c} = ?")
+            values.append(outputs.get(c))
+        values.append(run_id)
+        self.conn.execute(
+            f"UPDATE runs SET {', '.join(set_parts)} WHERE id = ?",
+            values,
+        )
+        if outputs.get("time_series"):
+            self._insert_time_series(run_id, outputs["time_series"])
+        self.conn.commit()

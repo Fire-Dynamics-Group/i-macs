@@ -118,6 +118,7 @@ class MACSEngine:
         eng.SideDsh_con = float(params.get("SideDsh_con", 80)) / 100.0
 
         # Direct numeric properties (Calc.js lines 170-174)
+        # Fire load qf: clamp to >= 1.0 MJ/m² — FRACOF thermal analysis is unstable for negative/zero.
         direct_props = [
             "numbeam", "time_limit",
             "SideAEdgeFlag", "SideBEdgeFlag", "SideCEdgeFlag", "SideDEdgeFlag",
@@ -133,7 +134,10 @@ class MACSEngine:
         ]
         for prop in direct_props:
             if prop in params:
-                setattr(eng, prop, _to_numeric(params[prop]))
+                val = _to_numeric(params[prop])
+                if prop == "qf":
+                    val = max(1.0, float(val))  # avoid FRACOF thermal instability
+                setattr(eng, prop, val)
 
         # If no steel deck, set deck_depth = 0 (Calc.js lines 181-184)
         if str(params.get("SteelDeck", "1")) == "0":
