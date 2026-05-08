@@ -1,4 +1,4 @@
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useForm, Controller, type SubmitHandler } from "react-hook-form";
 import { useMutation, useQuery } from "@tanstack/react-query";
@@ -6,10 +6,19 @@ import { useMutation, useQuery } from "@tanstack/react-query";
 import {
   fetchRefData,
   submitRun,
+  submitSweep,
   type RefData,
   type SubmitRunResponse,
+  type SubmitSweepResponse,
 } from "../api/client";
 import { checkForUpdates } from "../lib/updater";
+import { SweepConfigSection } from "../sweep/SweepConfigSection";
+import { VARYABLE_PARAMS } from "../sweep/varyableParams";
+import {
+  buildSweepPayload,
+  toRequestBody,
+  type ValueSource,
+} from "../sweep/buildSweepPayload";
 
 interface FormValues {
   // Geometry
@@ -201,13 +210,66 @@ export default function ConfigPage() {
     });
   }, [refDataQuery.data, reset]);
 
+  const [mode, setMode] = useState<"single" | "sweep">("single");
+  const [varying, setVarying] = useState<Record<string, ValueSource>>({});
+  const [sweepError, setSweepError] = useState<string | null>(null);
+
   const submit = useMutation<SubmitRunResponse, Error, FormValues>({
     mutationFn: (values) => submitRun(values as unknown as Record<string, unknown>),
     onSuccess: (data) => navigate(`/runs/${data.id}`),
   });
 
+  const sweepSubmit = useMutation<SubmitSweepResponse, Error, Record<string, unknown>>({
+    mutationFn: (body) => submitSweep(body),
+    onSuccess: (data) => navigate(`/batches/${data.batch_id}`),
+    onError: (err) => setSweepError(err.message),
+  });
+
+  const sweepPreview = useMemo(() => {
+    if (mode !== "sweep") return null;
+    return buildSweepPayload({
+      analysisMethod: "iso",
+      fixed: {},
+      varying,
+    });
+  }, [mode, varying]);
+
   const onSubmit: SubmitHandler<FormValues> = (values) => {
-    submit.mutate(values);
+    setSweepError(null);
+    if (mode === "single") {
+      submit.mutate(values);
+      return;
+    }
+
+    // Sweep mode: separate fixed values from varying ones, hand the result
+    // off to /api/sweeps and navigate to the dashboard on success.
+    const fixed: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(values)) {
+      if (k === "method") continue;
+      if (k in varying) continue;
+      fixed[k] = v;
+    }
+
+    const result = buildSweepPayload({
+      analysisMethod: values.method,
+      fixed,
+      varying,
+    });
+
+    if (result.totalCombinations === 0) {
+      setSweepError("Pick at least one parameter to vary and give it values.");
+      return;
+    }
+    if (
+      result.totalCombinations > 10000 &&
+      !window.confirm(
+        `This sweep will run ${result.totalCombinations} calculations. Continue?`,
+      )
+    ) {
+      return;
+    }
+
+    sweepSubmit.mutate(toRequestBody(result) as unknown as Record<string, unknown>);
   };
 
   const method = watch("method");
@@ -225,7 +287,23 @@ export default function ConfigPage() {
       <header className="mb-6 flex items-baseline justify-between">
         <h1 className="text-2xl font-semibold tracking-tight">MACS+ Automation</h1>
         <div className="flex items-center gap-3 text-sm text-slate-500">
-          <span>v0.1.0-rc.1 — single-run</span>
+          <div className="inline-flex overflow-hidden rounded border border-slate-300 text-xs">
+            {(["single", "sweep"] as const).map((m) => (
+              <button
+                key={m}
+                type="button"
+                aria-pressed={mode === m}
+                onClick={() => setMode(m)}
+                className={`px-3 py-1 ${
+                  mode === m
+                    ? "bg-blue-700 text-white"
+                    : "bg-white text-slate-700 hover:bg-slate-100"
+                }`}
+              >
+                {m === "single" ? "Single run" : "Sweep"}
+              </button>
+            ))}
+          </div>
           <button
             type="button"
             onClick={() => checkForUpdates({ silent: false })}
@@ -240,6 +318,25 @@ export default function ConfigPage() {
         onSubmit={handleSubmit(onSubmit)}
         className="space-y-6 rounded-md border border-slate-200 bg-white p-6 shadow-sm"
       >
+        {mode === "sweep" && (
+          <>
+            <SweepConfigSection
+              varying={varying}
+              onChange={setVarying}
+              varyableParams={VARYABLE_PARAMS}
+            />
+            {sweepPreview && (
+              <p className="text-xs text-slate-500">
+                Projected total:{" "}
+                <span className="font-semibold text-slate-700">
+                  {sweepPreview.totalCombinations}
+                </span>{" "}
+                calculation{sweepPreview.totalCombinations === 1 ? "" : "s"}
+              </p>
+            )}
+          </>
+        )}
+
         <Section title="Geometry">
           <Grid>
             {numberField("Span 1 (m)", "span1", register, errors)}
@@ -346,15 +443,24 @@ export default function ConfigPage() {
         </Section>
 
         <div className="flex items-center justify-between border-t border-slate-100 pt-4">
-          {submit.isError && (
+          {mode === "single" && submit.isError && (
             <span className="text-sm text-rose-700">{submit.error.message}</span>
+          )}
+          {mode === "sweep" && sweepError && (
+            <span className="text-sm text-rose-700">{sweepError}</span>
           )}
           <button
             type="submit"
-            disabled={submit.isPending}
+            disabled={submit.isPending || sweepSubmit.isPending}
             className="ml-auto rounded bg-blue-700 px-4 py-2 text-sm font-medium text-white hover:bg-blue-800 disabled:opacity-50"
           >
-            {submit.isPending ? "Running…" : "Submit calculation"}
+            {mode === "single"
+              ? submit.isPending
+                ? "Running…"
+                : "Submit calculation"
+              : sweepSubmit.isPending
+                ? "Submitting sweep…"
+                : "Run sweep"}
           </button>
         </div>
       </form>

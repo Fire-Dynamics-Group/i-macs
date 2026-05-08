@@ -3,6 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 
 import { getRun, getRunTimeseries, type Run, type TimeSeriesRow } from "../api/client";
 import { CheckBreakdown } from "../components/CheckBreakdown";
+import { RunTimeseriesChart } from "../sweep/RunTimeseriesChart";
 
 export default function RunDetailPage() {
   const { id } = useParams<{ id: string }>();
@@ -41,6 +42,14 @@ export default function RunDetailPage() {
       {runQuery.data && <RunSummary run={runQuery.data} />}
       {runQuery.data && !runQuery.data.error && (
         <CheckBreakdown checks={runQuery.data.checks ?? []} />
+      )}
+      {tsQuery.data && tsQuery.data.length > 0 && (
+        <section className="mt-6 rounded-md border border-slate-200 bg-white p-4 shadow-sm">
+          <h2 className="mb-2 text-sm font-semibold uppercase tracking-wide text-slate-500">
+            Utilisation + fire temperature
+          </h2>
+          <RunTimeseriesChart rows={tsQuery.data} />
+        </section>
       )}
       {tsQuery.data && <TimeSeriesTable rows={tsQuery.data} />}
     </div>

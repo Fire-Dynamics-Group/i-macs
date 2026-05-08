@@ -666,6 +666,191 @@ class TestBatchResults:
         # Fixed params should include span1 (tuples are col, label, value)
         assert any(col == "span1" for col, label, value in fixed)
 
+class TestRunsListBatchFilter:
+    """Tests for the optional batch_id query parameter on GET /api/runs."""
+
+    def _seed_two_batches(self, db_path):
+        from macs_automation.db import ResultsDB
+        db = ResultsDB(db_path)
+        try:
+            db.insert_batch("batch_alpha", mode="sweep", total_expected=2)
+            db.insert_batch("batch_beta", mode="sweep", total_expected=1)
+            outputs = {
+                "comp_failure": 0, "mb1_reqd": 100.0, "mb2_reqd": 200.0,
+                "factored_hot": 50.0, "uf_max": 0.5,
+                "max_temperature": 900.0, "max_deflection": 120.0,
+                "max_slab_cap": 500.0, "max_beam_cap": 300.0, "max_total_cap": 800.0,
+                "side_a_load_ratio": 0.3, "side_a_critical_temp": 650.0,
+                "side_b_load_ratio": 0.4, "side_b_critical_temp": 620.0,
+                "side_c_load_ratio": 0.35, "side_c_critical_temp": 640.0,
+                "side_d_load_ratio": 0.32, "side_d_critical_temp": 645.0,
+                "duration_ms": 150.0,
+                "time_series": [],
+            }
+            for i in range(2):
+                params = {
+                    "_batch_id": "batch_alpha",
+                    "span1": 9.0 + i, "span2": 9.0,
+                    "method": "iso", "fck": 25, "uSecSize": "IPE_500",
+                }
+                db.insert_run(params, outputs=outputs)
+            db.insert_run(
+                {
+                    "_batch_id": "batch_beta",
+                    "span1": 12.0, "span2": 9.0,
+                    "method": "iso", "fck": 25, "uSecSize": "IPE_500",
+                },
+                outputs=outputs,
+            )
+        finally:
+            db.close()
+
+    def test_filter_returns_only_runs_in_that_batch(self, use_tmp_db):
+        self._seed_two_batches(use_tmp_db)
+        client = TestClient(app)
+        resp = client.get("/api/runs", params={"batch_id": "batch_alpha"})
+        assert resp.status_code == 200
+        runs = resp.json()["runs"]
+        assert len(runs) == 2
+        assert all(r["batch_id"] == "batch_alpha" for r in runs)
+
+    def test_no_filter_returns_all_runs(self, use_tmp_db):
+        self._seed_two_batches(use_tmp_db)
+        client = TestClient(app)
+        resp = client.get("/api/runs")
+        runs = resp.json()["runs"]
+        assert len(runs) == 3
+
+    def test_filter_unknown_batch_returns_empty(self, use_tmp_db):
+        self._seed_two_batches(use_tmp_db)
+        client = TestClient(app)
+        resp = client.get("/api/runs", params={"batch_id": "no-such-batch"})
+        assert resp.status_code == 200
+        assert resp.json()["runs"] == []
+
+
+class TestSSEEvents:
+    """Tests for the SSE event flow.
+
+    The formatter is unit-tested directly; a route-level smoke check confirms
+    /api/sweeps/events is wired with the right content-type. Full HTTP
+    streaming is exercised end-to-end in the Playwright e2e suite — TestClient
+    on Windows blocks on truly-streaming responses, so we don't try to drive
+    an indefinite stream through it here.
+    """
+
+    @staticmethod
+    def _parse_sse(raw_text: str):
+        events: list[tuple] = []
+        event_name = None
+        data_parts: list[str] = []
+        for raw in raw_text.split("\n"):
+            line = raw.rstrip("\r")
+            if line == "":
+                if data_parts:
+                    events.append((event_name, "\n".join(data_parts)))
+                event_name = None
+                data_parts = []
+                continue
+            if line.startswith(":"):
+                continue
+            if line.startswith("event:"):
+                event_name = line[6:].strip()
+            elif line.startswith("data:"):
+                data_parts.append(line[5:].lstrip())
+        return events
+
+    @pytest.mark.asyncio
+    async def test_format_sse_events_emits_run_completed_then_batch_done(self):
+        """The formatter yields one SSE record per event, with the correct
+        event-name line and JSON data, and returns after batch_done."""
+        import asyncio
+        import json
+        from macs_automation.app import _format_sse_events
+        from macs_automation.sse_broker import Broker
+
+        broker = Broker()
+
+        async def collect():
+            chunks = []
+            async for chunk in _format_sse_events(broker):
+                chunks.append(chunk)
+            return chunks
+
+        task = asyncio.create_task(collect())
+        await asyncio.sleep(0)  # let subscribe register
+
+        broker.publish({
+            "type": "run_completed",
+            "run": {"id": 1, "batch_id": "B1", "uf_max": 0.7, "error": None},
+        })
+        broker.publish({
+            "type": "batch_done",
+            "batch_id": "B1",
+            "total": 1, "completed": 1, "errors": 0,
+        })
+
+        chunks = await asyncio.wait_for(task, timeout=1.0)
+        events = self._parse_sse("".join(chunks))
+        events = [(name, data) for name, data in events if data]
+
+        assert len(events) == 2
+        name0, data0 = events[0]
+        name1, data1 = events[1]
+        assert name0 == "run_completed"
+        assert json.loads(data0)["run"]["id"] == 1
+        assert name1 == "batch_done"
+        assert json.loads(data1)["batch_id"] == "B1"
+
+    @pytest.mark.asyncio
+    async def test_format_sse_events_returns_after_batch_done(self):
+        """A run_completed event published AFTER batch_done must not be
+        emitted — the generator must have returned by then."""
+        import asyncio
+        from macs_automation.app import _format_sse_events
+        from macs_automation.sse_broker import Broker
+
+        broker = Broker()
+        chunks: list[str] = []
+
+        async def collect():
+            async for chunk in _format_sse_events(broker):
+                chunks.append(chunk)
+
+        task = asyncio.create_task(collect())
+        await asyncio.sleep(0)
+
+        broker.publish({"type": "batch_done", "batch_id": "B1"})
+        await asyncio.wait_for(task, timeout=1.0)
+
+        # Subsequent publish goes to no subscriber.
+        broker.publish({"type": "run_completed", "run": {"id": 99}})
+        await asyncio.sleep(0.01)
+
+        joined = "".join(chunks)
+        assert "batch_done" in joined
+        assert '"id": 99' not in joined
+
+    def test_events_route_is_registered_with_event_stream_content_type(self, client):
+        """Smoke check: the route exists and advertises text/event-stream.
+
+        Triggers batch_done from a thread so TestClient's buffered .get()
+        completes promptly when the generator returns.
+        """
+        import threading
+        import time as _t
+        from macs_automation.app import sweep_broker
+
+        def trigger():
+            _t.sleep(0.05)
+            sweep_broker.publish({"type": "batch_done", "batch_id": "X"})
+
+        threading.Thread(target=trigger, daemon=True).start()
+        response = client.get("/api/sweeps/events")
+        assert response.status_code == 200
+        assert response.headers["content-type"].startswith("text/event-stream")
+
+
 class TestCOMRetry:
     """Tests for COM retry logic in _run_single_com."""
 

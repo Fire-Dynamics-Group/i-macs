@@ -44,6 +44,16 @@ interface MockOpts {
   healthz?: typeof DEFAULT_HEALTHZ;
   /** Override the default 200 OK + uf_max=0.42 response from POST /api/runs. */
   submitRun?: { status: number; body: Record<string, unknown> };
+  /** Override the default 200 OK + batch_id response from POST /api/sweeps. */
+  submitSweep?: { status: number; body: Record<string, unknown> };
+  /** Runs returned by GET /api/runs?batch_id=... — defaults to empty. */
+  batchRuns?: Array<Record<string, unknown>>;
+  /**
+   * SSE event sequence sent when the dashboard subscribes to /api/sweeps/events.
+   * Each event becomes one record on the stream. The default sends a small
+   * sweep that ends in batch_done so the dashboard freezes in 'closed' state.
+   */
+  sweepEvents?: Array<{ event: "run_completed" | "batch_done"; data: Record<string, unknown> }>;
 }
 
 /**
@@ -65,6 +75,56 @@ export async function installSidecarMock(page: Page, opts: MockOpts) {
         checks: {},
       },
     };
+  const submitSweep =
+    opts.submitSweep ?? {
+      status: 200,
+      body: {
+        batch_id: "BATCH123",
+        total: 4,
+        message: "Sweep started",
+      },
+    };
+  const batchRuns = opts.batchRuns ?? [];
+  const sweepEvents = opts.sweepEvents ?? [
+    {
+      event: "run_completed",
+      data: {
+        type: "run_completed",
+        run: {
+          id: 1, batch_id: "BATCH123", qf: 400, uf_max: 0.4,
+          error: null, overall_pass: true, checks: {},
+        },
+        batch_id: "BATCH123", total: 2, completed: 1, errors: 0,
+      },
+    },
+    {
+      event: "run_completed",
+      data: {
+        type: "run_completed",
+        run: {
+          id: 2, batch_id: "BATCH123", qf: 500, uf_max: 0.6,
+          error: null, overall_pass: true, checks: {},
+        },
+        batch_id: "BATCH123", total: 2, completed: 2, errors: 0,
+      },
+    },
+    {
+      event: "batch_done",
+      data: {
+        type: "batch_done",
+        batch_id: "BATCH123",
+        total: 2, completed: 2, errors: 0,
+      },
+    },
+  ];
+
+  function formatSseStream(): string {
+    return sweepEvents
+      .map(
+        (ev) => `event: ${ev.event}\ndata: ${JSON.stringify(ev.data)}\n\n`,
+      )
+      .join("");
+  }
 
   await page.route(`http://127.0.0.1:${opts.sidecarPort}/**`, async (route) => {
     const url = new URL(route.request().url());
@@ -77,6 +137,23 @@ export async function installSidecarMock(page: Page, opts: MockOpts) {
     }
     if (method === "POST" && url.pathname === "/api/runs") {
       return route.fulfill({ status: submitRun.status, json: submitRun.body });
+    }
+    if (method === "POST" && url.pathname === "/api/sweeps") {
+      return route.fulfill({ status: submitSweep.status, json: submitSweep.body });
+    }
+    if (method === "GET" && url.pathname === "/api/runs") {
+      // batch_id filter or general list — both shapes tested.
+      return route.fulfill({
+        status: 200,
+        json: { runs: batchRuns, stats: {} },
+      });
+    }
+    if (method === "GET" && url.pathname === "/api/sweeps/events") {
+      return route.fulfill({
+        status: 200,
+        contentType: "text/event-stream",
+        body: formatSseStream(),
+      });
     }
     if (method === "GET" && url.pathname.startsWith("/api/runs/")) {
       if (url.pathname.endsWith("/timeseries")) {
