@@ -9,9 +9,9 @@
     Run #{{ run.id }}
     {% if run.error %}
         <span class="error-badge">Error</span>
-    {% elif run.uf_max is not none and run.uf_max <= 1.0 %}
+    {% elif run.overall_pass is true %}
         <span class="pass-badge">PASS</span>
-    {% elif run.uf_max is not none %}
+    {% elif run.overall_pass is false %}
         <span class="fail-badge">FAIL</span>
     {% endif %}
 </h2>
@@ -59,6 +59,34 @@
         </table>
     </article>
 </div>
+
+<!-- Pass/fail breakdown -->
+{% if run.checks %}
+<article>
+    <header>Pass/Fail Breakdown</header>
+    <table>
+        <thead>
+            <tr><th>Check</th><th>Value</th><th>Limit</th><th>Status</th></tr>
+        </thead>
+        <tbody>
+            {% for check in run.checks %}
+            <tr>
+                <td>{{ check.name }}</td>
+                <td>{% if check.value is none %}—{% elif check.value is number %}{{ "%.3f"|format(check.value) }}{% else %}{{ check.value }}{% endif %}</td>
+                <td>{% if check.name == "Composite section" %}flag = 0{% else %}≤ {{ "%.2f"|format(check.limit) }}{% endif %}</td>
+                <td>
+                    {% if check.pass %}
+                        <span class="pass-badge">Pass</span>
+                    {% else %}
+                        <span class="fail-badge">Fail</span>
+                    {% endif %}
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</article>
+{% endif %}
 
 <!-- Perimeter beams -->
 <article>

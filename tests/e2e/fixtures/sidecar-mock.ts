@@ -1,0 +1,105 @@
+import { type Page } from "@playwright/test";
+
+const DEFAULT_REF_DATA = {
+  sections: {
+    UB: [
+      { id: "UB_457x191x89", name: "UB 457 x 191 x 89", h: 463, b: 192 },
+      { id: "UB_610x305x238", name: "UB 610 x 305 x 238", h: 635, b: 311 },
+    ],
+    IPE: [{ id: "IPE_500", name: "IPE 500", h: 500, b: 200 }],
+  },
+  decks: {
+    T14: { name: "COFRAPLUS 60", deck_type: "T", deck_depth: 58 },
+  },
+  meshes: {
+    ST15C: { name: "ST15C", mainArea: 142, transArea: 142 },
+    A393: { name: "A393", mainArea: 393, transArea: 393 },
+  },
+  defaults: {
+    span1: 9, span2: 9, numbeam: 2, slab_depth: 130, fck: 25,
+    conc_type: "NW", method: "iso", time_limit: 60,
+    qf: 511, window_percent: 95, Lc: 27, Bc: 18, Hc: 3.6, Hw: 1.8, Lw: 30,
+    Bfac: 720, combustion_factor: 0.8, growth_rate: 1,
+    DeckId: "T14", mesh_type: "ST15C",
+    uSecSize: "IPE_500", fy5: "355", ush_con: 80,
+    SideASecSize: "IPE_500", fy1: "355", SideAEdgeFlag: 1, SideACompoFlag: 0, SideAsh_con: 80,
+    SideBSecSize: "IPE_500", fy2: "355", SideBEdgeFlag: 0, SideBCompoFlag: 1, SideBsh_con: 80,
+    SideCSecSize: "IPE_500", fy3: "355", SideCEdgeFlag: 0, SideCCompoFlag: 1, SideCsh_con: 80,
+    SideDSecSize: "IPE_500", fy4: "355", SideDEdgeFlag: 1, SideDCompoFlag: 0, SideDsh_con: 80,
+  },
+  occupancy_presets: [
+    { name: "Office", mean: 420, type: "gumbel", cov: 0.3 },
+  ],
+};
+
+const DEFAULT_HEALTHZ = {
+  sidecar: "alive",
+  macs_installed: true,
+  macs_version: "304",
+};
+
+interface MockOpts {
+  sidecarPort: number;
+  refData?: typeof DEFAULT_REF_DATA;
+  healthz?: typeof DEFAULT_HEALTHZ;
+  /** Override the default 200 OK + uf_max=0.42 response from POST /api/runs. */
+  submitRun?: { status: number; body: Record<string, unknown> };
+}
+
+/**
+ * Intercepts the React app's fetches to the FastAPI sidecar and returns
+ * canned responses. Pair with `installTauriShim` so the API client's
+ * `invoke('get_sidecar_port')` returns `sidecarPort`.
+ */
+export async function installSidecarMock(page: Page, opts: MockOpts) {
+  const refData = opts.refData ?? DEFAULT_REF_DATA;
+  const healthz = opts.healthz ?? DEFAULT_HEALTHZ;
+  const submitRun =
+    opts.submitRun ?? {
+      status: 200,
+      body: {
+        id: 1,
+        uf_max: 0.42,
+        duration_ms: 200,
+        overall_pass: true,
+        checks: {},
+      },
+    };
+
+  await page.route(`http://127.0.0.1:${opts.sidecarPort}/**`, async (route) => {
+    const url = new URL(route.request().url());
+    const method = route.request().method();
+    if (method === "GET" && url.pathname === "/healthz") {
+      return route.fulfill({ status: 200, json: healthz });
+    }
+    if (method === "GET" && url.pathname === "/api/ref-data") {
+      return route.fulfill({ status: 200, json: refData });
+    }
+    if (method === "POST" && url.pathname === "/api/runs") {
+      return route.fulfill({ status: submitRun.status, json: submitRun.body });
+    }
+    if (method === "GET" && url.pathname.startsWith("/api/runs/")) {
+      if (url.pathname.endsWith("/timeseries")) {
+        return route.fulfill({
+          status: 200,
+          json: [
+            { time_step: 1, time_min: 5, fire_temp: 576, utilization_factor: 0.2, total_plate_capacity: 700 },
+            { time_step: 2, time_min: 10, fire_temp: 678, utilization_factor: 0.4, total_plate_capacity: 650 },
+          ],
+        });
+      }
+      return route.fulfill({
+        status: 200,
+        json: {
+          id: 1,
+          uf_max: 0.42,
+          duration_ms: 200,
+          error: null,
+          overall_pass: true,
+          checks: {},
+        },
+      });
+    }
+    return route.fulfill({ status: 404, json: { detail: "Not Found" } });
+  });
+}

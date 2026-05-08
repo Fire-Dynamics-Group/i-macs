@@ -84,6 +84,7 @@
             <span class="picker-chip" data-param="lead_var_act">Leading Var.</span>
             <span class="picker-chip" data-param="othr_var_act">Other Var.</span>
             <span class="picker-chip" data-param="cold_perm">Cold Perm.</span>
+            <span class="picker-chip" data-param="slab_weight">Slab Weight</span>
             <span class="picker-chip" data-param="lead_var_fac">Leading Factor</span>
             <span class="picker-chip" data-param="othr_var_fac">Other Factor</span>
         </div>
@@ -334,9 +335,10 @@
         <div class="grid">
             {{ param_field("lead_var_act", "Leading Variable (kN/m²)", defaults.lead_var_act, step="0.5") }}
             {{ param_field("othr_var_act", "Other Variable (kN/m²)", defaults.othr_var_act, step="0.5") }}
-            {{ param_field("cold_perm", "Cold Permanent (kN/m²)", defaults.cold_perm, step="0.1") }}
+            {{ param_field("cold_perm", "Cold Permanent excl. slab (kN/m²)", defaults.cold_perm, step="0.1") }}
         </div>
         <div class="grid">
+            {{ param_field("slab_weight", "Slab Self-Weight (kN/m²)", defaults.slab_weight, step="0.1") }}
             {{ param_field("lead_var_fac", "Leading Factor (psi)", defaults.lead_var_fac, step="0.1", min_val="0", max_val="1") }}
             {{ param_field("othr_var_fac", "Other Factor (psi)", defaults.othr_var_fac, step="0.1", min_val="0", max_val="1") }}
         </div>
@@ -522,7 +524,7 @@ const NUMERIC_PARAMS = [
     'fck', 'slab_depth',
     'mesh_axis',
     'ush_con',
-    'lead_var_act', 'othr_var_act', 'cold_perm', 'lead_var_fac', 'othr_var_fac',
+    'lead_var_act', 'othr_var_act', 'cold_perm', 'slab_weight', 'lead_var_fac', 'othr_var_fac',
     'time_limit',
     'Lc', 'Bc', 'Hc', 'Hw', 'Lw', 'window_percent', 'qf', 'Bfac', 'growth_rate',
     'combustion_factor',
@@ -568,7 +570,8 @@ async function importFrc() {
 
         const directFields = [
             'span1', 'span2', 'numbeam', 'fck', 'slab_depth', 'mesh_axis',
-            'lead_var_act', 'othr_var_act', 'cold_perm', 'lead_var_fac', 'othr_var_fac',
+            'lead_var_act', 'othr_var_act', 'cold_perm', 'slab_weight',
+            'lead_var_fac', 'othr_var_fac',
             'time_limit', 'Lc', 'Bc', 'Hc', 'Hw', 'Lw', 'window_percent',
             'qf', 'Bfac', 'growth_rate', 'combustion_factor',
         ];
@@ -882,11 +885,24 @@ document.getElementById('config-form').addEventListener('submit', async function
             const resultDiv = document.getElementById('single-result');
             const body = document.getElementById('single-result-body');
             if (resp.ok) {
-                const pass = data.uf_max <= 1.0;
+                const pass = data.overall_pass;
+                const slabPass = data.uf_max <= 1.0;
+                let breakdown = '';
+                if (Array.isArray(data.checks) && data.checks.length) {
+                    breakdown = '<table style="margin-top:0.5rem;"><thead><tr><th>Check</th><th>Value</th><th>Status</th></tr></thead><tbody>';
+                    data.checks.forEach(c => {
+                        const v = (c.value === null || c.value === undefined)
+                            ? '—'
+                            : (typeof c.value === 'number' ? c.value.toFixed(3) : c.value);
+                        breakdown += `<tr><td>${c.name}</td><td>${v}</td><td><span class="${c.pass ? 'pass' : 'fail'}">${c.pass ? 'Pass' : 'Fail'}</span></td></tr>`;
+                    });
+                    breakdown += '</tbody></table>';
+                }
                 body.innerHTML = `
-                    <p><strong>UF max:</strong> <span class="${pass ? 'pass' : 'fail'}">${data.uf_max.toFixed(3)}</span></p>
+                    <p><strong>UF max:</strong> <span class="${slabPass ? 'pass' : 'fail'}">${data.uf_max.toFixed(3)}</span></p>
                     <p><strong>Status:</strong> <span class="${pass ? 'pass' : 'fail'}">${pass ? 'PASS' : 'FAIL'}</span></p>
                     <p><strong>Duration:</strong> ${(data.duration_ms / 1000).toFixed(2)}s</p>
+                    ${breakdown}
                 `;
                 document.getElementById('single-result-link').href = '/results/' + data.id;
             } else {

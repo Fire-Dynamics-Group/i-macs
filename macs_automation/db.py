@@ -102,6 +102,22 @@ CREATE TABLE IF NOT EXISTS custom_meshes (
 );
 """
 
+# Combined pass predicate — must mirror compute_status() in status.py.
+# A run passes only when the slab UF, MACS+'s composite-failure flag, and every
+# defined perimeter beam load ratio all stay within their limits. NULL side
+# ratios (sides that weren't analyzed) are treated as 0 so they don't block.
+def _pass_where(table: str = "") -> str:
+    p = f"{table}." if table else ""
+    return (
+        f"{p}error IS NULL "
+        f"AND {p}uf_max <= 1.0 "
+        f"AND COALESCE({p}comp_failure, 0) != 1 "
+        f"AND COALESCE({p}side_a_load_ratio, 0) <= 1.0 "
+        f"AND COALESCE({p}side_b_load_ratio, 0) <= 1.0 "
+        f"AND COALESCE({p}side_c_load_ratio, 0) <= 1.0 "
+        f"AND COALESCE({p}side_d_load_ratio, 0) <= 1.0"
+    )
+
 
 class ResultsDB:
     """SQLite database for storing batch run results."""
@@ -119,10 +135,17 @@ class ResultsDB:
         """Add columns/tables that may be missing in older databases."""
         cursor = self.conn.execute("PRAGMA table_info(runs)")
         existing_cols = {row[1] for row in cursor.fetchall()}
+        # Columns referenced by _pass_where must exist for stats queries to work
+        # against legacy DBs that pre-date the per-side outputs.
         for col, col_type in [
             ("sample_index", "INTEGER"),
             ("seed", "INTEGER"),
             ("batch_id", "TEXT"),
+            ("comp_failure", "INTEGER"),
+            ("side_a_load_ratio", "REAL"),
+            ("side_b_load_ratio", "REAL"),
+            ("side_c_load_ratio", "REAL"),
+            ("side_d_load_ratio", "REAL"),
         ]:
             if col not in existing_cols:
                 self.conn.execute(f"ALTER TABLE runs ADD COLUMN {col} {col_type}")
@@ -380,7 +403,7 @@ class ResultsDB:
         successful = self.get_successful_run_count()
         errors = total - successful
         pass_cursor = self.conn.execute(
-            "SELECT COUNT(*) FROM runs WHERE error IS NULL AND uf_max <= 1.0"
+            f"SELECT COUNT(*) FROM runs WHERE {_pass_where()}"
         )
         pass_count = pass_cursor.fetchone()[0]
         fail_count = successful - pass_count
@@ -405,10 +428,10 @@ class ResultsDB:
 
     def get_batches(self) -> list[dict]:
         """Return all batches with aggregated run stats, newest first."""
-        cursor = self.conn.execute("""
+        cursor = self.conn.execute(f"""
             SELECT b.batch_id, b.created_at, b.mode, b.total_expected,
                    COUNT(r.id) AS run_count,
-                   SUM(CASE WHEN r.error IS NULL AND r.uf_max <= 1.0 THEN 1 ELSE 0 END) AS pass_count,
+                   SUM(CASE WHEN {_pass_where('r')} THEN 1 ELSE 0 END) AS pass_count,
                    SUM(CASE WHEN r.error IS NOT NULL THEN 1 ELSE 0 END) AS error_count
             FROM batches b
             LEFT JOIN runs r ON r.batch_id = b.batch_id
@@ -696,7 +719,7 @@ class ResultsDB:
         successful = cursor.fetchone()[0]
         errors = total - successful
         cursor = self.conn.execute(
-            "SELECT COUNT(*) FROM runs WHERE batch_id = ? AND error IS NULL AND uf_max <= 1.0",
+            f"SELECT COUNT(*) FROM runs WHERE batch_id = ? AND {_pass_where()}",
             (batch_id,),
         )
         pass_count = cursor.fetchone()[0]

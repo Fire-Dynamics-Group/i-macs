@@ -207,44 +207,41 @@ def client(use_tmp_db):
     return TestClient(app)
 
 
-class TestBlueBookDropdown:
-    def test_config_page_has_ub_sections(self, client):
-        """Blue Book UB sections appear in the config page."""
-        resp = client.get("/")
-        assert resp.status_code == 200
-        # Check for a well-known UB section
-        assert "UB 457 x 191 x 89" in resp.text
-
-    def test_config_page_shows_mass_per_m(self, client):
-        """UB sections show mass/m in dropdown."""
-        resp = client.get("/")
-        assert "kg/m" in resp.text
-
-    def test_ub_sections_before_ipe(self, client):
-        """UB sections appear before IPE sections in dropdown."""
-        resp = client.get("/")
-        html = resp.text
-        ub_pos = html.index("UB 457 x 191 x 89")
-        ipe_pos = html.index("IPE 500")
-        assert ub_pos < ipe_pos
-
-    def test_ub_sections_in_perimeter_dropdown(self, client):
-        """Blue Book UB sections appear in perimeter beam dropdown too."""
-        resp = client.get("/")
-        html = resp.text
-        # Both dropdowns should have UB sections
-        # Find second occurrence (perimeter dropdown)
-        first = html.index("UB 1016 x 305 x 584")
-        second = html.index("UB 1016 x 305 x 584", first + 1)
-        assert second > first
+class TestBlueBookSectionsApi:
+    """The React config form pulls sections from /api/sections — verify Blue
+    Book UBs are exposed there and ordered ahead of IPEs."""
 
     def test_api_sections_includes_ub_family(self, client):
-        """GET /api/sections includes UB family from Blue Book."""
         resp = client.get("/api/sections")
+        assert resp.status_code == 200
         data = resp.json()
         assert "UB" in data
         # Should have all Blue Book sections
         assert len(data["UB"]) >= 90
+        names = [s["name"] for s in data["UB"]]
+        assert any("UB 457 x 191 x 89" in n for n in names)
+
+    def test_blue_book_sections_loaded(self, client):
+        """Blue Book UB metadata is loaded — h/b are populated for known sections."""
+        from macs_automation.blue_book_sections import get_blue_book_sections
+        bb = get_blue_book_sections()
+        assert "UB_457x191x89" in bb
+        assert bb["UB_457x191x89"]["h"] > 0
+
+    def test_ub_family_listed_before_ipe(self, client):
+        """The /api/ref-data response should serialise UB sections before IPE,
+        matching the dropdown ordering the React form uses."""
+        resp = client.get("/api/ref-data")
+        data = resp.json()
+        families = list(data["sections"].keys())
+        assert "UB" in families and "IPE" in families
+        assert families.index("UB") < families.index("IPE")
+
+    def test_api_sections_includes_largest_ub(self, client):
+        resp = client.get("/api/sections")
+        data = resp.json()
+        names = [s["name"] for s in data["UB"]]
+        assert any("UB 1016 x 305 x 584" in n for n in names)
 
     def test_submit_run_with_blue_book_section(self, client):
         """Can submit a run using a Blue Book section ID."""
@@ -261,8 +258,3 @@ class TestBlueBookDropdown:
         sections_db = mock_run.call_args[0][1]
         assert "UB_457x191x89" in sections_db
         assert sections_db["UB_457x191x89"]["h"] == pytest.approx(463.4, abs=0.5)
-
-    def test_divider_between_ub_and_other_families(self, client):
-        """A divider separates UB sections from other families."""
-        resp = client.get("/")
-        assert "──" in resp.text

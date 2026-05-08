@@ -166,27 +166,6 @@ class TestCustomSectionAPI:
 
 
 class TestMergedSections:
-    def test_config_page_includes_custom_sections(self, client):
-        """Custom sections appear in the config page section dropdowns."""
-        client.post("/api/custom-sections", json={
-            "name": "My Custom", "h": 500, "b": 200, "tw": 10.0, "tf": 16.0,
-        })
-        resp = client.get("/")
-        assert resp.status_code == 200
-        assert "(Custom)" in resp.text
-        assert "My Custom" in resp.text
-
-    def test_custom_section_before_standard(self, client):
-        """Custom sections appear before standard ones in dropdown."""
-        client.post("/api/custom-sections", json={
-            "name": "My Custom", "h": 500, "b": 200, "tw": 10.0, "tf": 16.0,
-        })
-        resp = client.get("/")
-        html = resp.text
-        custom_pos = html.index("My Custom")
-        standard_pos = html.index("IPE 500")
-        assert custom_pos < standard_pos
-
     def test_api_sections_includes_custom(self, client):
         """GET /api/sections includes Custom family."""
         client.post("/api/custom-sections", json={
@@ -241,29 +220,6 @@ class TestMergedSections:
                 # Check the sections_db passed to _run_sweep_background
                 sections_db = mock_bg.call_args[0][1]
                 assert "CUSTOM_1" in sections_db
-
-
-class TestCustomSectionDivider:
-    def test_divider_shown_when_customs_exist(self, client):
-        """A disabled divider option appears between custom and standard sections."""
-        client.post("/api/custom-sections", json={
-            "name": "A", "h": 500, "b": 200, "tw": 10.0, "tf": 16.0,
-        })
-        resp = client.get("/")
-        assert "──" in resp.text  # divider uses ── characters
-
-    def test_no_custom_divider_when_no_customs(self, client):
-        """No custom-section divider when there are no custom sections.
-
-        Note: dividers between UB and other families are always present,
-        but the custom-section-specific divider (before standard sections
-        within the Custom group) should not appear.
-        """
-        resp = client.get("/")
-        html = resp.text
-        # The custom divider is rendered inside {% if custom_sections %} block,
-        # so "Custom" label shouldn't appear in section options
-        assert "(Custom)" not in html
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -536,28 +492,6 @@ class TestCustomMeshAPI:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 class TestMergedDecks:
-    def test_config_page_includes_custom_decks(self, client):
-        client.post("/api/custom-decks", json={
-            "name": "My Deck", "deck_type": "T", "deck_depth": 58,
-            "deck_trug": 207, "deck_top": 106, "deck_bot": 62,
-            "deck_stiff_height": 0,
-        })
-        resp = client.get("/")
-        assert resp.status_code == 200
-        assert "My Deck (Custom)" in resp.text
-
-    def test_custom_deck_before_standard(self, client):
-        client.post("/api/custom-decks", json={
-            "name": "My Deck", "deck_type": "T", "deck_depth": 58,
-            "deck_trug": 207, "deck_top": 106, "deck_bot": 62,
-            "deck_stiff_height": 0,
-        })
-        resp = client.get("/")
-        html = resp.text
-        custom_pos = html.index("My Deck (Custom)")
-        standard_pos = html.index("COFRAPLUS 60")
-        assert custom_pos < standard_pos
-
     def test_api_decks_includes_custom(self, client):
         client.post("/api/custom-decks", json={
             "name": "My Deck", "deck_type": "T", "deck_depth": 58,
@@ -570,36 +504,21 @@ class TestMergedDecks:
         assert len(custom_ids) == 1
         assert data[custom_ids[0]]["name"] == "My Deck (Custom)"
 
-    def test_deck_divider_shown_when_customs_exist(self, client):
+    def test_custom_decks_listed_before_standard(self, client):
+        """Custom decks appear before standard decks in /api/decks (insertion order)."""
         client.post("/api/custom-decks", json={
-            "name": "A", "deck_type": "T", "deck_depth": 58,
+            "name": "My Deck", "deck_type": "T", "deck_depth": 58,
             "deck_trug": 207, "deck_top": 106, "deck_bot": 62,
             "deck_stiff_height": 0,
         })
-        resp = client.get("/")
-        # Count dividers — there should be one in the deck select
-        assert resp.text.count("──") >= 1
+        resp = client.get("/api/decks")
+        ids = list(resp.json().keys())
+        custom_idx = next(i for i, k in enumerate(ids) if k.startswith("CDECK_"))
+        t14_idx = ids.index("T14")
+        assert custom_idx < t14_idx
 
 
 class TestMergedMeshes:
-    def test_config_page_includes_custom_meshes(self, client):
-        client.post("/api/custom-meshes", json={
-            "name": "My Mesh", "main_area": 142, "trans_area": 142,
-        })
-        resp = client.get("/")
-        assert resp.status_code == 200
-        assert "My Mesh (Custom)" in resp.text
-
-    def test_custom_mesh_before_standard(self, client):
-        client.post("/api/custom-meshes", json={
-            "name": "My Mesh", "main_area": 142, "trans_area": 142,
-        })
-        resp = client.get("/")
-        html = resp.text
-        custom_pos = html.index("My Mesh (Custom)")
-        standard_pos = html.index("ST15C")
-        assert custom_pos < standard_pos
-
     def test_api_meshes_includes_custom(self, client):
         client.post("/api/custom-meshes", json={
             "name": "My Mesh", "main_area": 142, "trans_area": 142,
@@ -610,12 +529,16 @@ class TestMergedMeshes:
         assert len(custom_ids) == 1
         assert data[custom_ids[0]]["name"] == "My Mesh (Custom)"
 
-    def test_mesh_divider_shown_when_customs_exist(self, client):
+    def test_custom_meshes_listed_before_standard(self, client):
+        """Custom meshes appear before standard meshes in /api/meshes (insertion order)."""
         client.post("/api/custom-meshes", json={
-            "name": "A", "main_area": 142, "trans_area": 142,
+            "name": "My Mesh", "main_area": 142, "trans_area": 142,
         })
-        resp = client.get("/")
-        assert resp.text.count("──") >= 1
+        resp = client.get("/api/meshes")
+        ids = list(resp.json().keys())
+        custom_idx = next(i for i, k in enumerate(ids) if k.startswith("CMESH_"))
+        st15c_idx = ids.index("ST15C")
+        assert custom_idx < st15c_idx
 
 
 class TestSubmitWithCustomDeckMesh:

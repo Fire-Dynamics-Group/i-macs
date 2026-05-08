@@ -12,7 +12,7 @@ from unittest.mock import patch, MagicMock
 import pytest
 from fastapi.testclient import TestClient
 
-from macs_automation.app import app, _DISPLAY_COLUMNS, _detect_varying_columns
+from macs_automation.app import app
 from macs_automation.db import ResultsDB
 from macs_automation.tests.conftest import _make_time_series
 
@@ -193,90 +193,14 @@ class TestLHSSubmission:
         assert all(r["slab_depth"] == 130.0 for r in runs)
 
 
-# ─── E2E: Results Page Renders Batch Groups ───────────────────────────────────
-
-class TestResultsPageBatchRendering:
-    """GET /results after LHS sweep shows batch group layout."""
-
-    def test_results_page_loads(self, client):
-        _run_lhs_sweep_synchronously(client)
-        resp = client.get("/results")
-        assert resp.status_code == 200
-
-    def test_shows_batch_group_header(self, client):
-        resp = _run_lhs_sweep_synchronously(client)
-        batch_id = resp.json()["batch_id"]
-        html = client.get("/results").text
-        assert batch_id[:8] in html
-        assert "LHS" in html
-
-    def test_shows_fixed_parameters_card(self, client):
-        _run_lhs_sweep_synchronously(client)
-        html = client.get("/results").text
-        assert "Fixed Parameters" in html
-        assert "Span 1 (m)" in html
-        assert "Span 2 (m)" in html
-
-    def test_shows_varying_column_headers(self, client):
-        _run_lhs_sweep_synchronously(client)
-        html = client.get("/results").text
-        # qf and window_percent should be table headers
-        assert "Fire Load" in html
-        assert "Window %" in html
-
-    def test_shows_run_count(self, client):
-        _run_lhs_sweep_synchronously(client)
-        html = client.get("/results").text
-        assert "5 runs" in html
-
-    def test_shows_pass_fail_counts(self, client):
-        _run_lhs_sweep_synchronously(client)
-        html = client.get("/results").text
-        assert "4 pass" in html  # 4 runs with UF <= 1.0
-        # 1 fail (UF = 1.15)
-        assert "1 fail" in html or "Fail" in html
-
-    def test_shows_uf_values(self, client):
-        _run_lhs_sweep_synchronously(client)
-        html = client.get("/results").text
-        assert "0.450" in html  # first run UF
-        assert "1.150" in html  # last run UF (fail)
-
-    def test_no_individual_runs_section(self, client):
-        """When all runs are batched, no 'Individual Runs' section."""
-        _run_lhs_sweep_synchronously(client)
-        html = client.get("/results").text
-        assert "Individual Runs" not in html
-
-    def test_no_runs_found_message_absent(self, client):
-        """After a sweep, 'No runs found' should NOT appear."""
-        _run_lhs_sweep_synchronously(client)
-        html = client.get("/results").text
-        assert "No runs found" not in html
-
-    def test_clickable_rows_have_detail_links(self, client):
-        _run_lhs_sweep_synchronously(client)
-        html = client.get("/results").text
-        assert 'data-href="/results/' in html
-
-    def test_stats_cards_reflect_runs(self, client):
-        _run_lhs_sweep_synchronously(client)
-        html = client.get("/results").text
-        # Should show total, pass, fail, errors
-        assert ">5<" in html  # 5 total runs in a <strong> tag
-
-
 # ─── E2E: Mixed Batch + Individual Runs ──────────────────────────────────────
 
 class TestMixedBatchAndIndividual:
-    """Results page with both batched and unbatched runs."""
+    """Coexistence of batched and unbatched runs in /api/runs."""
 
-    def test_individual_run_appears_separately(self, client, use_tmp_db):
-        """A single run (no batch) shows under 'Individual Runs'."""
-        # First run a sweep
+    def test_individual_run_listed_alongside_batched(self, client, use_tmp_db):
+        """A single run (no batch) and batched runs both appear in /api/runs."""
         _run_lhs_sweep_synchronously(client)
-
-        # Then insert a single run without batch_id
         db = ResultsDB(use_tmp_db)
         db.insert_run(
             {"span1": 12.0, "span2": 12.0, "uSecSize": "IPE_500",
@@ -284,12 +208,10 @@ class TestMixedBatchAndIndividual:
             outputs={"comp_failure": 0, "uf_max": 0.42, "time_series": []},
         )
         db.close()
-
-        html = client.get("/results").text
-        assert "Individual Runs" in html
-        # Both sections should be present
-        assert "Fixed Parameters" in html  # batch section
-        assert "0.420" in html  # individual run UF
+        data = client.get("/api/runs").json()
+        runs = data["runs"]
+        assert any(r.get("batch_id") for r in runs)
+        assert any(not r.get("batch_id") and r["uf_max"] == pytest.approx(0.42) for r in runs)
 
 
 # ─── Schema migration regression ─────────────────────────────────────────────

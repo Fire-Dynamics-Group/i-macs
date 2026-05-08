@@ -139,7 +139,7 @@ class TestRunEndpoints:
         assert data[0]["time_min"] == 5.0
 
     def test_post_runs_uses_run_one_com(self, client):
-        """POST /api/runs must use _run_single_com (run_one_com) so 32/64-bit bridge works."""
+        """POST /api/runs must use _run_single_com (which spawns the com_runner subprocess)."""
         with patch("macs_automation.app._run_single_com") as mock_run:
             mock_run.return_value = {"uf_max": 0.5, "duration_ms": 100, "comp_failure": 0, "time_series": []}
             resp = client.post("/api/runs", json={"method": "iso"})
@@ -147,6 +147,35 @@ class TestRunEndpoints:
         data = resp.json()
         assert "id" in data and data.get("uf_max") == 0.5
         mock_run.assert_called_once()
+
+    def test_single_run_round_trip_with_defaults(self, client):
+        """Slice 5 done criterion: POST /api/runs with an empty body fills in
+        DEFAULTS for every parameter the engine needs."""
+        with patch("macs_automation.app._run_single_com") as mock_run:
+            mock_run.return_value = {
+                "uf_max": 0.7, "duration_ms": 250, "comp_failure": 0, "time_series": [],
+            }
+            resp = client.post("/api/runs", json={})
+        assert resp.status_code == 200
+        sent = mock_run.call_args[0][0]
+        # Defaults from sweep.DEFAULTS made it through.
+        assert sent["span1"] == 9.0
+        assert sent["method"] == "iso"
+        assert sent["fck"] == 25
+        assert sent["uSecSize"] == "IPE_500"
+
+    def test_qf_below_floor_does_not_crash(self, client):
+        """Passing qf=0.5 must not 500 — engine clamps to >=1.0 internally
+        (see engine.set_inputs: 'avoid FRACOF thermal instability')."""
+        with patch("macs_automation.app._run_single_com") as mock_run:
+            mock_run.return_value = {
+                "uf_max": 0.3, "duration_ms": 90, "comp_failure": 0, "time_series": [],
+            }
+            resp = client.post("/api/runs", json={"qf": 0.5, "method": "iso"})
+        assert resp.status_code == 200
+        # The clamp lives in MACSEngine.set_inputs; the API layer just
+        # forwards the user's value verbatim.
+        assert mock_run.call_args[0][0]["qf"] == 0.5
 
 
 class TestSweepLHS:
@@ -446,69 +475,58 @@ class TestFrcImport:
         assert resp.status_code == 400
         assert "signature" in resp.json()["error"].lower()
 
-    def test_config_page_has_import_section(self, client):
-        resp = client.get("/")
+class TestHealthz:
+    def test_healthz_shape(self, client):
+        """GET /healthz always returns the three keys the Tauri shell expects."""
+        resp = client.get("/healthz")
         assert resp.status_code == 200
-        assert "import-frc" in resp.text.lower() or "Import" in resp.text
+        data = resp.json()
+        assert data["sidecar"] == "alive"
+        assert isinstance(data["macs_installed"], bool)
+        # macs_version is str when installed and version-parseable, else None
+        assert data["macs_version"] is None or isinstance(data["macs_version"], str)
 
-
-class TestPageRoutes:
-    def test_config_page(self, client):
-        resp = client.get("/")
+    def test_healthz_when_macs_missing(self, client, monkeypatch, tmp_path):
+        """If Data.xml resolves to a missing path, macs_installed=False, version=None."""
+        from macs_automation import app as app_module
+        monkeypatch.setattr(
+            app_module, "_find_macs_data_xml",
+            lambda: tmp_path / "definitely-not-here" / "Data.xml",
+        )
+        resp = client.get("/healthz")
         assert resp.status_code == 200
-        assert "MACS+" in resp.text
+        data = resp.json()
+        assert data["macs_installed"] is False
+        assert data["macs_version"] is None
 
-    def test_dashboard_page(self, client):
-        resp = client.get("/dashboard")
+    def test_healthz_parses_version_from_folder(self, client, monkeypatch, tmp_path):
+        """Folder named MACS+_304/EN/Data/Data.xml → macs_version='304'."""
+        from macs_automation import app as app_module
+        macs_dir = tmp_path / "MACS+_304" / "EN" / "Data"
+        macs_dir.mkdir(parents=True)
+        data_xml = macs_dir / "Data.xml"
+        data_xml.write_text("<root/>")
+        monkeypatch.setattr(app_module, "_find_macs_data_xml", lambda: data_xml)
+        resp = client.get("/healthz")
         assert resp.status_code == 200
+        data = resp.json()
+        assert data["macs_installed"] is True
+        assert data["macs_version"] == "304"
 
-    def test_dashboard_has_dynamic_mode_label(self, client):
-        """Dashboard heading uses a dynamic mode-label span, not hardcoded 'Sweep'."""
-        resp = client.get("/dashboard")
+
+class TestRefDataAggregate:
+    def test_ref_data_endpoint(self, client):
+        """GET /api/ref-data returns sections, decks, meshes, defaults, and presets in one shot."""
+        resp = client.get("/api/ref-data")
         assert resp.status_code == 200
-        assert 'id="mode-label"' in resp.text
-        assert ">Sweep Dashboard<" not in resp.text
-
-    def test_results_page(self, client):
-        resp = client.get("/results")
-        assert resp.status_code == 200
-
-    def test_detail_page_not_found(self, client):
-        resp = client.get("/results/999", follow_redirects=False)
-        assert resp.status_code == 307  # redirect to /results
-
-    def test_detail_page_with_data(self, seeded_db):
-        client = TestClient(app)
-        resp = client.get("/results/1")
-        assert resp.status_code == 200
-
-    def test_config_page_has_combustion_factor(self, client):
-        resp = client.get("/")
-        assert resp.status_code == 200
-        assert 'name="combustion_factor"' in resp.text
-
-    def test_config_page_has_param_picker(self, client):
-        resp = client.get("/")
-        assert resp.status_code == 200
-        assert 'id="param-picker"' in resp.text
-        assert 'class="picker-chip"' in resp.text
-        assert 'data-param="qf"' in resp.text
-        assert 'data-param="span1"' in resp.text
-        assert 'data-param="growth_rate"' in resp.text
-        assert 'data-param="window_percent"' in resp.text
-
-    def test_config_page_has_lhs_extras(self, client):
-        resp = client.get("/")
-        assert resp.status_code == 200
-        assert 'class="lhs-extra"' in resp.text
-        assert 'class="lhs-input"' in resp.text
-
-    def test_config_page_lhs_options_hidden_by_default(self, client):
-        """LHS options fieldset should NOT have class='visible' when page loads."""
-        resp = client.get("/")
-        assert resp.status_code == 200
-        assert 'id="lhs-options" class="visible"' not in resp.text
-        assert 'id="lhs-options"' in resp.text
+        data = resp.json()
+        assert "sections" in data
+        assert "decks" in data
+        assert "meshes" in data
+        assert "defaults" in data
+        assert "occupancy_presets" in data
+        # Sections are grouped by family (same shape as /api/sections)
+        assert "IPE" in data["sections"]
 
 
 class TestSweepWithArbitraryParams:
@@ -647,41 +665,6 @@ class TestBatchResults:
         assert "span1" not in varying
         # Fixed params should include span1 (tuples are col, label, value)
         assert any(col == "span1" for col, label, value in fixed)
-
-    def test_results_page_shows_batch_group(self, use_tmp_db):
-        """Batch runs render with 'Fixed Parameters' card."""
-        from macs_automation.db import ResultsDB
-        db = ResultsDB(use_tmp_db)
-        db.insert_batch("aabb0011" * 4, mode="lhs", total_expected=2)
-        for qf_val in [300, 500]:
-            db.insert_run(
-                {"span1": 9.0, "span2": 9.0, "uSecSize": "IPE_500", "method": "parametric",
-                 "time_limit": 60, "qf": qf_val, "window_percent": 50,
-                 "_batch_id": "aabb0011" * 4},
-                outputs={"comp_failure": 0, "uf_max": 0.5 + qf_val / 1000, "time_series": []},
-            )
-        db.close()
-        client = TestClient(app)
-        resp = client.get("/results")
-        assert resp.status_code == 200
-        assert "Fixed Parameters" in resp.text
-        assert "aabb0011" in resp.text  # first 8 chars of batch_id
-
-    def test_results_page_shows_ungrouped_runs(self, use_tmp_db):
-        """Single runs (no batch_id) appear in 'Individual Runs' section."""
-        from macs_automation.db import ResultsDB
-        db = ResultsDB(use_tmp_db)
-        db.insert_run(
-            {"span1": 9.0, "span2": 9.0, "uSecSize": "IPE_500", "method": "iso",
-             "time_limit": 60},
-            outputs={"comp_failure": 0, "uf_max": 0.7, "time_series": []},
-        )
-        db.close()
-        client = TestClient(app)
-        resp = client.get("/results")
-        assert resp.status_code == 200
-        assert "Individual Runs" in resp.text
-
 
 class TestCOMRetry:
     """Tests for COM retry logic in _run_single_com."""

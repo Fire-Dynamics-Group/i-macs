@@ -3,12 +3,13 @@
 Tests that need the COM engine are marked with @pytest.mark.com.
 """
 
+import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch, PropertyMock
 
 import pytest
 
-from macs_automation.engine import MACSEngine, COMProxy, _get_fy, _set_beam_data, _to_numeric
+from macs_automation.engine import MACSEngine, COMProxy, _get_fy, _set_beam_data, _to_numeric, run_one_com
 
 
 class TestHelpers:
@@ -164,6 +165,56 @@ class TestSetInputs:
         assert mock_engine.engine._props["uSecDiam"] == 0
 
 
+class TestComRunnerIsolation:
+    """run_one_com spawns com_runner as a subprocess so a FRACOF/COM crash
+    or any unhandled exception inside _run_one() can't take down the parent
+    FastAPI sidecar."""
+
+    def test_runtime_error_in_runner_surfaces_as_runtime_error_not_crash(self, tmp_path):
+        """A RuntimeError raised inside _run_one() comes back through the JSON
+        protocol as RuntimeError in the parent — the parent process keeps running."""
+        # Simulate the runner by invoking com_runner.main() with patched _run_one.
+        # com_runner.main() catches the exception and writes {"error": ...} to stdout;
+        # run_one_com() then reads that and raises RuntimeError.
+        import io
+        import json
+        from macs_automation import com_runner
+
+        fake_stdin = io.StringIO(json.dumps({"params": {}, "sections_db": {}}) + "\n")
+        fake_stdout = io.StringIO()
+
+        with patch.object(com_runner, "_run_one", side_effect=RuntimeError("boom")), \
+             patch.object(sys, "stdin", fake_stdin), \
+             patch.object(sys, "stdout", fake_stdout):
+            com_runner.main()
+
+        output = json.loads(fake_stdout.getvalue().strip())
+        assert "error" in output
+        assert "RuntimeError" in output["error"]
+        assert "boom" in output["error"]
+
+    def test_run_one_com_translates_runner_error_to_runtime_error(self):
+        """When run_one_com() reads {"error": ...} on stdout, it raises RuntimeError
+        — without re-raising the runner's own exception class (which lives in a dead process)."""
+        fake_proc = MagicMock()
+        fake_proc.stdout = '{"error": "RuntimeError: boom"}\n'
+        fake_proc.stderr = ""
+
+        with patch("macs_automation.engine.subprocess.run", return_value=fake_proc):
+            with pytest.raises(RuntimeError, match="boom"):
+                run_one_com({}, {})
+
+    def test_run_one_com_handles_runner_no_output(self):
+        """A runner that crashes hard (no stdout) surfaces as RuntimeError in the parent."""
+        fake_proc = MagicMock()
+        fake_proc.stdout = ""
+        fake_proc.stderr = "Fatal Python error: Segmentation fault"
+
+        with patch("macs_automation.engine.subprocess.run", return_value=fake_proc):
+            with pytest.raises(RuntimeError, match="Segmentation fault"):
+                run_one_com({}, {})
+
+
 @pytest.mark.com
 @pytest.mark.e2e
 class TestCOMIntegration:
@@ -183,12 +234,8 @@ class TestCOMIntegration:
         return load_data(DEFAULT_DATA_PATH)
 
     def test_iso_fire_default_params(self, real_data):
-        """Run a single ISO fire analysis with defaults and verify outputs.
-
-        Uses run_one_com() so it works on both 32-bit (in-process) and 64-bit (bridge).
-        """
+        """Run a single ISO fire analysis with defaults and verify outputs."""
         from macs_automation.sweep import DEFAULTS, resolve_deck, resolve_mesh
-        from macs_automation.engine import run_one_com
 
         params = dict(DEFAULTS)
         resolve_deck(params, real_data["decks"])
