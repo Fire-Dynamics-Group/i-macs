@@ -1,15 +1,14 @@
 """COM engine wrapper for the FRACOF calculation engine.
 
 Uses explicit IDispatch.Invoke calls to work reliably through the
-DllSurrogate (32-bit .NET COM called from 64-bit Python).
+DllSurrogate (32-bit .NET COM in-proc server).
 
-When running on 64-bit Python, run_one_com() uses a 32-bit Python subprocess
-(com_bridge) so the main app can stay on 64-bit. Set PYTHON32 to the path of
-your 32-bit Python executable if auto-detection fails.
+run_one_com() always spawns a per-calculation subprocess (com_runner) using
+the parent interpreter (sys.executable). Same arch as parent — both 32-bit
+in v1 — so a FRACOF crash kills only the runner, not the FastAPI sidecar.
 """
 
 import json
-import os
 import subprocess
 import sys
 import time
@@ -361,67 +360,25 @@ def _set_cell_beam_data(eng, sections_db: dict, params: dict, sec_size: str,
     setattr(eng, flange_prop, sec["tf"])
 
 
-def _find_python32() -> Optional[str]:
-    """Return path to 32-bit Python, or None. Prefer PYTHON32 env; else try py -3-32."""
-    exe = os.environ.get("PYTHON32")
-    if exe and Path(exe).exists():
-        return exe
-    if sys.platform != "win32":
-        return None
-    try:
-        r = subprocess.run(
-            ["py", "-3-32", "-c", "import sys; print(sys.executable)"],
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-        if r.returncode == 0 and r.stdout:
-            exe = r.stdout.strip()
-            if exe and Path(exe).exists():
-                return exe
-    except (FileNotFoundError, subprocess.TimeoutExpired):
-        pass
-    return None
-
-
 def run_one_com(params: dict, sections_db: dict) -> dict:
-    """Run one FRACOF calculation. Works on 32-bit (in-process) or 64-bit (subprocess).
+    """Run one FRACOF calculation in an isolated subprocess.
 
-    On 64-bit Python, spawns a 32-bit Python subprocess (macs_automation.com_bridge)
-    so the COM engine can load. Requires 32-bit Python installed; set PYTHON32
-    to its path if auto-detection fails.
+    Always spawns macs_automation.com_runner under the current interpreter
+    (sys.executable). Same arch as parent — both 32-bit in v1 — so a FRACOF
+    crash kills only the runner.
 
     Returns:
         Output dict from the engine (comp_failure, uf_max, time_series, etc.).
 
     Raises:
-        RuntimeError: If 64-bit and no 32-bit Python found, or bridge returns an error.
+        RuntimeError: If the runner times out, returns no output, or signals
+            an error in its JSON payload.
     """
-    if sys.maxsize <= 2**32:
-        # 32-bit: run in-process
-        import pythoncom
-        pythoncom.CoInitialize()
-        try:
-            eng = MACSEngine()
-            eng.set_inputs(params, sections_db)
-            return eng.run(method=params.get("method", "iso"))
-        finally:
-            pythoncom.CoUninitialize()
-
-    # 64-bit: run via 32-bit subprocess
-    python32 = _find_python32()
-    if not python32:
-        raise RuntimeError(
-            "FRACOF COM is 32-bit only. On 64-bit Python we need a 32-bit Python for COM. "
-            "Install 32-bit Python, then either set PYTHON32 to its path "
-            "(e.g. C:\\Python310-32\\python.exe) or use the Windows 'py' launcher with a 32-bit "
-            "install (e.g. py -3-32)."
-        )
     pkg_dir = Path(__file__).resolve().parent
     payload = json.dumps({"params": params, "sections_db": sections_db})
     try:
         proc = subprocess.run(
-            [python32, "-m", "macs_automation.com_bridge"],
+            [sys.executable, "-m", "macs_automation.com_runner"],
             input=payload,
             capture_output=True,
             text=True,
@@ -429,15 +386,15 @@ def run_one_com(params: dict, sections_db: dict) -> dict:
             cwd=pkg_dir.parent,
         )
     except subprocess.TimeoutExpired:
-        raise RuntimeError("COM bridge timed out (32-bit subprocess)")
+        raise RuntimeError("COM runner timed out")
     out_line = (proc.stdout or "").strip()
     if not out_line:
-        err = (proc.stderr or "").strip() or "No output from COM bridge"
-        raise RuntimeError(f"COM bridge failed: {err}")
+        err = (proc.stderr or "").strip() or "No output from COM runner"
+        raise RuntimeError(f"COM runner failed: {err}")
     try:
         result = json.loads(out_line)
     except json.JSONDecodeError as e:
-        raise RuntimeError(f"COM bridge invalid output: {e}")
+        raise RuntimeError(f"COM runner invalid output: {e}")
     if "error" in result:
         raise RuntimeError(result["error"])
     return result

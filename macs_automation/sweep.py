@@ -30,7 +30,10 @@ DEFAULTS = {
     "SideCSecSize": "IPE_500", "fy3": "355", "SideCEdgeFlag": 0, "SideCCompoFlag": 1, "SideCsh_con": 80,
     "SideDSecSize": "IPE_500", "fy4": "355", "SideDEdgeFlag": 1, "SideDCompoFlag": 0, "SideDsh_con": 80,
     # Loading
+    # cold_perm = SDL only (finishes/services/etc.); slab_weight is the slab self-weight.
+    # MACS+ adds them internally — keep them as separate inputs to mirror the desktop tool.
     "lead_var_act": 5.0, "othr_var_act": 0.0, "cold_perm": 1.2,
+    "slab_weight": 2.47,
     "calc_slab_weight": "1",
     "lead_var_fac": 0.5, "othr_var_fac": 0.3,
     # Fire
@@ -48,6 +51,10 @@ PARAM_ALIASES = {
     "side_b_sec": "SideBSecSize", "side_b_fy": "fy2",
     "side_c_sec": "SideCSecSize", "side_c_fy": "fy3",
     "side_d_sec": "SideDSecSize", "side_d_fy": "fy4",
+    # DEFAULTS["DeckId"] = "T14" is always present; without this alias the
+    # single-run path in app.api_submit_run leaves the user's deck_id at
+    # params["deck_id"] while DeckId stays "T14", so resolve_deck picks T14.
+    "deck_id": "DeckId",
 }
 
 # Map from friendly beam config keys to MACS+ parameter names

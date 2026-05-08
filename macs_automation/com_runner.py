@@ -1,8 +1,9 @@
-"""Run one FRACOF COM calculation in this process (for 32-bit Python subprocess).
+"""Per-calculation FRACOF COM runner.
 
-Used when the main app runs on 64-bit Python: it spawns this module as a
-32-bit Python subprocess and passes params/sections_db via stdin, gets
-outputs (or error) on stdout. See engine.run_one_com().
+Spawned as a subprocess by engine.run_one_com() so a FRACOF crash kills only
+the runner — not the parent FastAPI sidecar. Same architecture as the parent
+(both 32-bit). Reads {params, sections_db} as one JSON line on stdin and
+writes one JSON output line (or {"error": ...}) on stdout.
 """
 
 import json

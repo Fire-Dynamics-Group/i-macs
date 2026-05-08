@@ -180,17 +180,13 @@ class TestGenerateBatchDocx:
 # ─── Tests: API endpoint ─────────────────────────────────────────────────────
 
 @pytest.fixture
-def test_client(batch_db, tmp_path):
-    """FastAPI test client with batch_db attached."""
+def test_client(batch_db, monkeypatch):
+    """FastAPI test client pointed at the batch_db."""
     from fastapi.testclient import TestClient
-    from macs_automation.web.app import create_app
+    from macs_automation.app import app
+    import macs_automation.app as app_module
 
-    import os
-    db_path = str(tmp_path / "batch_test.db")
-    os.environ["MACS_DB_PATH"] = batch_db.db_path
-    app = create_app()
-    # Override the DB with our test DB
-    app.state.db = batch_db
+    monkeypatch.setattr(app_module, "DB_PATH", Path(batch_db.db_path))
     client = TestClient(app)
     yield client
 

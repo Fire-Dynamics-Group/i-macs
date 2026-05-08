@@ -82,9 +82,9 @@
                 <td>
                     {% if run.error %}
                         <span class="error-badge">Error</span>
-                    {% elif run.uf_max is not none and run.uf_max <= 1.0 %}
+                    {% elif run.overall_pass is true %}
                         <span class="pass-badge">Pass</span>
-                    {% elif run.uf_max is not none %}
+                    {% elif run.overall_pass is false %}
                         <span class="fail-badge">Fail</span>
                     {% else %}
                         &mdash;
@@ -158,9 +158,9 @@
             <td>
                 {% if run.error %}
                     <span class="error-badge">Error</span>
-                {% elif run.uf_max is not none and run.uf_max <= 1.0 %}
+                {% elif run.overall_pass is true %}
                     <span class="pass-badge">Pass</span>
-                {% elif run.uf_max is not none %}
+                {% elif run.overall_pass is false %}
                     <span class="fail-badge">Fail</span>
                 {% else %}
                     —

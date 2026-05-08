@@ -1,0 +1,29 @@
+[package]
+name = "i-macs"
+version = "0.1.0-rc.1"
+description = "Tauri shell for the MACS+ Automation desktop app."
+authors = ["Fire Dynamics Group"]
+license = ""
+edition = "2021"
+rust-version = "1.70"
+default-run = "i-macs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+tauri-plugin-shell = "2"
+tauri-plugin-opener = "2"
+tauri-plugin-updater = "2"
+tauri-plugin-process = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+ureq = { version = "2", default-features = false, features = ["tls", "json"] }
+
+[target.'cfg(windows)'.dependencies]
+win32job = "2"
+
+[features]
+custom-protocol = ["tauri/custom-protocol"]

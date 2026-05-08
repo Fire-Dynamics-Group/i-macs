@@ -346,6 +346,37 @@ class TestGetStats:
         assert stats["pass_count"] == 1
         assert stats["fail_count"] == 1
 
+    def test_high_side_load_ratio_counts_as_fail(self, db):
+        """A run with uf_max <= 1.0 but a perimeter beam load_ratio > 1.0 is a FAIL."""
+        params = {"span1": 9.0, "uSecSize": "IPE_500", "method": "iso", "time_limit": 60}
+        outputs = {
+            "comp_failure": 0, "uf_max": 0.5, "time_series": [],
+            "side_a_load_ratio": 0.3, "side_b_load_ratio": 1.4,
+            "side_c_load_ratio": 0.35, "side_d_load_ratio": 0.32,
+        }
+        db.insert_run(params, outputs=outputs)
+        stats = db.get_stats()
+        assert stats["successful"] == 1
+        assert stats["pass_count"] == 0
+        assert stats["fail_count"] == 1
+
+    def test_comp_failure_counts_as_fail(self, db):
+        """A run with comp_failure=1 is a FAIL even if uf_max <= 1.0."""
+        params = {"span1": 9.0, "uSecSize": "IPE_500", "method": "iso", "time_limit": 60}
+        outputs = {"comp_failure": 1, "uf_max": 0.6, "time_series": []}
+        db.insert_run(params, outputs=outputs)
+        stats = db.get_stats()
+        assert stats["pass_count"] == 0
+        assert stats["fail_count"] == 1
+
+    def test_null_side_ratios_dont_block_pass(self, db):
+        """A run with NULL side ratios (side wasn't analyzed) still passes if uf_max OK."""
+        params = {"span1": 9.0, "uSecSize": "IPE_500", "method": "iso", "time_limit": 60}
+        outputs = {"comp_failure": 0, "uf_max": 0.6, "time_series": []}
+        db.insert_run(params, outputs=outputs)
+        stats = db.get_stats()
+        assert stats["pass_count"] == 1
+
 
 class TestReportQueries:
     """Tests for report-oriented query methods added in Phase 0.2."""
@@ -494,6 +525,32 @@ class TestBatches:
         assert b["run_count"] == 3
         assert b["pass_count"] == 1
         assert b["error_count"] == 1
+
+    def test_get_batches_pass_count_includes_beam_check(self, db):
+        """get_batches.pass_count must respect side load ratios + comp_failure, not just uf_max."""
+        db.insert_batch("b2", mode="sweep", total_expected=3)
+        # Slab passes but beam B is overloaded — should be FAIL
+        db.insert_run(
+            {"span1": 1.0, "uSecSize": "IPE_500", "method": "iso",
+             "time_limit": 60, "_batch_id": "b2"},
+            outputs={"comp_failure": 0, "uf_max": 0.5, "side_b_load_ratio": 1.3,
+                     "time_series": []},
+        )
+        # Slab passes, comp_failure flag set — should be FAIL
+        db.insert_run(
+            {"span1": 2.0, "uSecSize": "IPE_500", "method": "iso",
+             "time_limit": 60, "_batch_id": "b2"},
+            outputs={"comp_failure": 1, "uf_max": 0.7, "time_series": []},
+        )
+        # Genuine pass
+        db.insert_run(
+            {"span1": 3.0, "uSecSize": "IPE_500", "method": "iso",
+             "time_limit": 60, "_batch_id": "b2"},
+            outputs={"comp_failure": 0, "uf_max": 0.6, "time_series": []},
+        )
+        batches = db.get_batches()
+        b2 = next(b for b in batches if b["batch_id"] == "b2")
+        assert b2["pass_count"] == 1
 
     def test_get_batch_runs(self, db):
         """get_batch_runs returns correct runs for a batch, ordered by id."""

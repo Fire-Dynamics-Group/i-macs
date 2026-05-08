@@ -8,9 +8,13 @@ import math
 from typing import Optional
 
 import numpy as np
-from scipy.stats import gumbel_l, lognorm, qmc
 
 from macs_automation.sweep import BEAM_SIDE_MAP, DEFAULTS, PARAM_ALIASES
+
+# scipy doesn't ship 32-bit Windows wheels for Python 3.10. The v1 sidecar
+# is 32-bit (FRACOF COM constraint), so importing scipy at module load
+# would block bundle creation. LHS is deferred to a follow-up PR (per
+# pr1.md scope); until then the imports below are deferred to call-time.
 
 # Occupancy fire load presets from EN 1991-1-2 Table E.4
 # Format: {name: {"type": distribution_type, "mean": value, "cov": value}}
@@ -42,6 +46,7 @@ def gumbel_ppf(u: np.ndarray, mean: float, cov: float) -> np.ndarray:
 
     Matches TMA script: scale = std*sqrt(6)/pi, loc = mean + euler_gamma*scale.
     """
+    from scipy.stats import gumbel_l
     std = mean * cov
     scale = std * math.sqrt(6) / math.pi
     loc = mean + np.euler_gamma * scale
@@ -53,6 +58,7 @@ def lognormal_ppf(u: np.ndarray, mean: float, cov: float) -> np.ndarray:
 
     Matches TMA script: sln = sqrt(log(1+cov^2)), mln = log(mean) - 0.5*sln^2.
     """
+    from scipy.stats import lognorm
     sln = np.sqrt(np.log(1 + cov**2))
     mln = np.log(mean) - 0.5 * sln**2
     return lognorm.ppf(u, sln, 0, np.exp(mln))
@@ -104,6 +110,7 @@ def generate_lhs_samples(config: dict) -> list[dict]:
         n_dims = 1  # qmc requires at least 1 dimension
 
     # Generate LHS samples in [0, 1]^d
+    from scipy.stats import qmc
     sampler = qmc.LatinHypercube(d=n_dims, seed=seed)
     lhs_raw = sampler.random(n=n_samples)
 

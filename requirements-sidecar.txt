@@ -1,0 +1,18 @@
+# Runtime deps for the 32-bit Python 3.10 sidecar (PyInstaller bundle).
+#
+# Excludes scipy + matplotlib + python-docx because:
+#   1. scipy doesn't ship 32-bit Windows wheels for Python 3.10 (last 32-bit
+#      win wheel was scipy 1.7.x). LHS is deferred to a follow-up PR per
+#      pr1.md scope; sampling.py lazy-imports scipy.
+#   2. matplotlib + python-docx are only used by the report module, also
+#      deferred to a follow-up PR. Both are lazy-imported inside the
+#      report endpoint handlers.
+#
+# Use requirements.txt for the 64-bit dev/test venv (full deps, runs all
+# pytest including LHS + report tests).
+pywin32>=306
+pyyaml>=6.0
+numpy>=1.24
+fastapi>=0.115
+uvicorn[standard]>=0.34
+python-multipart>=0.0.9

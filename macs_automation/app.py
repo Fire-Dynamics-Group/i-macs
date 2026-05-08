@@ -1,31 +1,61 @@
-"""FastAPI web application for MACS+ Automation desktop UI."""
+"""FastAPI sidecar for the MACS+ Automation desktop app.
 
+Serves a JSON-only API consumed by the Tauri+React shell. CLI:
+
+    python -m macs_automation.app --port 8123 --log-dir %LOCALAPPDATA%\\i-macs\\logs
+
+There are no HTML/Jinja routes here — the React shell renders all UI.
+"""
+
+import argparse
+import logging
+import os
+import re
 import threading
 import time
 import uuid
 from collections import OrderedDict
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Optional
 
-from fastapi import FastAPI, Request, UploadFile
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
+from fastapi import FastAPI, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
-from fastapi.staticfiles import StaticFiles
-from fastapi.templating import Jinja2Templates
 
 from macs_automation.db import ResultsDB
-from macs_automation.data_loader import load_data, DEFAULT_DATA_PATH
+from macs_automation.data_loader import load_data, DEFAULT_DATA_PATH, _find_macs_data_xml
 from macs_automation.blue_book_sections import get_blue_book_sections
 from macs_automation.frc_parser import parse_frc_string
+from macs_automation.status import compute_status
 from macs_automation.sweep import DEFAULTS, PARAM_ALIASES, BEAM_SIDE_MAP, resolve_deck, resolve_mesh, generate_combinations
 from macs_automation.sampling import FIRE_LOAD_PRESETS
 
+
+def _attach_status(run: dict) -> dict:
+    """Add overall_pass + checks fields to a run row in-place; return for chaining."""
+    if run is None:
+        return run
+    status = compute_status(run)
+    run["overall_pass"] = status["overall_pass"]
+    run["checks"] = status["checks"]
+    return run
+
 APP_DIR = Path(__file__).parent
-DB_PATH = APP_DIR.parent / "results.db"
+DB_PATH = Path(os.environ["MACS_DB_PATH"]) if "MACS_DB_PATH" in os.environ else APP_DIR.parent / "results.db"
 
 app = FastAPI(title="MACS+ Automation")
-app.mount("/static", StaticFiles(directory=APP_DIR / "static"), name="static")
-templates = Jinja2Templates(directory=APP_DIR / "templates")
+# The Tauri webview's origin (tauri://localhost in prod, http://localhost:1420
+# in dev) is cross-origin to http://127.0.0.1:<port>, so fetch() responses
+# come back blocked unless we send the headers. The sidecar binds to 127.0.0.1
+# only — allowing any origin is safe; nobody else can reach the port.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # ─── Reference data (loaded once at startup) ─────────────────────────────────
 _ref_data: Optional[dict] = None
@@ -190,6 +220,7 @@ _DISPLAY_COLUMNS = {
     "lead_var_act": "Lead Variable Action",
     "othr_var_act": "Other Variable Action",
     "cold_perm": "Cold Permanent",
+    "slab_weight": "Slab Weight (kN/m²)",
     "mesh_type": "Mesh Type",
     "conc_type": "Concrete Type",
     "deck_name": "Deck",
@@ -243,8 +274,7 @@ COM_RUN_DELAY = 0.5    # seconds between successive runs
 def _run_single_com(params: dict, sections_db: dict) -> dict:
     """Run a single MACS+ COM call with retries on COM errors.
 
-    Uses engine.run_one_com() so it works on both 32-bit (in-process) and
-    64-bit Python (32-bit subprocess bridge).
+    Uses engine.run_one_com(), which spawns an isolated com_runner subprocess.
     """
     from macs_automation.engine import run_one_com
     from pywintypes import com_error
@@ -404,6 +434,38 @@ def api_delete_custom_mesh(mesh_id: str):
     return {"ok": True}
 
 
+# ─── API: Health ─────────────────────────────────────────────────────────────
+
+_MACS_FOLDER_RE = re.compile(r"^MACS\+_?(.+)$")
+
+
+def _macs_install_info() -> tuple[bool, Optional[str]]:
+    """Detect whether MACS+ is installed and parse its version from the folder name.
+
+    Looks at where data_loader._find_macs_data_xml() resolves to. If Data.xml
+    doesn't exist on disk, MACS+ is not installed. Otherwise extract the
+    version from the `MACS+_NNN` folder segment (e.g. 'MACS+_304' → '304').
+    Returns (False, None) when not installed; (True, None) when installed but
+    version can't be parsed (e.g. MACS_DATA_PATH points outside the install).
+    """
+    path = _find_macs_data_xml()
+    if not path.is_file():
+        return False, None
+    for part in path.parts:
+        m = _MACS_FOLDER_RE.match(part)
+        if m:
+            return True, m.group(1)
+    return True, None
+
+
+@app.get("/healthz")
+def healthz():
+    """Tauri shell hits this after spawning the sidecar to confirm liveness
+    and to decide whether to show the MACS+ install dialog."""
+    installed, version = _macs_install_info()
+    return {"sidecar": "alive", "macs_installed": installed, "macs_version": version}
+
+
 # ─── API: Reference data endpoints ───────────────────────────────────────────
 
 @app.get("/api/sections")
@@ -429,11 +491,29 @@ def api_meshes():
     return _get_all_meshes()
 
 
+@app.get("/api/ref-data")
+def api_ref_data():
+    """Single roundtrip for the React config form: sections + decks + meshes
+    + the occupancy presets used for fire-load distributions."""
+    presets = [
+        {"name": name, "mean": info["mean"], "type": info["type"], "cov": info["cov"]}
+        for name, info in FIRE_LOAD_PRESETS.items()
+        if name != "Opening Factor"
+    ]
+    return {
+        "sections": api_sections(),
+        "decks": _get_all_decks(),
+        "meshes": _get_all_meshes(),
+        "defaults": dict(DEFAULTS),
+        "occupancy_presets": presets,
+    }
+
+
 # ─── API: Run endpoints ──────────────────────────────────────────────────────
 
 @app.post("/api/runs")
 def api_submit_run(request_body: dict):
-    """Submit a single MACS+ run (synchronous). Uses run_one_com so 32/64-bit work."""
+    """Submit a single MACS+ run (synchronous). Spawns an isolated com_runner subprocess."""
     all_sections = _get_all_sections()
     all_decks = _get_all_decks()
     all_meshes = _get_all_meshes()
@@ -460,7 +540,14 @@ def api_submit_run(request_body: dict):
     db = _get_db()
     run_id = db.insert_run(params, outputs=outputs)
     db.close()
-    return {"id": run_id, "uf_max": outputs["uf_max"], "duration_ms": outputs["duration_ms"]}
+    status = compute_status(outputs)
+    return {
+        "id": run_id,
+        "uf_max": outputs["uf_max"],
+        "duration_ms": outputs["duration_ms"],
+        "overall_pass": status["overall_pass"],
+        "checks": status["checks"],
+    }
 
 
 @app.post("/api/sweeps")
@@ -537,6 +624,8 @@ def api_list_runs(limit: int = 50, offset: int = 0):
     runs = db.get_runs(limit=limit, offset=offset)
     stats = db.get_stats()
     db.close()
+    for r in runs:
+        _attach_status(r)
     return {"runs": runs, "stats": stats}
 
 
@@ -548,7 +637,7 @@ def api_get_run(run_id: int):
     db.close()
     if run is None:
         return JSONResponse({"error": "Not found"}, status_code=404)
-    return run
+    return _attach_status(run)
 
 
 @app.get("/api/runs/{run_id}/timeseries")
@@ -579,79 +668,6 @@ async def api_import_frc(file: UploadFile):
         return JSONResponse({"error": f"Failed to parse .frc file: {e}"}, status_code=400)
 
     return result
-
-
-# ─── Page routes (serve templates) ───────────────────────────────────────────
-
-@app.get("/", response_class=HTMLResponse)
-def page_config(request: Request):
-    sections = _get_all_sections()
-    decks = _get_all_decks()
-    meshes = _get_all_meshes()
-    # So the template shows the Custom section block in dropdowns (custom_sections is used in {% if custom_sections %})
-    custom_sections = [sec_id for sec_id, s in sections.items() if s.get("family") == "Custom"]
-    # Occupancy presets with distribution info (exclude "Opening Factor" — used internally)
-    occupancy_presets = [
-        {"name": name, "mean": info["mean"], "type": info["type"], "cov": info["cov"]}
-        for name, info in FIRE_LOAD_PRESETS.items()
-        if name != "Opening Factor"
-    ]
-    return templates.TemplateResponse(request, "config.html", {
-        "defaults": DEFAULTS,
-        "sections": sections,
-        "decks": decks,
-        "meshes": meshes,
-        "occupancy_presets": occupancy_presets,
-        "custom_sections": custom_sections,
-    })
-
-
-@app.get("/dashboard", response_class=HTMLResponse)
-def page_dashboard(request: Request):
-    return templates.TemplateResponse(request, "dashboard.html")
-
-
-@app.get("/results", response_class=HTMLResponse)
-def page_results(request: Request):
-    db = _get_db()
-    stats = db.get_stats()
-
-    # Build batch groups
-    batches = db.get_batches()
-    batch_groups = []
-    for b in batches:
-        runs = db.get_batch_runs(b["batch_id"])
-        varying_cols, fixed_params = _detect_varying_columns(runs)
-        batch_groups.append({
-            **b,
-            "runs": runs,
-            "varying_cols": varying_cols,
-            "fixed_params": fixed_params,
-        })
-
-    ungrouped_runs = db.get_ungrouped_runs(limit=100)
-    db.close()
-
-    return templates.TemplateResponse(request, "results.html", {
-        "stats": stats,
-        "batch_groups": batch_groups,
-        "ungrouped_runs": ungrouped_runs,
-        "display_columns": _DISPLAY_COLUMNS,
-    })
-
-
-@app.get("/results/{run_id}", response_class=HTMLResponse)
-def page_detail(request: Request, run_id: int):
-    db = _get_db()
-    run = db.get_run(run_id)
-    ts = db.get_time_series(run_id)
-    db.close()
-    if run is None:
-        return RedirectResponse("/results")
-    return templates.TemplateResponse(request, "detail.html", {
-        "run": run,
-        "time_series": ts,
-    })
 
 
 # ─── Report download ─────────────────────────────────────────────────────────
@@ -727,6 +743,45 @@ def api_report_chart(chart_type: str, batch_id: str | None = None):
     return Response(content=png_bytes, media_type="image/png")
 
 
-if __name__ == "__main__":
+def _configure_file_logging(log_dir: str) -> None:
+    """Attach a 5MB × 5 RotatingFileHandler to the root logger.
+
+    The Tauri shell points `--log-dir` at %LOCALAPPDATA%\\i-macs\\logs in production;
+    operators can point at the resolved sidecar.log when the SidecarErrorScreen
+    surfaces a failure (slice 5). Uvicorn loggers propagate to root because
+    main() invokes uvicorn.run with log_config=None.
+    """
+    log_path = Path(log_dir)
+    log_path.mkdir(parents=True, exist_ok=True)
+    handler = RotatingFileHandler(
+        log_path / "sidecar.log",
+        maxBytes=5 * 1024 * 1024,
+        backupCount=5,
+        encoding="utf-8",
+    )
+    handler.setFormatter(logging.Formatter(
+        "%(asctime)s %(levelname)s %(name)s: %(message)s"
+    ))
+    handler.setLevel(logging.INFO)
+
+    root = logging.getLogger()
+    root.addHandler(handler)
+    if root.level == logging.NOTSET or root.level > logging.INFO:
+        root.setLevel(logging.INFO)
+
+
+def main(argv: Optional[list[str]] = None) -> None:
+    parser = argparse.ArgumentParser(prog="macs_automation", description="MACS+ Automation sidecar")
+    parser.add_argument("--port", type=int, default=8000, help="HTTP port to bind")
+    parser.add_argument("--log-dir", type=str, default=None, help="Directory for sidecar.log (rotating, 5 MB × 5)")
+    args = parser.parse_args(argv)
+
+    if args.log_dir:
+        _configure_file_logging(args.log_dir)
+
     import uvicorn
-    uvicorn.run("macs_automation.app:app", host="localhost", port=8000, reload=True)
+    uvicorn.run(app, host="127.0.0.1", port=args.port, log_config=None)
+
+
+if __name__ == "__main__":
+    main()

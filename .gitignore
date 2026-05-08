@@ -31,6 +31,31 @@ Thumbs.db
 # Environment
 .env
 
-# PyInstaller
-*.exe
-*.spec
+# PyInstaller — keep pyinstaller-server.spec (build config) and any
+# committed exes; only ignore the build/dist artefacts.
+build/
+dist-frontend/
+# (dist/ already covered above)
+
+# 32-bit sidecar venv
+venv-32/
+
+# Node / Vite / Tauri
+node_modules/
+.vite/
+src-tauri/target/
+src-tauri/Cargo.lock
+src-tauri/binaries/
+src-tauri/gen/
+
+# TypeScript incremental build cache
+tsconfig.tsbuildinfo
+
+# Sidecar logs (only matters in dev when --log-dir points at the repo)
+tmp_logs/
+tmp_logs_32/
+
+# Playwright artefacts
+test-results/
+playwright-report/
+playwright/.cache/
