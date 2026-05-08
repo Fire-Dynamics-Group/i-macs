@@ -42,7 +42,10 @@ test.describe("ConfigPage smoke", () => {
 
     await expect(page).toHaveURL(/\/runs\/1$/);
     await expect(page.getByRole("heading", { name: "Run #1" })).toBeVisible();
-    await expect(page.getByText("Pass")).toBeVisible();
+    // The badge + the breakdown table both show "Pass"; assert at least one.
+    await expect(page.getByText("Pass").first()).toBeVisible();
+    // The breakdown table renders one row per check including per-side beam loads.
+    await expect(page.getByText(/Side A beam load/i)).toBeVisible();
   });
 
   test("submit payload includes per-side fy + edge/composite/sh_con flags", async ({ page }) => {
