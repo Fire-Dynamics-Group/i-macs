@@ -23,14 +23,31 @@ interface FormValues {
   // Mesh + deck
   mesh_type: string;
   deck_id: string;
-  // Beams
+  // Beams — centre / unprotected
   u_sec_size: string;
   u_sec_fy: string;
-  // Sides A–D (sec + fy + edge/composite)
+  u_sec_sh_con: number;
+  // Sides A–D
   side_a_sec: string;
+  side_a_fy: string;
+  side_a_edge: number;
+  side_a_composite: number;
+  side_a_sh_con: number;
   side_b_sec: string;
+  side_b_fy: string;
+  side_b_edge: number;
+  side_b_composite: number;
+  side_b_sh_con: number;
   side_c_sec: string;
+  side_c_fy: string;
+  side_c_edge: number;
+  side_c_composite: number;
+  side_c_sh_con: number;
   side_d_sec: string;
+  side_d_fy: string;
+  side_d_edge: number;
+  side_d_composite: number;
+  side_d_sh_con: number;
   // Fire
   method: "iso" | "parametric";
   time_limit: number;
@@ -135,10 +152,27 @@ export default function ConfigPage() {
       deck_id: String(d.DeckId ?? "T14"),
       u_sec_size: String(d.uSecSize ?? "IPE_500"),
       u_sec_fy: String(d.fy5 ?? "355"),
+      u_sec_sh_con: Number(d.ush_con ?? 80),
       side_a_sec: String(d.SideASecSize ?? "IPE_500"),
+      side_a_fy: String(d.fy1 ?? "355"),
+      side_a_edge: Number(d.SideAEdgeFlag ?? 1),
+      side_a_composite: Number(d.SideACompoFlag ?? 0),
+      side_a_sh_con: Number(d.SideAsh_con ?? 80),
       side_b_sec: String(d.SideBSecSize ?? "IPE_500"),
+      side_b_fy: String(d.fy2 ?? "355"),
+      side_b_edge: Number(d.SideBEdgeFlag ?? 0),
+      side_b_composite: Number(d.SideBCompoFlag ?? 1),
+      side_b_sh_con: Number(d.SideBsh_con ?? 80),
       side_c_sec: String(d.SideCSecSize ?? "IPE_500"),
+      side_c_fy: String(d.fy3 ?? "355"),
+      side_c_edge: Number(d.SideCEdgeFlag ?? 0),
+      side_c_composite: Number(d.SideCCompoFlag ?? 1),
+      side_c_sh_con: Number(d.SideCsh_con ?? 80),
       side_d_sec: String(d.SideDSecSize ?? "IPE_500"),
+      side_d_fy: String(d.fy4 ?? "355"),
+      side_d_edge: Number(d.SideDEdgeFlag ?? 1),
+      side_d_composite: Number(d.SideDCompoFlag ?? 0),
+      side_d_sh_con: Number(d.SideDsh_con ?? 80),
       method: ((d.method as string) ?? "iso") as "iso" | "parametric",
       time_limit: Number(d.time_limit ?? 60),
       qf: Number(d.qf ?? 511),
@@ -230,6 +264,7 @@ export default function ConfigPage() {
         </Section>
 
         <Section title="Beams">
+          <SubLegend>Centre (unprotected)</SubLegend>
           <Grid>
             <SelectField
               label="Unprotected (centre) section"
@@ -238,38 +273,23 @@ export default function ConfigPage() {
               options={sectionOptions}
             />
             <SelectField
-              label="Unprotected fy"
+              label="Steel grade"
               name="u_sec_fy"
               control={control}
               options={FY_OPTIONS.map((v) => ({ id: v, label: `S${v}` }))}
             />
+            {numberField("Shear conn. spacing (mm)", "u_sec_sh_con", register, errors)}
           </Grid>
-          <Grid>
-            <SelectField
-              label="Side A section"
-              name="side_a_sec"
+          {(["a", "b", "c", "d"] as const).map((side) => (
+            <BeamSideRow
+              key={side}
+              side={side}
+              sectionOptions={sectionOptions}
               control={control}
-              options={sectionOptions}
+              register={register}
+              errors={errors}
             />
-            <SelectField
-              label="Side B section"
-              name="side_b_sec"
-              control={control}
-              options={sectionOptions}
-            />
-            <SelectField
-              label="Side C section"
-              name="side_c_sec"
-              control={control}
-              options={sectionOptions}
-            />
-            <SelectField
-              label="Side D section"
-              name="side_d_sec"
-              control={control}
-              options={sectionOptions}
-            />
-          </Grid>
+          ))}
         </Section>
 
         <Section title="Fire">
@@ -331,6 +351,92 @@ function Section({ title, children }: { title: string; children: React.ReactNode
 
 function Grid({ children }: { children: React.ReactNode }) {
   return <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">{children}</div>;
+}
+
+function SubLegend({ children }: { children: React.ReactNode }) {
+  return (
+    <h3 className="text-xs font-semibold uppercase tracking-wider text-slate-400">
+      {children}
+    </h3>
+  );
+}
+
+function CheckboxField({
+  label,
+  name,
+  control,
+}: {
+  label: string;
+  name: keyof FormValues;
+  control: ReturnType<typeof useForm<FormValues>>["control"];
+}) {
+  return (
+    <label className="flex items-center gap-2 self-end pb-2">
+      <Controller
+        control={control}
+        name={name as never}
+        render={({ field }) => (
+          <input
+            type="checkbox"
+            checked={(field.value as number) === 1}
+            onChange={(e) => field.onChange(e.target.checked ? 1 : 0)}
+            className="h-4 w-4 rounded border-slate-300 text-blue-700 focus:ring-blue-500"
+          />
+        )}
+      />
+      <span className="text-sm font-medium text-slate-700">{label}</span>
+    </label>
+  );
+}
+
+function BeamSideRow({
+  side,
+  sectionOptions,
+  control,
+  register,
+  errors,
+}: {
+  side: "a" | "b" | "c" | "d";
+  sectionOptions: Array<{ id: string; label: string }>;
+  control: ReturnType<typeof useForm<FormValues>>["control"];
+  register: ReturnType<typeof useForm<FormValues>>["register"];
+  errors: ReturnType<typeof useForm<FormValues>>["formState"]["errors"];
+}) {
+  return (
+    <>
+      <SubLegend>Side {side.toUpperCase()}</SubLegend>
+      <Grid>
+        <SelectField
+          label="Section"
+          name={`side_${side}_sec` as keyof FormValues}
+          control={control}
+          options={sectionOptions}
+        />
+        <SelectField
+          label="Steel grade"
+          name={`side_${side}_fy` as keyof FormValues}
+          control={control}
+          options={FY_OPTIONS.map((v) => ({ id: v, label: `S${v}` }))}
+        />
+        <CheckboxField
+          label="Edge beam"
+          name={`side_${side}_edge` as keyof FormValues}
+          control={control}
+        />
+        <CheckboxField
+          label="Composite"
+          name={`side_${side}_composite` as keyof FormValues}
+          control={control}
+        />
+        {numberField(
+          "Shear conn. spacing (mm)",
+          `side_${side}_sh_con` as keyof FormValues,
+          register,
+          errors,
+        )}
+      </Grid>
+    </>
+  );
 }
 
 function SelectField({

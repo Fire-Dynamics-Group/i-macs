@@ -51,6 +51,15 @@ PARAM_ALIASES = {
     "side_b_sec": "SideBSecSize", "side_b_fy": "fy2",
     "side_c_sec": "SideCSecSize", "side_c_fy": "fy3",
     "side_d_sec": "SideDSecSize", "side_d_fy": "fy4",
+    # Per-side beam flags + shear-connector spacing. Sweep YAML uses nested
+    # `beams.side_x.{edge,composite,sh_con}` (BEAM_SIDE_MAP); the React form's
+    # flat single-run JSON aliases here keep both paths producing the same
+    # internal keys.
+    "side_a_edge": "SideAEdgeFlag", "side_a_composite": "SideACompoFlag", "side_a_sh_con": "SideAsh_con",
+    "side_b_edge": "SideBEdgeFlag", "side_b_composite": "SideBCompoFlag", "side_b_sh_con": "SideBsh_con",
+    "side_c_edge": "SideCEdgeFlag", "side_c_composite": "SideCCompoFlag", "side_c_sh_con": "SideCsh_con",
+    "side_d_edge": "SideDEdgeFlag", "side_d_composite": "SideDCompoFlag", "side_d_sh_con": "SideDsh_con",
+    "u_sec_sh_con": "ush_con",
     # DEFAULTS["DeckId"] = "T14" is always present; without this alias the
     # single-run path in app.api_submit_run leaves the user's deck_id at
     # params["deck_id"] while DeckId stays "T14", so resolve_deck picks T14.

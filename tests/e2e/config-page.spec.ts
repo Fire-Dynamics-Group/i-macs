@@ -45,6 +45,42 @@ test.describe("ConfigPage smoke", () => {
     await expect(page.getByText("Pass")).toBeVisible();
   });
 
+  test("submit payload includes per-side fy + edge/composite/sh_con flags", async ({ page }) => {
+    // Capture the request body sent to POST /api/runs without breaking the
+    // existing mock — Playwright lets us listen alongside the route handler.
+    const submitBodyPromise = new Promise<Record<string, unknown>>((resolve) => {
+      page.on("request", (req) => {
+        if (req.method() === "POST" && req.url().endsWith("/api/runs")) {
+          resolve(JSON.parse(req.postData() ?? "{}"));
+        }
+      });
+    });
+
+    await page.goto("/");
+    await expect(page.getByRole("heading", { name: "MACS+ Automation" })).toBeVisible();
+    const submit = page.getByRole("button", { name: "Submit calculation" });
+    await expect(submit).toBeEnabled();
+    await submit.click();
+
+    const body = await submitBodyPromise;
+
+    // Per-side steel grade must be in the payload (not just the centre beam).
+    expect(body).toMatchObject({
+      side_a_fy: expect.any(String),
+      side_b_fy: expect.any(String),
+      side_c_fy: expect.any(String),
+      side_d_fy: expect.any(String),
+    });
+    // Edge / composite flags (0 or 1) per side.
+    for (const side of ["a", "b", "c", "d"] as const) {
+      expect(body[`side_${side}_edge`]).toEqual(expect.any(Number));
+      expect(body[`side_${side}_composite`]).toEqual(expect.any(Number));
+      expect(body[`side_${side}_sh_con`]).toEqual(expect.any(Number));
+    }
+    // Centre beam shear connector spacing.
+    expect(body.u_sec_sh_con).toEqual(expect.any(Number));
+  });
+
   test("shows the parametric-only fields when the user picks parametric", async ({ page }) => {
     await page.goto("/");
     await expect(page.getByRole("heading", { name: "MACS+ Automation" })).toBeVisible();
