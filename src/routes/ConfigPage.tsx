@@ -1,17 +1,22 @@
-import { useEffect, useMemo, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import { useForm, Controller, type SubmitHandler } from "react-hook-form";
 import { useMutation, useQuery } from "@tanstack/react-query";
 
 import {
   fetchRefData,
+  getBatch,
+  getRun,
   submitRun,
   submitSweep,
+  type BatchSummary,
   type RefData,
+  type Run,
   type SubmitRunResponse,
   type SubmitSweepResponse,
 } from "../api/client";
 import { checkForUpdates } from "../lib/updater";
+import { hydrateFormFromRun } from "../lib/hydrateFormFromRun";
 import { SweepConfigSection } from "../sweep/SweepConfigSection";
 import { VARYABLE_PARAMS } from "../sweep/varyableParams";
 import {
@@ -19,66 +24,7 @@ import {
   toRequestBody,
   type ValueSource,
 } from "../sweep/buildSweepPayload";
-
-interface FormValues {
-  // Geometry
-  span1: number;
-  span2: number;
-  numbeam: number;
-  slab_depth: number;
-  // Slab
-  fck: number;
-  conc_type: "NW" | "LW";
-  // Mesh + deck
-  mesh_type: string;
-  deck_id: string;
-  // Beams — centre / unprotected
-  u_sec_size: string;
-  u_sec_fy: string;
-  u_sec_sh_con: number;
-  // Sides A–D
-  side_a_sec: string;
-  side_a_fy: string;
-  side_a_edge: number;
-  side_a_composite: number;
-  side_a_sh_con: number;
-  side_b_sec: string;
-  side_b_fy: string;
-  side_b_edge: number;
-  side_b_composite: number;
-  side_b_sh_con: number;
-  side_c_sec: string;
-  side_c_fy: string;
-  side_c_edge: number;
-  side_c_composite: number;
-  side_c_sh_con: number;
-  side_d_sec: string;
-  side_d_fy: string;
-  side_d_edge: number;
-  side_d_composite: number;
-  side_d_sh_con: number;
-  // Loading
-  slab_weight: number;
-  cold_perm: number;
-  lead_var_act: number;
-  othr_var_act: number;
-  lead_var_fac: number;
-  othr_var_fac: number;
-  // Fire
-  method: "iso" | "parametric";
-  time_limit: number;
-  qf: number;
-  window_percent: number;
-  // Compartment (only used if method=parametric)
-  Lc: number;
-  Bc: number;
-  Hc: number;
-  Hw: number;
-  Lw: number;
-  Bfac: number;
-  combustion_factor: number;
-  growth_rate: number;
-}
+import type { FormValues } from "../types/formValues";
 
 const FY_OPTIONS = ["235", "275", "355", "460"];
 
@@ -114,9 +60,26 @@ function flattenSections(refData: RefData): Array<{ id: string; label: string }>
 
 export default function ConfigPage() {
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const fromRunParam = searchParams.get("from_run");
+  const fromBatchParam = searchParams.get("from_batch");
+  const fromRunId = fromRunParam ? Number(fromRunParam) : null;
+  const fromBatchId = fromBatchParam || null;
   const refDataQuery = useQuery({
     queryKey: ["ref-data"],
     queryFn: fetchRefData,
+  });
+
+  const fromRunQuery = useQuery<Run>({
+    queryKey: ["run", fromRunId],
+    queryFn: () => getRun(fromRunId as number),
+    enabled: fromRunId !== null && Number.isFinite(fromRunId),
+  });
+
+  const fromBatchQuery = useQuery<BatchSummary>({
+    queryKey: ["batch", fromBatchId],
+    queryFn: () => getBatch(fromBatchId as string),
+    enabled: fromBatchId !== null,
   });
 
   const sectionOptions = useMemo(
@@ -152,10 +115,20 @@ export default function ConfigPage() {
       },
     });
 
+  // Track which seed we last applied so the defaults effect doesn't clobber
+  // values hydrated from `?from_run` / `?from_batch`. The duplicate-run
+  // hydration effect (below) writes its own key once it runs.
+  const seededRef = useRef<string | null>(null);
+
   // Once ref-data lands, seed the form with the sidecar's DEFAULTS so the
-  // user can hit Submit and get a known-good calc on first run.
+  // user can hit Submit and get a known-good calc on first run. Skipped
+  // when a duplicate-run param is in the URL — that path runs its own
+  // hydration effect once the source run/batch lands.
   useEffect(() => {
     if (!refDataQuery.data) return;
+    if (fromRunId !== null || fromBatchId !== null) return;
+    if (seededRef.current === "defaults") return;
+    seededRef.current = "defaults";
     const d = refDataQuery.data.defaults as Record<string, unknown>;
     reset({
       span1: Number(d.span1 ?? 9),
@@ -208,11 +181,50 @@ export default function ConfigPage() {
       combustion_factor: Number(d.combustion_factor ?? 0.8),
       growth_rate: Number(d.growth_rate ?? 1),
     });
-  }, [refDataQuery.data, reset]);
+  }, [refDataQuery.data, reset, fromRunId, fromBatchId]);
 
   const [mode, setMode] = useState<"single" | "sweep">("single");
   const [varying, setVarying] = useState<Record<string, ValueSource>>({});
   const [sweepError, setSweepError] = useState<string | null>(null);
+
+  // Duplicate-run hydration: when ?from_run or ?from_batch is set and the
+  // upstream data lands, fill the form and (for batches) switch to sweep
+  // mode + populate the varying spec. Banner-text state ("source label")
+  // captures the displayed source so the banner persists past a refetch.
+  const [hydrationSource, setHydrationSource] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!refDataQuery.data) return;
+    if (fromRunId === null || !fromRunQuery.data) return;
+    if (seededRef.current === `run:${fromRunId}`) return;
+    seededRef.current = `run:${fromRunId}`;
+    const values = hydrateFormFromRun(fromRunQuery.data, refDataQuery.data);
+    reset(values);
+    setMode("single");
+    setVarying({});
+    setHydrationSource(`run #${fromRunId}`);
+  }, [fromRunId, fromRunQuery.data, refDataQuery.data, reset]);
+
+  useEffect(() => {
+    if (!refDataQuery.data) return;
+    if (fromBatchId === null || !fromBatchQuery.data) return;
+    if (seededRef.current === `batch:${fromBatchId}`) return;
+    seededRef.current = `batch:${fromBatchId}`;
+    hydrateFormFromBatch(fromBatchQuery.data, refDataQuery.data, {
+      reset,
+      setVarying,
+      setMode,
+    });
+    setHydrationSource(`batch ${fromBatchId}`);
+  }, [fromBatchId, fromBatchQuery.data, refDataQuery.data, reset]);
+
+  const dismissBanner = () => {
+    setHydrationSource(null);
+    const next = new URLSearchParams(searchParams);
+    next.delete("from_run");
+    next.delete("from_batch");
+    setSearchParams(next, { replace: true });
+  };
 
   const submit = useMutation<SubmitRunResponse, Error, FormValues>({
     mutationFn: (values) => submitRun(values as unknown as Record<string, unknown>),
@@ -313,6 +325,25 @@ export default function ConfigPage() {
           </button>
         </div>
       </header>
+
+      {hydrationSource && (
+        <div
+          data-testid="duplicate-run-banner"
+          className="mb-4 flex items-start justify-between gap-3 rounded-md border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-900"
+        >
+          <span>
+            Duplicated from {hydrationSource} — edit any field and run.
+          </span>
+          <button
+            type="button"
+            aria-label="Dismiss"
+            onClick={dismissBanner}
+            className="rounded p-0.5 text-blue-700 hover:bg-blue-100"
+          >
+            ×
+          </button>
+        </div>
+      )}
 
       <form
         onSubmit={handleSubmit(onSubmit)}
@@ -466,6 +497,66 @@ export default function ConfigPage() {
       </form>
     </div>
   );
+}
+
+/**
+ * Hydrate the form from a stored batch's `varying_params` + `fixed_params`.
+ *
+ * The fixed map already carries the form-shaped field names (the sweep-submit
+ * handler stores `request_body` verbatim), so we use it as the override on top
+ * of defaults via a synthesized Run row + `hydrateFormFromRun`. The varying
+ * map (`{name: values[]}` for grid sweeps) goes straight into the form's
+ * `varying` ValueSource state as a `list` entry.
+ */
+function hydrateFormFromBatch(
+  batch: BatchSummary,
+  refData: RefData,
+  api: {
+    reset: ReturnType<typeof useForm<FormValues>>["reset"];
+    setVarying: React.Dispatch<React.SetStateAction<Record<string, ValueSource>>>;
+    setMode: React.Dispatch<React.SetStateAction<"single" | "sweep">>;
+  },
+) {
+  // Fixed params from the stored config are form-shaped already (the
+  // sweep-submit handler stores request_body verbatim). Merge them on top
+  // of the sidecar defaults via the standard FormValues seed.
+  const defaults = refData.defaults as Record<string, unknown>;
+  const fixed = batch.fixed_params ?? {};
+  const synthesizedRun = {
+    ...defaults,
+    ...fixed,
+    // Defaults are keyed for the engine (e.g. fy5, SideASecSize), but the
+    // run-shaped hydration helper expects DB column names. We seed the
+    // helper with whatever overlap exists in `fixed` (form column names)
+    // and rely on it to coerce types / fall back on zero where columns
+    // are absent.
+    deck_name: fixed.deck_id ?? (defaults.DeckId as string | undefined) ?? "",
+    ush_con: fixed.u_sec_sh_con ?? defaults.ush_con ?? 80,
+  } as unknown as Run;
+  const values = hydrateFormFromRun(synthesizedRun, refData);
+  // The hydration helper can't recover the steel grades from defaults
+  // because the engine keys are fy1..fy5, not side_*_fy. Patch them back
+  // in from `fixed` if present.
+  const fy = (key: string, fallback: string) =>
+    (fixed[key] as string | number | undefined)?.toString() ?? fallback;
+  api.reset({
+    ...values,
+    u_sec_fy: fy("u_sec_fy", String(defaults.fy5 ?? "355")),
+    side_a_fy: fy("side_a_fy", String(defaults.fy1 ?? "355")),
+    side_b_fy: fy("side_b_fy", String(defaults.fy2 ?? "355")),
+    side_c_fy: fy("side_c_fy", String(defaults.fy3 ?? "355")),
+    side_d_fy: fy("side_d_fy", String(defaults.fy4 ?? "355")),
+  });
+
+  // Varying spec: convert each `name: values[]` entry into a `list` ValueSource.
+  const next: Record<string, ValueSource> = {};
+  for (const [name, raw] of Object.entries(batch.varying_params ?? {})) {
+    if (Array.isArray(raw) && raw.every((v) => typeof v === "number")) {
+      next[name] = { list: raw as number[] };
+    }
+  }
+  api.setVarying(next);
+  api.setMode("sweep");
 }
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
