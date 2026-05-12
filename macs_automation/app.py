@@ -33,6 +33,7 @@ from macs_automation.status import compute_status
 from macs_automation.sse_broker import Broker
 from macs_automation.sweep import DEFAULTS, PARAM_ALIASES, BEAM_SIDE_MAP, resolve_deck, resolve_mesh, generate_combinations
 from macs_automation.sampling import FIRE_LOAD_PRESETS
+from macs_automation.varying_params import varying_params_from_config
 
 
 def _attach_status(run: dict) -> dict:
@@ -607,10 +608,14 @@ def api_submit_sweep(request_body: dict):
     # Dispatch to generate_combinations() which handles both grid sweep and LHS
     combinations = generate_combinations(request_body)
 
-    # Generate batch_id and record batch metadata
+    # Generate batch_id and record batch metadata, persisting the full
+    # sweep spec so the dashboard can derive varying/fixed params and the
+    # *Rerun batch* button (slice 2) can hydrate the form.
     batch_id = uuid.uuid4().hex
+    config_json = json.dumps(request_body)
     db = _get_db()
-    db.insert_batch(batch_id, mode=mode, total_expected=len(combinations))
+    db.insert_batch(batch_id, mode=mode, total_expected=len(combinations),
+                    config_json=config_json)
     db.close()
 
     # Inject batch_id into each combination
@@ -674,6 +679,93 @@ def api_list_runs(limit: int = 50, offset: int = 0, batch_id: Optional[str] = No
     for r in runs:
         _attach_status(r)
     return {"runs": runs, "stats": stats}
+
+
+@app.get("/api/batches")
+def api_list_batches(limit: int = 20, offset: int = 0):
+    """Paginated batches list with server-side aggregation.
+
+    Each row carries the run/pass/fail/error counts plus `varying_params`
+    and `fixed_params` derived from the stored sweep spec — the dashboard
+    surfaces these as the per-batch summary.
+    """
+    db = _get_db()
+    try:
+        rows = db.get_batches(limit=limit, offset=offset)
+        total = db.get_batches_count()
+    finally:
+        db.close()
+    batches = []
+    for row in rows:
+        derived = varying_params_from_config(row.get("config_json"))
+        successful = row["run_count"] - row["error_count"]
+        batches.append({
+            "batch_id": row["batch_id"],
+            "created_at": row["created_at"],
+            "mode": row["mode"],
+            "total_expected": row["total_expected"],
+            "run_count": row["run_count"],
+            "pass_count": row["pass_count"],
+            "fail_count": max(successful - row["pass_count"], 0),
+            "error_count": row["error_count"],
+            "varying_params": derived["varying"],
+            "fixed_params": derived["fixed"],
+        })
+    return {"batches": batches, "total": total}
+
+
+@app.get("/api/batches/{batch_id}")
+def api_get_batch(batch_id: str):
+    """Single batch summary — same shape as a row in /api/batches. Lets
+    the batch detail page decide between live-progress and analytical
+    views without re-paging the full list."""
+    db = _get_db()
+    try:
+        rows = db.get_batches()
+    finally:
+        db.close()
+    row = next((r for r in rows if r["batch_id"] == batch_id), None)
+    if row is None:
+        return JSONResponse({"error": "Not found"}, status_code=404)
+    derived = varying_params_from_config(row.get("config_json"))
+    successful = row["run_count"] - row["error_count"]
+    return {
+        "batch_id": row["batch_id"],
+        "created_at": row["created_at"],
+        "mode": row["mode"],
+        "total_expected": row["total_expected"],
+        "run_count": row["run_count"],
+        "pass_count": row["pass_count"],
+        "fail_count": max(successful - row["pass_count"], 0),
+        "error_count": row["error_count"],
+        "varying_params": derived["varying"],
+        "fixed_params": derived["fixed"],
+    }
+
+
+@app.get("/api/runs/ungrouped")
+def api_list_ungrouped_runs(limit: int = 50, offset: int = 0):
+    """Paginated runs where batch_id IS NULL, newest first."""
+    db = _get_db()
+    try:
+        runs = db.get_ungrouped_runs(limit=limit, offset=offset)
+        total = db.get_ungrouped_runs_count()
+    finally:
+        db.close()
+    for r in runs:
+        _attach_status(r)
+    return {"runs": runs, "total": total}
+
+
+@app.get("/api/stats")
+def api_stats():
+    """Global summary counts. Split out from /api/runs so the dashboard's
+    stat cards can refresh independently of the runs list."""
+    db = _get_db()
+    try:
+        return db.get_stats()
+    finally:
+        db.close()
 
 
 async def _format_sse_events(broker: Broker):

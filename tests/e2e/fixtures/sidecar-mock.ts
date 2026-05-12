@@ -54,6 +54,14 @@ interface MockOpts {
    * sweep that ends in batch_done so the dashboard freezes in 'closed' state.
    */
   sweepEvents?: Array<{ event: "run_completed" | "batch_done"; data: Record<string, unknown> }>;
+  /** Stats payload from /api/stats. */
+  stats?: Record<string, number>;
+  /** Batches list returned by GET /api/batches. */
+  batches?: { batches: Array<Record<string, unknown>>; total: number };
+  /** Ungrouped runs returned by GET /api/runs/ungrouped. */
+  ungrouped?: { runs: Array<Record<string, unknown>>; total: number };
+  /** Map of batch_id → summary for GET /api/batches/{batch_id}. */
+  batchSummaries?: Record<string, Record<string, unknown>>;
 }
 
 /**
@@ -141,11 +149,53 @@ export async function installSidecarMock(page: Page, opts: MockOpts) {
     if (method === "POST" && url.pathname === "/api/sweeps") {
       return route.fulfill({ status: submitSweep.status, json: submitSweep.body });
     }
+    if (method === "GET" && url.pathname === "/api/runs/ungrouped") {
+      return route.fulfill({
+        status: 200,
+        json: opts.ungrouped ?? { runs: [], total: 0 },
+      });
+    }
     if (method === "GET" && url.pathname === "/api/runs") {
       // batch_id filter or general list — both shapes tested.
       return route.fulfill({
         status: 200,
         json: { runs: batchRuns, stats: {} },
+      });
+    }
+    if (method === "GET" && url.pathname === "/api/stats") {
+      return route.fulfill({
+        status: 200,
+        json: opts.stats ?? {
+          total: 0, successful: 0, errors: 0, pass_count: 0, fail_count: 0,
+        },
+      });
+    }
+    if (method === "GET" && url.pathname === "/api/batches") {
+      return route.fulfill({
+        status: 200,
+        json: opts.batches ?? { batches: [], total: 0 },
+      });
+    }
+    if (method === "GET" && url.pathname.startsWith("/api/batches/")) {
+      const id = url.pathname.slice("/api/batches/".length);
+      const summary = (opts.batchSummaries ?? {})[id];
+      if (!summary) {
+        return route.fulfill({ status: 404, json: { error: "Not found" } });
+      }
+      return route.fulfill({ status: 200, json: summary });
+    }
+    if (method === "GET" && url.pathname.startsWith("/api/report/chart/")) {
+      // 1x1 transparent PNG. <img> needs *something* or jsdom logs noise.
+      const png = Buffer.from(
+        "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c489" +
+          "0000000a49444154789c6300010000050001" +
+          "0d0a2db40000000049454e44ae426082",
+        "hex",
+      );
+      return route.fulfill({
+        status: 200,
+        contentType: "image/png",
+        body: png,
       });
     }
     if (method === "GET" && url.pathname === "/api/sweeps/events") {

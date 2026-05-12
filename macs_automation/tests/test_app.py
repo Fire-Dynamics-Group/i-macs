@@ -903,3 +903,343 @@ class TestCOMRetry:
             with pytest.raises(ValueError, match="bad param"):
                 _run_single_com(params, {})
             assert mock_run.call_count == 1  # no retry
+
+
+# ─── Dashboard slice (issue #7) ──────────────────────────────────────────────
+
+
+def _patch_thread_to_run_inline():
+    """Return a context manager pair: (background patch, thread patch) so the
+    sweep handler runs synchronously under TestClient (no real COM)."""
+    return None  # documentation hook; helpers below use the pattern inline
+
+
+class TestSweepHandlerWritesConfigJson:
+    """The dashboard's *Rerun batch* button needs the full sweep spec back.
+
+    POST /api/sweeps must persist the request body into batches.config_json
+    so /api/batches can derive varying_params and slice 2 can hydrate.
+    """
+
+    def test_grid_sweep_writes_config_json(self, client, use_tmp_db):
+        import json
+        payload = {
+            "analysis_method": "iso",
+            "sweep": {"qf": [300, 500]},
+            "fixed": {"span1": 9, "span2": 9},
+        }
+        with patch("macs_automation.app._run_sweep_background"):
+            resp = client.post("/api/sweeps", json=payload)
+            assert resp.status_code == 200
+            batch_id = resp.json()["batch_id"]
+
+        from macs_automation.db import ResultsDB
+        with ResultsDB(use_tmp_db) as db:
+            row = db.conn.execute(
+                "SELECT config_json FROM batches WHERE batch_id = ?", (batch_id,)
+            ).fetchone()
+        assert row is not None
+        stored = json.loads(row[0])
+        # Round-trip preserves the sweep spec verbatim.
+        assert stored["sweep"] == {"qf": [300, 500]}
+        assert stored["fixed"] == {"span1": 9, "span2": 9}
+        assert stored.get("analysis_method") == "iso"
+
+    def test_lhs_sweep_writes_config_json(self, client, use_tmp_db):
+        import json
+        payload = {
+            "sampling": "lhs",
+            "analysis_method": "parametric",
+            "n_samples": 3,
+            "seed": 42,
+            "distributions": {"qf": {"preset": "Office"}},
+            "fixed": {"span1": 9, "span2": 9},
+        }
+        with patch("macs_automation.app._run_sweep_background"):
+            resp = client.post("/api/sweeps", json=payload)
+            assert resp.status_code == 200
+            batch_id = resp.json()["batch_id"]
+
+        from macs_automation.db import ResultsDB
+        with ResultsDB(use_tmp_db) as db:
+            row = db.conn.execute(
+                "SELECT config_json FROM batches WHERE batch_id = ?", (batch_id,)
+            ).fetchone()
+        stored = json.loads(row[0])
+        assert stored["sampling"] == "lhs"
+        assert "distributions" in stored
+
+
+def _seed_batch(db_path, batch_id, *, mode="sweep", config_json=None,
+                pass_count=0, fail_count=0, error_count=0,
+                total_expected=None, started_at=None):
+    """Seed a batch with its requested pass/fail/error breakdown."""
+    import json
+    from macs_automation.db import ResultsDB
+    total = pass_count + fail_count + error_count
+    if total_expected is None:
+        total_expected = total
+    db = ResultsDB(db_path)
+    try:
+        db.insert_batch(batch_id, mode=mode, total_expected=total_expected,
+                        config_json=config_json)
+        if started_at is not None:
+            db.conn.execute(
+                "UPDATE batches SET created_at = ? WHERE batch_id = ?",
+                (started_at, batch_id),
+            )
+            db.conn.commit()
+        base_params = {
+            "_batch_id": batch_id,
+            "span1": 9.0, "span2": 9.0, "method": "iso",
+            "fck": 25, "uSecSize": "IPE_500", "time_limit": 60,
+        }
+        passing_outputs = {
+            "comp_failure": 0, "uf_max": 0.5,
+            "side_a_load_ratio": 0.3, "side_b_load_ratio": 0.4,
+            "side_c_load_ratio": 0.35, "side_d_load_ratio": 0.32,
+            "time_series": [],
+        }
+        failing_outputs = {
+            "comp_failure": 0, "uf_max": 1.3,
+            "side_a_load_ratio": 0.3, "side_b_load_ratio": 0.4,
+            "side_c_load_ratio": 0.35, "side_d_load_ratio": 0.32,
+            "time_series": [],
+        }
+        for _ in range(pass_count):
+            db.insert_run(base_params, outputs=passing_outputs)
+        for _ in range(fail_count):
+            db.insert_run(base_params, outputs=failing_outputs)
+        for _ in range(error_count):
+            db.insert_run(base_params, error="COM error")
+    finally:
+        db.close()
+
+
+class TestBatchesListEndpoint:
+    """GET /api/batches — paginated, server-aggregated, newest first."""
+
+    def test_empty_db(self, client):
+        resp = client.get("/api/batches")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data == {"batches": [], "total": 0}
+
+    def test_response_shape_includes_aggregations_and_varying(self, use_tmp_db):
+        import json
+        spec = {
+            "analysis_method": "iso",
+            "sweep": {"qf": [400, 500]},
+            "fixed": {"span1": 9},
+        }
+        _seed_batch(use_tmp_db, "b1", config_json=json.dumps(spec),
+                    pass_count=1, fail_count=1, error_count=0,
+                    total_expected=2)
+        client = TestClient(app)
+        resp = client.get("/api/batches")
+        data = resp.json()
+        assert data["total"] == 1
+        batch = data["batches"][0]
+        assert batch["batch_id"] == "b1"
+        assert batch["mode"] == "sweep"
+        assert batch["total_expected"] == 2
+        assert batch["run_count"] == 2
+        assert batch["pass_count"] == 1
+        assert batch["fail_count"] == 1
+        assert batch["error_count"] == 0
+        # Derived from config_json — the single source of truth.
+        assert batch["varying_params"] == {"qf": [400, 500]}
+        assert batch["fixed_params"] == {"span1": 9}
+
+    def test_newest_first(self, use_tmp_db):
+        _seed_batch(use_tmp_db, "old", started_at="2026-01-01T00:00:00+00:00",
+                    pass_count=1)
+        _seed_batch(use_tmp_db, "new", started_at="2026-03-01T00:00:00+00:00",
+                    pass_count=1)
+        client = TestClient(app)
+        resp = client.get("/api/batches")
+        ids = [b["batch_id"] for b in resp.json()["batches"]]
+        assert ids == ["new", "old"]
+
+    def test_pagination_limit_and_offset(self, use_tmp_db):
+        for i in range(5):
+            _seed_batch(
+                use_tmp_db, f"b{i}",
+                started_at=f"2026-0{i+1}-01T00:00:00+00:00",
+                pass_count=1,
+            )
+        client = TestClient(app)
+        resp = client.get("/api/batches", params={"limit": 2, "offset": 1})
+        data = resp.json()
+        assert data["total"] == 5  # total reflects all rows, not page
+        assert len(data["batches"]) == 2
+        # Skipped the newest; second + third newest expected.
+        assert data["batches"][0]["batch_id"] == "b3"
+        assert data["batches"][1]["batch_id"] == "b2"
+
+    def test_null_config_json_tolerated(self, use_tmp_db):
+        _seed_batch(use_tmp_db, "legacy", config_json=None, pass_count=1)
+        client = TestClient(app)
+        resp = client.get("/api/batches")
+        batch = resp.json()["batches"][0]
+        # Legacy batches show as fully-fixed-but-empty; Rerun button is
+        # disabled client-side when both are empty.
+        assert batch["varying_params"] == {}
+        assert batch["fixed_params"] == {}
+
+    def test_pass_count_respects_beam_check(self, use_tmp_db):
+        """pass_count uses the shared _pass_where (not just uf_max)."""
+        import json
+        from macs_automation.db import ResultsDB
+        spec = {"sweep": {"qf": [400]}, "fixed": {}}
+        db = ResultsDB(use_tmp_db)
+        try:
+            db.insert_batch("b1", mode="sweep", total_expected=1,
+                            config_json=json.dumps(spec))
+            # uf_max OK but side B load ratio > 1.0 → must count as fail.
+            db.insert_run(
+                {"_batch_id": "b1", "span1": 9.0, "method": "iso",
+                 "uSecSize": "IPE_500", "time_limit": 60},
+                outputs={"comp_failure": 0, "uf_max": 0.5,
+                         "side_b_load_ratio": 1.3, "time_series": []},
+            )
+        finally:
+            db.close()
+        client = TestClient(app)
+        batch = client.get("/api/batches").json()["batches"][0]
+        assert batch["pass_count"] == 0
+        assert batch["fail_count"] == 1
+
+
+class TestUngroupedRunsEndpoint:
+    """GET /api/runs/ungrouped — paginated rows with batch_id IS NULL."""
+
+    def test_empty_db(self, client):
+        resp = client.get("/api/runs/ungrouped")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data == {"runs": [], "total": 0}
+
+    def test_excludes_batched_runs(self, use_tmp_db):
+        _seed_batch(use_tmp_db, "b1", pass_count=2)
+        # Ungrouped (no batch_id) run
+        from macs_automation.db import ResultsDB
+        with ResultsDB(use_tmp_db) as db:
+            db.insert_run(
+                {"span1": 11.0, "method": "iso", "uSecSize": "IPE_500",
+                 "time_limit": 60},
+                outputs={"comp_failure": 0, "uf_max": 0.6, "time_series": []},
+            )
+        client = TestClient(app)
+        resp = client.get("/api/runs/ungrouped")
+        data = resp.json()
+        assert data["total"] == 1
+        assert len(data["runs"]) == 1
+        assert data["runs"][0]["batch_id"] is None
+        assert data["runs"][0]["span1"] == 11.0
+
+    def test_newest_first(self, use_tmp_db):
+        from macs_automation.db import ResultsDB
+        with ResultsDB(use_tmp_db) as db:
+            for s in [1.0, 2.0, 3.0]:
+                db.insert_run(
+                    {"span1": s, "method": "iso", "uSecSize": "IPE_500",
+                     "time_limit": 60},
+                    outputs={"comp_failure": 0, "uf_max": 0.5, "time_series": []},
+                )
+        client = TestClient(app)
+        resp = client.get("/api/runs/ungrouped")
+        spans = [r["span1"] for r in resp.json()["runs"]]
+        assert spans == [3.0, 2.0, 1.0]
+
+    def test_pagination(self, use_tmp_db):
+        from macs_automation.db import ResultsDB
+        with ResultsDB(use_tmp_db) as db:
+            for i in range(5):
+                db.insert_run(
+                    {"span1": float(i), "method": "iso", "uSecSize": "IPE_500",
+                     "time_limit": 60},
+                    outputs={"comp_failure": 0, "uf_max": 0.5, "time_series": []},
+                )
+        client = TestClient(app)
+        resp = client.get("/api/runs/ungrouped", params={"limit": 2, "offset": 1})
+        data = resp.json()
+        assert data["total"] == 5
+        assert len(data["runs"]) == 2
+
+    def test_runs_carry_overall_pass(self, use_tmp_db):
+        """Status is attached so the table can color rows without re-fetching."""
+        from macs_automation.db import ResultsDB
+        with ResultsDB(use_tmp_db) as db:
+            db.insert_run(
+                {"span1": 9.0, "method": "iso", "uSecSize": "IPE_500",
+                 "time_limit": 60},
+                outputs={"comp_failure": 0, "uf_max": 0.5, "time_series": []},
+            )
+        client = TestClient(app)
+        run = client.get("/api/runs/ungrouped").json()["runs"][0]
+        assert "overall_pass" in run
+        assert run["overall_pass"] is True
+
+
+class TestBatchByIdEndpoint:
+    """GET /api/batches/{batch_id} — single-batch summary for the
+    analytical view to know when to switch from live progress."""
+
+    def test_returns_summary_with_aggregations(self, use_tmp_db):
+        import json
+        _seed_batch(
+            use_tmp_db, "b1",
+            config_json=json.dumps({"sweep": {"qf": [400, 500]}, "fixed": {"span1": 9}}),
+            pass_count=2, fail_count=0, total_expected=2,
+        )
+        client = TestClient(app)
+        resp = client.get("/api/batches/b1")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["batch_id"] == "b1"
+        assert data["run_count"] == 2
+        assert data["total_expected"] == 2
+        assert data["varying_params"] == {"qf": [400, 500]}
+        assert data["fixed_params"] == {"span1": 9}
+
+    def test_unknown_batch_returns_404(self, client):
+        resp = client.get("/api/batches/nope")
+        assert resp.status_code == 404
+
+
+class TestStatsEndpoint:
+    """GET /api/stats — global counts."""
+
+    def test_empty_db(self, client):
+        resp = client.get("/api/stats")
+        assert resp.status_code == 200
+        assert resp.json() == {
+            "total": 0, "successful": 0, "errors": 0,
+            "pass_count": 0, "fail_count": 0,
+        }
+
+    def test_mixed_runs(self, use_tmp_db):
+        from macs_automation.db import ResultsDB
+        with ResultsDB(use_tmp_db) as db:
+            db.insert_run(
+                {"span1": 9.0, "method": "iso", "uSecSize": "IPE_500",
+                 "time_limit": 60},
+                outputs={"comp_failure": 0, "uf_max": 0.5, "time_series": []},
+            )
+            db.insert_run(
+                {"span1": 10.0, "method": "iso", "uSecSize": "IPE_500",
+                 "time_limit": 60},
+                outputs={"comp_failure": 0, "uf_max": 1.3, "time_series": []},
+            )
+            db.insert_run(
+                {"span1": 11.0, "method": "iso", "uSecSize": "IPE_500",
+                 "time_limit": 60},
+                error="broke",
+            )
+        client = TestClient(app)
+        stats = client.get("/api/stats").json()
+        assert stats == {
+            "total": 3, "successful": 2, "errors": 1,
+            "pass_count": 1, "fail_count": 1,
+        }

@@ -52,7 +52,8 @@ CREATE TABLE IF NOT EXISTS batches (
     batch_id TEXT PRIMARY KEY,
     created_at TEXT,
     mode TEXT,
-    total_expected INTEGER
+    total_expected INTEGER,
+    config_json TEXT
 );
 
 CREATE TABLE IF NOT EXISTS time_series (
@@ -153,6 +154,12 @@ class ResultsDB:
         self.conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_runs_batch_id ON runs(batch_id)"
         )
+        # Upgrade legacy batches table to include config_json (PRD slice 1).
+        batches_cols = {
+            row[1] for row in self.conn.execute("PRAGMA table_info(batches)")
+        }
+        if "config_json" not in batches_cols:
+            self.conn.execute("ALTER TABLE batches ADD COLUMN config_json TEXT")
 
     def close(self):
         self.conn.close()
@@ -417,19 +424,34 @@ class ResultsDB:
 
     # ─── Batch query methods ─────────────────────────────────────────────
 
-    def insert_batch(self, batch_id: str, mode: str, total_expected: int):
-        """Record batch metadata."""
+    def insert_batch(self, batch_id: str, mode: str, total_expected: int,
+                     config_json: Optional[str] = None):
+        """Record batch metadata. config_json holds the full sweep spec JSON
+        used by the dashboard to (a) derive varying/fixed params for display
+        and (b) hydrate the form for *Rerun batch* (slice 2)."""
         now = datetime.now(timezone.utc).isoformat()
         self.conn.execute(
-            "INSERT INTO batches (batch_id, created_at, mode, total_expected) VALUES (?, ?, ?, ?)",
-            (batch_id, now, mode, total_expected),
+            "INSERT INTO batches (batch_id, created_at, mode, total_expected, config_json) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (batch_id, now, mode, total_expected, config_json),
         )
         self.conn.commit()
 
-    def get_batches(self) -> list[dict]:
-        """Return all batches with aggregated run stats, newest first."""
-        cursor = self.conn.execute(f"""
-            SELECT b.batch_id, b.created_at, b.mode, b.total_expected,
+    def get_batches(self, limit: Optional[int] = None,
+                    offset: int = 0) -> list[dict]:
+        """Return batches with aggregated run stats, newest first.
+
+        Aggregations:
+          - run_count: total inserts against this batch
+          - pass_count: rows satisfying the shared _pass_where predicate
+          - error_count: rows with error IS NOT NULL
+          - fail_count: derived in the caller (successful - pass)
+
+        Yields config_json verbatim so the caller can derive varying/fixed
+        params with `varying_params_from_config`.
+        """
+        query = f"""
+            SELECT b.batch_id, b.created_at, b.mode, b.total_expected, b.config_json,
                    COUNT(r.id) AS run_count,
                    SUM(CASE WHEN {_pass_where('r')} THEN 1 ELSE 0 END) AS pass_count,
                    SUM(CASE WHEN r.error IS NOT NULL THEN 1 ELSE 0 END) AS error_count
@@ -437,19 +459,37 @@ class ResultsDB:
             LEFT JOIN runs r ON r.batch_id = b.batch_id
             GROUP BY b.batch_id
             ORDER BY b.created_at DESC
-        """)
+        """
+        params: tuple = ()
+        if limit is not None:
+            query += " LIMIT ? OFFSET ?"
+            params = (limit, offset)
+        cursor = self.conn.execute(query, params)
         return [
             {
                 "batch_id": row[0],
                 "created_at": row[1],
                 "mode": row[2],
                 "total_expected": row[3],
-                "run_count": row[4],
-                "pass_count": row[5],
-                "error_count": row[6],
+                "config_json": row[4],
+                "run_count": row[5] or 0,
+                "pass_count": row[6] or 0,
+                "error_count": row[7] or 0,
             }
             for row in cursor.fetchall()
         ]
+
+    def get_batches_count(self) -> int:
+        """Total batches — for paginated response 'total' field."""
+        cursor = self.conn.execute("SELECT COUNT(*) FROM batches")
+        return cursor.fetchone()[0]
+
+    def get_ungrouped_runs_count(self) -> int:
+        """Total runs where batch_id IS NULL — for paginated response."""
+        cursor = self.conn.execute(
+            "SELECT COUNT(*) FROM runs WHERE batch_id IS NULL"
+        )
+        return cursor.fetchone()[0]
 
     def get_batch_runs(self, batch_id: str) -> list[dict]:
         """Return all runs for a batch, ordered by id."""

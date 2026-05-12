@@ -601,3 +601,60 @@ class TestBatches:
             "SELECT batch_id FROM runs WHERE id = ?", (run_id,)
         ).fetchone()
         assert row[0] is None
+
+
+class TestBatchConfigJson:
+    """The dashboard's *Rerun batch* button needs the full sweep spec back.
+
+    Stored as TEXT (JSON) on the batches table; legacy rows pre-dating this
+    column must remain readable (NULL tolerated).
+    """
+
+    def test_config_json_column_present(self, db):
+        cols = {row[1] for row in db.conn.execute("PRAGMA table_info(batches)")}
+        assert "config_json" in cols
+
+    def test_insert_batch_with_config_json(self, db):
+        spec = {"mode": "sweep", "sweep": {"qf": [400, 500]}, "fixed": {"span1": 9}}
+        import json
+        db.insert_batch("b9", mode="sweep", total_expected=2, config_json=json.dumps(spec))
+        row = db.conn.execute(
+            "SELECT config_json FROM batches WHERE batch_id = ?", ("b9",)
+        ).fetchone()
+        assert row[0] is not None
+        assert json.loads(row[0]) == spec
+
+    def test_legacy_insert_batch_without_config_json(self, db):
+        """Backwards compat: old call sites omit config_json — column is NULL."""
+        db.insert_batch("b_legacy", mode="lhs", total_expected=5)
+        row = db.conn.execute(
+            "SELECT config_json FROM batches WHERE batch_id = ?", ("b_legacy",)
+        ).fetchone()
+        assert row[0] is None
+
+    def test_ensure_schema_adds_column_to_legacy_db(self, tmp_path):
+        """A DB created before this migration is upgraded on open."""
+        legacy = tmp_path / "legacy.db"
+        conn = sqlite3.connect(legacy)
+        conn.executescript("""
+            CREATE TABLE batches (
+                batch_id TEXT PRIMARY KEY,
+                created_at TEXT,
+                mode TEXT,
+                total_expected INTEGER
+            );
+        """)
+        conn.execute(
+            "INSERT INTO batches (batch_id, created_at, mode, total_expected) VALUES (?, ?, ?, ?)",
+            ("old", "2026-01-01", "lhs", 3),
+        )
+        conn.commit()
+        conn.close()
+
+        with ResultsDB(legacy) as upgraded:
+            cols = {row[1] for row in upgraded.conn.execute("PRAGMA table_info(batches)")}
+            assert "config_json" in cols
+            row = upgraded.conn.execute(
+                "SELECT config_json FROM batches WHERE batch_id = ?", ("old",)
+            ).fetchone()
+            assert row[0] is None
