@@ -1243,3 +1243,65 @@ class TestStatsEndpoint:
             "total": 3, "successful": 2, "errors": 1,
             "pass_count": 1, "fail_count": 1,
         }
+
+
+class TestComRunnerDispatch:
+    """The frozen sidecar exe is the only entry point in production builds.
+    engine.run_one_com() spawns it with `--com-runner`; app.main() must see
+    that sentinel and dispatch to com_runner.main() before argparse runs."""
+
+    def test_main_dispatches_com_runner_flag(self):
+        """app.main(['--com-runner']) calls com_runner.main() and does NOT
+        start uvicorn or hit argparse."""
+        from macs_automation import app as app_module
+
+        with patch("macs_automation.com_runner.main") as mock_runner_main, \
+             patch("uvicorn.run") as mock_uvicorn_run:
+            app_module.main(["--com-runner"])
+
+        mock_runner_main.assert_called_once()
+        mock_uvicorn_run.assert_not_called()
+
+    def test_main_without_com_runner_flag_starts_uvicorn(self):
+        """Normal CLI args still route to uvicorn — the dispatcher must not
+        swallow regular startup."""
+        from macs_automation import app as app_module
+
+        with patch("macs_automation.com_runner.main") as mock_runner_main, \
+             patch("uvicorn.run") as mock_uvicorn_run:
+            app_module.main(["--port", "8123"])
+
+        mock_runner_main.assert_not_called()
+        mock_uvicorn_run.assert_called_once()
+
+    def test_com_runner_dispatch_via_real_subprocess(self):
+        """End-to-end: spawn `python -m macs_automation.app --com-runner` as a
+        real subprocess and verify it round-trips a JSON stdin → JSON stdout
+        without hitting argparse. This is the regression test for the prod
+        bug where the PyInstaller-frozen sidecar errored with
+        `unrecognized arguments: -m macs_automation.com_runner`. Mocks can't
+        catch that — only an actual subprocess can.
+
+        We send an empty `{}` so com_runner raises KeyError on data['params'],
+        which it catches and serialises to {"error": "KeyError: ..."} — no
+        COM dependency, but proves the full wiring."""
+        import json
+        import subprocess
+        import sys
+
+        proc = subprocess.run(
+            [sys.executable, "-m", "macs_automation.app", "--com-runner"],
+            input="{}\n",
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+
+        assert proc.returncode == 0, (
+            f"dispatcher exited {proc.returncode}; stderr={proc.stderr!r}"
+        )
+        out_line = proc.stdout.strip()
+        assert out_line, f"no stdout from dispatcher; stderr={proc.stderr!r}"
+        result = json.loads(out_line)
+        assert "error" in result
+        assert "KeyError" in result["error"]

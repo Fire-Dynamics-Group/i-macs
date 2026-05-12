@@ -950,6 +950,16 @@ def _configure_file_logging(log_dir: str) -> None:
 
 
 def main(argv: Optional[list[str]] = None) -> None:
+    import sys
+    effective_argv = sys.argv[1:] if argv is None else argv
+    if effective_argv and effective_argv[0] == "--com-runner":
+        # Frozen builds have a single exe entry point. engine.run_one_com()
+        # spawns this same exe with `--com-runner` so we re-enter as the COM
+        # subprocess instead of starting another FastAPI server.
+        from macs_automation import com_runner
+        com_runner.main()
+        return
+
     parser = argparse.ArgumentParser(prog="macs_automation", description="MACS+ Automation sidecar")
     parser.add_argument("--port", type=int, default=8000, help="HTTP port to bind")
     parser.add_argument("--log-dir", type=str, default=None, help="Directory for sidecar.log (rotating, 5 MB × 5)")

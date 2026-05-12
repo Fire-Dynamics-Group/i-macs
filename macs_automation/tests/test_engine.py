@@ -214,6 +214,35 @@ class TestComRunnerIsolation:
             with pytest.raises(RuntimeError, match="Segmentation fault"):
                 run_one_com({}, {})
 
+    def test_run_one_com_unfrozen_spawns_with_dash_m(self):
+        """In a normal (unfrozen) Python run, the runner is invoked as
+        `python -m macs_automation.com_runner` — the import-based form."""
+        fake_proc = MagicMock()
+        fake_proc.stdout = '{"comp_failure": false}\n'
+        fake_proc.stderr = ""
+
+        with patch("macs_automation.engine.subprocess.run", return_value=fake_proc) as mock_run, \
+             patch.object(sys, "frozen", False, create=True):
+            run_one_com({}, {})
+
+        argv = mock_run.call_args[0][0]
+        assert argv == [sys.executable, "-m", "macs_automation.com_runner"]
+
+    def test_run_one_com_frozen_spawns_with_com_runner_flag(self):
+        """In a PyInstaller-frozen build, sys.executable is the sidecar exe,
+        which doesn't honour `-m module`. Spawn it with the `--com-runner`
+        sentinel instead so app.main() can dispatch to com_runner.main()."""
+        fake_proc = MagicMock()
+        fake_proc.stdout = '{"comp_failure": false}\n'
+        fake_proc.stderr = ""
+
+        with patch("macs_automation.engine.subprocess.run", return_value=fake_proc) as mock_run, \
+             patch.object(sys, "frozen", True, create=True):
+            run_one_com({}, {})
+
+        argv = mock_run.call_args[0][0]
+        assert argv == [sys.executable, "--com-runner"]
+
 
 @pytest.mark.com
 @pytest.mark.e2e

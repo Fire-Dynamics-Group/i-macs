@@ -376,9 +376,17 @@ def run_one_com(params: dict, sections_db: dict) -> dict:
     """
     pkg_dir = Path(__file__).resolve().parent
     payload = json.dumps({"params": params, "sections_db": sections_db})
+    # PyInstaller-frozen exes don't honour `-m module`; the bootloader passes
+    # those args straight through to the app's argparse. In frozen builds,
+    # spawn the same exe with `--com-runner` so app.main() dispatches into
+    # com_runner.main() before argparse runs.
+    if getattr(sys, "frozen", False):
+        runner_argv = [sys.executable, "--com-runner"]
+    else:
+        runner_argv = [sys.executable, "-m", "macs_automation.com_runner"]
     try:
         proc = subprocess.run(
-            [sys.executable, "-m", "macs_automation.com_runner"],
+            runner_argv,
             input=payload,
             capture_output=True,
             text=True,
