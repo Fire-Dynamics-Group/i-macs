@@ -2,6 +2,7 @@ import { useParams, Link } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 
 import { getRun, getRunTimeseries, type Run, type TimeSeriesRow } from "../api/client";
+import { CheckBreakdown } from "../components/CheckBreakdown";
 
 export default function RunDetailPage() {
   const { id } = useParams<{ id: string }>();
@@ -38,6 +39,9 @@ export default function RunDetailPage() {
         <p className="mt-4 text-rose-700">{(runQuery.error as Error).message}</p>
       )}
       {runQuery.data && <RunSummary run={runQuery.data} />}
+      {runQuery.data && !runQuery.data.error && (
+        <CheckBreakdown checks={runQuery.data.checks ?? []} />
+      )}
       {tsQuery.data && <TimeSeriesTable rows={tsQuery.data} />}
     </div>
   );

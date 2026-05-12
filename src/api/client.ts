@@ -71,12 +71,19 @@ export interface RefData {
   occupancy_presets: OccupancyPreset[];
 }
 
+export interface Check {
+  name: string;
+  value: number | null;
+  limit: number;
+  pass: boolean;
+}
+
 export interface SubmitRunResponse {
   id: number;
   uf_max: number;
   duration_ms: number;
   overall_pass: boolean;
-  checks: Record<string, unknown>;
+  checks: Check[];
 }
 
 export interface Run {
@@ -85,7 +92,7 @@ export interface Run {
   duration_ms: number | null;
   error: string | null;
   overall_pass: boolean;
-  checks: Record<string, unknown>;
+  checks: Check[];
   [field: string]: unknown;
 }
 

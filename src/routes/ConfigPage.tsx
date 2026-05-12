@@ -48,6 +48,13 @@ interface FormValues {
   side_d_edge: number;
   side_d_composite: number;
   side_d_sh_con: number;
+  // Loading
+  slab_weight: number;
+  cold_perm: number;
+  lead_var_act: number;
+  othr_var_act: number;
+  lead_var_fac: number;
+  othr_var_fac: number;
   // Fire
   method: "iso" | "parametric";
   time_limit: number;
@@ -173,6 +180,12 @@ export default function ConfigPage() {
       side_d_edge: Number(d.SideDEdgeFlag ?? 1),
       side_d_composite: Number(d.SideDCompoFlag ?? 0),
       side_d_sh_con: Number(d.SideDsh_con ?? 80),
+      slab_weight: Number(d.slab_weight ?? 2.47),
+      cold_perm: Number(d.cold_perm ?? 1.2),
+      lead_var_act: Number(d.lead_var_act ?? 5.0),
+      othr_var_act: Number(d.othr_var_act ?? 0.0),
+      lead_var_fac: Number(d.lead_var_fac ?? 0.5),
+      othr_var_fac: Number(d.othr_var_fac ?? 0.3),
       method: ((d.method as string) ?? "iso") as "iso" | "parametric",
       time_limit: Number(d.time_limit ?? 60),
       qf: Number(d.qf ?? 511),
@@ -290,6 +303,17 @@ export default function ConfigPage() {
               errors={errors}
             />
           ))}
+        </Section>
+
+        <Section title="Loading">
+          <Grid>
+            {numberField("Slab self-weight (kN/m²)", "slab_weight", register, errors)}
+            {numberField("Cold permanent excl. slab (kN/m²)", "cold_perm", register, errors)}
+            {numberField("Leading variable (kN/m²)", "lead_var_act", register, errors)}
+            {numberField("Other variable (kN/m²)", "othr_var_act", register, errors)}
+            {numberField("Leading factor (ψ)", "lead_var_fac", register, errors)}
+            {numberField("Other factor (ψ)", "othr_var_fac", register, errors)}
+          </Grid>
         </Section>
 
         <Section title="Fire">

@@ -96,7 +96,14 @@ export async function installSidecarMock(page: Page, opts: MockOpts) {
           duration_ms: 200,
           error: null,
           overall_pass: true,
-          checks: {},
+          checks: [
+            { name: "Slab UF", value: 0.42, limit: 1.0, pass: true },
+            { name: "Composite section", value: 0, limit: 0, pass: true },
+            { name: "Side A beam load", value: 0.3, limit: 1.0, pass: true },
+            { name: "Side B beam load", value: 0.4, limit: 1.0, pass: true },
+            { name: "Side C beam load", value: 0.35, limit: 1.0, pass: true },
+            { name: "Side D beam load", value: 0.32, limit: 1.0, pass: true },
+          ],
         },
       });
     }
