@@ -122,6 +122,37 @@ export interface SubmitSweepResponse {
   message: string;
 }
 
+export interface BatchSummary {
+  batch_id: string;
+  created_at: string | null;
+  mode: string | null;
+  total_expected: number;
+  run_count: number;
+  pass_count: number;
+  fail_count: number;
+  error_count: number;
+  varying_params: Record<string, unknown>;
+  fixed_params: Record<string, unknown>;
+}
+
+export interface BatchesListResponse {
+  batches: BatchSummary[];
+  total: number;
+}
+
+export interface UngroupedRunsResponse {
+  runs: Run[];
+  total: number;
+}
+
+export interface StatsResponse {
+  total: number;
+  successful: number;
+  errors: number;
+  pass_count: number;
+  fail_count: number;
+}
+
 // ─── Endpoints ──────────────────────────────────────────────────────────
 
 export const fetchHealth = () => getJson<HealthResponse>("/healthz");
@@ -140,6 +171,51 @@ export function listRuns(opts: { batchId?: string } = {}): Promise<RunsListRespo
     : "/api/runs";
   return getJson<RunsListResponse>(path);
 }
+
+export const getBatch = (batchId: string) =>
+  getJson<BatchSummary>(`/api/batches/${encodeURIComponent(batchId)}`);
+
+/** Resolved URL for the DOCX report — the dashboard's Download button
+ *  navigates to this so the browser handles the file save dialog. */
+export async function getReportDocxUrl(batchId: string): Promise<string> {
+  const port = await invoke<number>("get_sidecar_port");
+  return `http://127.0.0.1:${port}/api/report/docx?batch_id=${encodeURIComponent(batchId)}`;
+}
+
+/** PNG chart URL (scatter / capacity) for embedding directly via <img>. */
+export async function getReportChartUrl(
+  chartType: "scatter" | "capacity",
+  batchId: string,
+): Promise<string> {
+  const port = await invoke<number>("get_sidecar_port");
+  return `http://127.0.0.1:${port}/api/report/chart/${chartType}?batch_id=${encodeURIComponent(batchId)}`;
+}
+
+export function listBatches(
+  opts: { limit?: number; offset?: number } = {},
+): Promise<BatchesListResponse> {
+  const params = new URLSearchParams();
+  if (opts.limit != null) params.set("limit", String(opts.limit));
+  if (opts.offset != null) params.set("offset", String(opts.offset));
+  const query = params.toString();
+  return getJson<BatchesListResponse>(
+    query ? `/api/batches?${query}` : "/api/batches",
+  );
+}
+
+export function listUngroupedRuns(
+  opts: { limit?: number; offset?: number } = {},
+): Promise<UngroupedRunsResponse> {
+  const params = new URLSearchParams();
+  if (opts.limit != null) params.set("limit", String(opts.limit));
+  if (opts.offset != null) params.set("offset", String(opts.offset));
+  const query = params.toString();
+  return getJson<UngroupedRunsResponse>(
+    query ? `/api/runs/ungrouped?${query}` : "/api/runs/ungrouped",
+  );
+}
+
+export const fetchStats = () => getJson<StatsResponse>("/api/stats");
 
 /** Resolved URL for the SSE endpoint. The dashboard's hook opens an
  *  EventSource against this URL. */
