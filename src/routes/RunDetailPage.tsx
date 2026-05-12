@@ -29,9 +29,17 @@ export default function RunDetailPage() {
       <Link to="/" className="text-sm text-blue-700 hover:underline">
         ← Back to config
       </Link>
-      <h1 className="mt-2 text-2xl font-semibold tracking-tight">
-        Run #{runId}
-      </h1>
+      <div className="mt-2 flex items-start justify-between gap-4">
+        <h1 className="text-2xl font-semibold tracking-tight">Run #{runId}</h1>
+        {Number.isFinite(runId) && (
+          <Link
+            to={`/?from_run=${runId}`}
+            className="inline-flex items-center rounded border border-slate-300 bg-white px-3 py-1.5 text-sm font-medium text-slate-700 hover:bg-slate-100"
+          >
+            Duplicate run
+          </Link>
+        )}
+      </div>
 
       {runQuery.isLoading && (
         <p className="mt-4 text-slate-600">Loading run…</p>

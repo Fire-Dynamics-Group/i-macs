@@ -62,6 +62,9 @@ interface MockOpts {
   ungrouped?: { runs: Array<Record<string, unknown>>; total: number };
   /** Map of batch_id → summary for GET /api/batches/{batch_id}. */
   batchSummaries?: Record<string, Record<string, unknown>>;
+  /** Map of run id → row for GET /api/runs/{id}. Falls back to the default
+   *  pass response when the requested id isn't in the map. */
+  runs?: Record<string, Record<string, unknown>>;
 }
 
 /**
@@ -215,9 +218,11 @@ export async function installSidecarMock(page: Page, opts: MockOpts) {
           ],
         });
       }
+      const id = url.pathname.slice("/api/runs/".length);
+      const override = (opts.runs ?? {})[id];
       return route.fulfill({
         status: 200,
-        json: {
+        json: override ?? {
           id: 1,
           uf_max: 0.42,
           duration_ms: 200,
