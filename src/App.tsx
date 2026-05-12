@@ -1,6 +1,7 @@
 import { useEffect } from "react";
 import { Route, Routes } from "react-router-dom";
 
+import BatchProgressPage from "./routes/BatchProgressPage";
 import ConfigPage from "./routes/ConfigPage";
 import RunDetailPage from "./routes/RunDetailPage";
 import { SidecarErrorBoundary } from "./components/SidecarErrorScreen";
@@ -21,6 +22,7 @@ export default function App() {
         <Routes>
           <Route path="/" element={<ConfigPage />} />
           <Route path="/runs/:id" element={<RunDetailPage />} />
+          <Route path="/batches/:batch_id" element={<BatchProgressPage />} />
         </Routes>
       </SidecarReadyGate>
     </SidecarErrorBoundary>

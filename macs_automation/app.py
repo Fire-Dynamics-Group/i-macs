@@ -8,6 +8,7 @@ There are no HTML/Jinja routes here — the React shell renders all UI.
 """
 
 import argparse
+import json
 import logging
 import os
 import re
@@ -21,7 +22,7 @@ from typing import Optional
 
 from fastapi import FastAPI, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
 from macs_automation.db import ResultsDB
@@ -29,6 +30,7 @@ from macs_automation.data_loader import load_data, DEFAULT_DATA_PATH, _find_macs
 from macs_automation.blue_book_sections import get_blue_book_sections
 from macs_automation.frc_parser import parse_frc_string
 from macs_automation.status import compute_status
+from macs_automation.sse_broker import Broker
 from macs_automation.sweep import DEFAULTS, PARAM_ALIASES, BEAM_SIDE_MAP, resolve_deck, resolve_mesh, generate_combinations
 from macs_automation.sampling import FIRE_LOAD_PRESETS
 
@@ -265,6 +267,11 @@ _sweep_state = {
 }
 _sweep_lock = threading.Lock()
 
+# In-memory SSE pub/sub. The sweep worker thread publishes per-run and
+# batch-done events; the /api/sweeps/events endpoint serves them as
+# text/event-stream to the React dashboard.
+sweep_broker = Broker()
+
 
 COM_MAX_RETRIES = 3
 COM_RETRY_DELAY = 2.0  # seconds between retries
@@ -298,10 +305,18 @@ def _run_single_com(params: dict, sections_db: dict) -> dict:
 
 
 def _run_sweep_background(combinations: list[dict], sections_db: dict, mode: str = "sweep"):
-    """Run a sweep in a background thread with COM init per run."""
+    """Run a sweep in a background thread with COM init per run.
+
+    Publishes a `run_completed` event after each insert and a `batch_done`
+    event when the loop exits, both via sweep_broker. Run failures are
+    inserted with their error string and emitted (the sweep does not abort).
+    """
+    batch_id = combinations[0].get("_batch_id") if combinations else None
+    total = len(combinations)
+
     with _sweep_lock:
         _sweep_state["active"] = True
-        _sweep_state["total"] = len(combinations)
+        _sweep_state["total"] = total
         _sweep_state["completed"] = 0
         _sweep_state["errors"] = 0
         _sweep_state["error_log"] = []
@@ -313,10 +328,10 @@ def _run_sweep_background(combinations: list[dict], sections_db: dict, mode: str
         for params in combinations:
             try:
                 outputs = _run_single_com(params, sections_db)
-                db.insert_run(params, outputs=outputs)
+                run_id = db.insert_run(params, outputs=outputs)
             except Exception as e:
                 error_msg = f"{type(e).__name__}: {e}"
-                db.insert_run(params, error=error_msg)
+                run_id = db.insert_run(params, error=error_msg)
                 with _sweep_lock:
                     _sweep_state["errors"] += 1
                     _sweep_state["error_log"].append(error_msg)
@@ -325,12 +340,37 @@ def _run_sweep_background(combinations: list[dict], sections_db: dict, mode: str
 
             with _sweep_lock:
                 _sweep_state["completed"] += 1
+                completed_count = _sweep_state["completed"]
+                error_count = _sweep_state["errors"]
+
+            try:
+                run_row = db.get_run(run_id)
+                _attach_status(run_row)
+            except Exception:
+                run_row = {"id": run_id, "batch_id": batch_id}
+            sweep_broker.publish({
+                "type": "run_completed",
+                "run": run_row,
+                "batch_id": batch_id,
+                "total": total,
+                "completed": completed_count,
+                "errors": error_count,
+            })
 
             time.sleep(COM_RUN_DELAY)
     finally:
         db.close()
         with _sweep_lock:
             _sweep_state["active"] = False
+            final_completed = _sweep_state["completed"]
+            final_errors = _sweep_state["errors"]
+        sweep_broker.publish({
+            "type": "batch_done",
+            "batch_id": batch_id,
+            "total": total,
+            "completed": final_completed,
+            "errors": final_errors,
+        })
 
 
 # ─── API: Custom sections ────────────────────────────────────────────────────
@@ -618,15 +658,62 @@ def api_sweep_status():
 
 
 @app.get("/api/runs")
-def api_list_runs(limit: int = 50, offset: int = 0):
-    """List runs with pagination."""
+def api_list_runs(limit: int = 50, offset: int = 0, batch_id: Optional[str] = None):
+    """List runs with pagination, or all runs in a batch when batch_id is given.
+
+    The batch_id filter is what the dashboard at /batches/:id uses to backfill
+    already-completed runs before opening the SSE stream.
+    """
     db = _get_db()
-    runs = db.get_runs(limit=limit, offset=offset)
+    if batch_id is not None:
+        runs = db.get_batch_runs(batch_id)
+    else:
+        runs = db.get_runs(limit=limit, offset=offset)
     stats = db.get_stats()
     db.close()
     for r in runs:
         _attach_status(r)
     return {"runs": runs, "stats": stats}
+
+
+async def _format_sse_events(broker: Broker):
+    """Format every event from the broker as one SSE record. Returns when a
+    batch_done event passes through, so each subscriber owns a single batch's
+    lifecycle.
+
+    Extracted from the route handler so it can be unit-tested without the HTTP
+    transport (TestClient streams hang on Windows; AsyncClient + ASGITransport
+    has its own quirks). Tests drive this generator with a fresh Broker and
+    compare its output.
+    """
+    async for event in broker.subscribe():
+        event_type = event.get("type", "message")
+        payload = json.dumps(event, default=str)
+        yield f"event: {event_type}\ndata: {payload}\n\n"
+        if event_type == "batch_done":
+            return
+
+
+@app.get("/api/sweeps/events")
+async def api_sweep_events():
+    """Server-Sent Events stream of sweep events.
+
+    Each event is one of two types:
+      - run_completed: emitted after each run inserts into the DB
+      - batch_done:    emitted when the sweep worker exits
+
+    The stream closes itself after batch_done so each batch's dashboard owns
+    one connection lifecycle. Subscribers connecting between sweeps see no
+    events until the next sweep starts.
+    """
+    return StreamingResponse(
+        _format_sse_events(sweep_broker),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @app.get("/api/runs/{run_id}")

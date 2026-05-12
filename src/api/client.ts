@@ -111,12 +111,39 @@ export interface HealthResponse {
   macs_version: string | null;
 }
 
+export interface RunsListResponse {
+  runs: Run[];
+  stats: Record<string, number>;
+}
+
+export interface SubmitSweepResponse {
+  batch_id: string;
+  total: number;
+  message: string;
+}
+
 // ─── Endpoints ──────────────────────────────────────────────────────────
 
 export const fetchHealth = () => getJson<HealthResponse>("/healthz");
 export const fetchRefData = () => getJson<RefData>("/api/ref-data");
 export const submitRun = (payload: Record<string, unknown>) =>
   postJson<SubmitRunResponse>("/api/runs", payload);
+export const submitSweep = (payload: Record<string, unknown>) =>
+  postJson<SubmitSweepResponse>("/api/sweeps", payload);
 export const getRun = (id: number) => getJson<Run>(`/api/runs/${id}`);
 export const getRunTimeseries = (id: number) =>
   getJson<TimeSeriesRow[]>(`/api/runs/${id}/timeseries`);
+
+export function listRuns(opts: { batchId?: string } = {}): Promise<RunsListResponse> {
+  const path = opts.batchId
+    ? `/api/runs?batch_id=${encodeURIComponent(opts.batchId)}`
+    : "/api/runs";
+  return getJson<RunsListResponse>(path);
+}
+
+/** Resolved URL for the SSE endpoint. The dashboard's hook opens an
+ *  EventSource against this URL. */
+export async function getEventsUrl(): Promise<string> {
+  const base = await baseUrl();
+  return `${base}/api/sweeps/events`;
+}
