@@ -1,6 +1,9 @@
 """SQLite database schema and helpers for storing MACS+ batch results."""
 
+import os
+import socket
 import sqlite3
+import uuid as _uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -8,6 +11,10 @@ from typing import Optional
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS runs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
+    uuid TEXT,
+    device_name TEXT,
+    app_version TEXT,
+    synced_at TEXT,
     run_timestamp TEXT,
     -- Input: Geometry
     span1 REAL, span2 REAL, numbeam INTEGER,
@@ -53,7 +60,10 @@ CREATE TABLE IF NOT EXISTS batches (
     created_at TEXT,
     mode TEXT,
     total_expected INTEGER,
-    config_json TEXT
+    config_json TEXT,
+    device_name TEXT,
+    app_version TEXT,
+    synced_at TEXT
 );
 
 CREATE TABLE IF NOT EXISTS time_series (
@@ -79,7 +89,11 @@ CREATE TABLE IF NOT EXISTS custom_sections (
     b REAL NOT NULL,
     tw REAL NOT NULL,
     tf REAL NOT NULL,
-    created_at TEXT
+    created_at TEXT,
+    uuid TEXT,
+    device_name TEXT,
+    app_version TEXT,
+    synced_at TEXT
 );
 
 CREATE TABLE IF NOT EXISTS custom_decks (
@@ -91,7 +105,11 @@ CREATE TABLE IF NOT EXISTS custom_decks (
     deck_top REAL NOT NULL,
     deck_bot REAL NOT NULL,
     deck_stiff_height REAL NOT NULL,
-    created_at TEXT
+    created_at TEXT,
+    uuid TEXT,
+    device_name TEXT,
+    app_version TEXT,
+    synced_at TEXT
 );
 
 CREATE TABLE IF NOT EXISTS custom_meshes (
@@ -99,9 +117,19 @@ CREATE TABLE IF NOT EXISTS custom_meshes (
     name TEXT NOT NULL,
     main_area REAL NOT NULL,
     trans_area REAL NOT NULL,
-    created_at TEXT
+    created_at TEXT,
+    uuid TEXT,
+    device_name TEXT,
+    app_version TEXT,
+    synced_at TEXT
 );
 """
+
+# Tables that grow a uuid + device_name + app_version + synced_at quartet for
+# multi-desktop cloud sync (#11). batches already has a TEXT primary key, so
+# it doesn't need its own uuid — only the provenance columns.
+_SYNC_PROVENANCE_TABLES_WITH_UUID = ("runs", "custom_sections", "custom_decks", "custom_meshes")
+_SYNC_PROVENANCE_TABLES_NO_UUID = ("batches",)
 
 # Combined pass predicate — must mirror compute_status() in status.py.
 # A run passes only when the slab UF, MACS+'s composite-failure flag, and every
@@ -125,6 +153,12 @@ class ResultsDB:
 
     def __init__(self, db_path: str | Path, check_same_thread: bool = True):
         self.db_path = str(db_path)
+        # Provenance stamps read once per ResultsDB instance. MACS_APP_VERSION
+        # is set by main.rs from app.package_info().version on every spawn;
+        # MACS_DEVICE_NAME is an optional override for the friendly-name UI
+        # that the cloud-sync slice will ship.
+        self._device_name = os.environ.get("MACS_DEVICE_NAME") or socket.gethostname()
+        self._app_version = os.environ.get("MACS_APP_VERSION")
         self.conn = sqlite3.connect(self.db_path, check_same_thread=check_same_thread)
         self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.execute("PRAGMA synchronous=NORMAL")
@@ -160,6 +194,61 @@ class ResultsDB:
         }
         if "config_json" not in batches_cols:
             self.conn.execute("ALTER TABLE batches ADD COLUMN config_json TEXT")
+        # Sync-provenance columns (#11). Order matters: add uuid as plain TEXT,
+        # backfill, then create the unique index — SQLite's ALTER TABLE can't
+        # carry UNIQUE inline, and a unique index over NULLs collides.
+        self._migrate_sync_provenance()
+
+    def _migrate_sync_provenance(self):
+        """Add uuid/device_name/app_version/synced_at where missing, backfill
+        existing rows, then create unique indexes on uuid.
+
+        Backfill policy: device_name is filled with the current hostname
+        (best guess — if a colleague's DB was hand-copied the stamp is wrong
+        but in practice only the dev machine has pre-existing history).
+        app_version + synced_at are left NULL; stamping the current version
+        would lie about rows that were created earlier.
+        """
+        host = self._device_name
+        for table in _SYNC_PROVENANCE_TABLES_WITH_UUID:
+            cols = {row[1] for row in self.conn.execute(f"PRAGMA table_info({table})")}
+            if "uuid" not in cols:
+                self.conn.execute(f"ALTER TABLE {table} ADD COLUMN uuid TEXT")
+            if "device_name" not in cols:
+                self.conn.execute(f"ALTER TABLE {table} ADD COLUMN device_name TEXT")
+            if "app_version" not in cols:
+                self.conn.execute(f"ALTER TABLE {table} ADD COLUMN app_version TEXT")
+            if "synced_at" not in cols:
+                self.conn.execute(f"ALTER TABLE {table} ADD COLUMN synced_at TEXT")
+            # Backfill uuid for any rows that don't have one yet.
+            missing = self.conn.execute(
+                f"SELECT rowid FROM {table} WHERE uuid IS NULL"
+            ).fetchall()
+            for (rowid,) in missing:
+                self.conn.execute(
+                    f"UPDATE {table} SET uuid = ? WHERE rowid = ?",
+                    (_uuid.uuid4().hex, rowid),
+                )
+            self.conn.execute(
+                f"UPDATE {table} SET device_name = ? WHERE device_name IS NULL",
+                (host,),
+            )
+            self.conn.execute(
+                f"CREATE UNIQUE INDEX IF NOT EXISTS idx_{table}_uuid ON {table}(uuid)"
+            )
+
+        for table in _SYNC_PROVENANCE_TABLES_NO_UUID:
+            cols = {row[1] for row in self.conn.execute(f"PRAGMA table_info({table})")}
+            if "device_name" not in cols:
+                self.conn.execute(f"ALTER TABLE {table} ADD COLUMN device_name TEXT")
+            if "app_version" not in cols:
+                self.conn.execute(f"ALTER TABLE {table} ADD COLUMN app_version TEXT")
+            if "synced_at" not in cols:
+                self.conn.execute(f"ALTER TABLE {table} ADD COLUMN synced_at TEXT")
+            self.conn.execute(
+                f"UPDATE {table} SET device_name = ? WHERE device_name IS NULL",
+                (host,),
+            )
 
     def close(self):
         self.conn.close()
@@ -176,6 +265,10 @@ class ResultsDB:
         now = datetime.now(timezone.utc).isoformat()
 
         row = {
+            "uuid": _uuid.uuid4().hex,
+            "device_name": self._device_name,
+            "app_version": self._app_version,
+            "synced_at": None,
             "run_timestamp": now,
             # Geometry
             "span1": params.get("span1"),
@@ -431,9 +524,11 @@ class ResultsDB:
         and (b) hydrate the form for *Rerun batch* (slice 2)."""
         now = datetime.now(timezone.utc).isoformat()
         self.conn.execute(
-            "INSERT INTO batches (batch_id, created_at, mode, total_expected, config_json) "
-            "VALUES (?, ?, ?, ?, ?)",
-            (batch_id, now, mode, total_expected, config_json),
+            "INSERT INTO batches (batch_id, created_at, mode, total_expected, "
+            "config_json, device_name, app_version, synced_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (batch_id, now, mode, total_expected, config_json,
+             self._device_name, self._app_version, None),
         )
         self.conn.commit()
 
@@ -635,9 +730,11 @@ class ResultsDB:
         sec_id = f"CUSTOM_{next_num}"
         now = datetime.now(timezone.utc).isoformat()
         self.conn.execute(
-            "INSERT INTO custom_sections (id, name, h, b, tw, tf, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (sec_id, name, h, b, tw, tf, now),
+            "INSERT INTO custom_sections (id, name, h, b, tw, tf, created_at, "
+            "uuid, device_name, app_version, synced_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (sec_id, name, h, b, tw, tf, now,
+             _uuid.uuid4().hex, self._device_name, self._app_version, None),
         )
         self.conn.commit()
         return sec_id
@@ -679,10 +776,12 @@ class ResultsDB:
         now = datetime.now(timezone.utc).isoformat()
         self.conn.execute(
             "INSERT INTO custom_decks (id, name, deck_type, deck_depth, deck_trug, "
-            "deck_top, deck_bot, deck_stiff_height, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "deck_top, deck_bot, deck_stiff_height, created_at, "
+            "uuid, device_name, app_version, synced_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (deck_id, name, deck_type, deck_depth, deck_trug, deck_top, deck_bot,
-             deck_stiff_height, now),
+             deck_stiff_height, now,
+             _uuid.uuid4().hex, self._device_name, self._app_version, None),
         )
         self.conn.commit()
         return deck_id
@@ -722,9 +821,11 @@ class ResultsDB:
         mesh_id = f"CMESH_{next_num}"
         now = datetime.now(timezone.utc).isoformat()
         self.conn.execute(
-            "INSERT INTO custom_meshes (id, name, main_area, trans_area, created_at) "
-            "VALUES (?, ?, ?, ?, ?)",
-            (mesh_id, name, main_area, trans_area, now),
+            "INSERT INTO custom_meshes (id, name, main_area, trans_area, created_at, "
+            "uuid, device_name, app_version, synced_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (mesh_id, name, main_area, trans_area, now,
+             _uuid.uuid4().hex, self._device_name, self._app_version, None),
         )
         self.conn.commit()
         return mesh_id
@@ -807,7 +908,8 @@ class ResultsDB:
         """Build an engine params dict from a runs table row (for re-running a failed run)."""
         params = {}
         for col, val in run_row.items():
-            if col == "id" or col == "run_timestamp" or col == "error":
+            if col in ("id", "run_timestamp", "error",
+                       "uuid", "device_name", "app_version", "synced_at"):
                 continue
             if col in (
                 "comp_failure", "mb1_reqd", "mb2_reqd", "factored_hot",

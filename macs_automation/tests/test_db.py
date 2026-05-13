@@ -1,5 +1,6 @@
 """Tests for db.py — SQLite database layer."""
 
+import socket
 import sqlite3
 
 import pytest
@@ -658,3 +659,235 @@ class TestBatchConfigJson:
                 "SELECT config_json FROM batches WHERE batch_id = ?", ("old",)
             ).fetchone()
             assert row[0] is None
+
+
+class TestSyncProvenanceColumns:
+    """uuid + device_name + app_version + synced_at columns for future
+    multi-desktop cloud sync. INTEGER row IDs collide across machines, so the
+    server-generated TEXT uuid is the cross-device join key. device_name +
+    app_version stamp where/when each row was made; synced_at is the
+    catch-up queue marker."""
+
+    _NEW_RUN_COLS = ("uuid", "device_name", "app_version", "synced_at")
+    _NEW_BATCH_COLS = ("device_name", "app_version", "synced_at")
+    _NEW_CUSTOM_COLS = ("uuid", "device_name", "app_version", "synced_at")
+
+    def test_runs_has_new_columns(self, db):
+        cols = {r[1] for r in db.conn.execute("PRAGMA table_info(runs)")}
+        for c in self._NEW_RUN_COLS:
+            assert c in cols, f"runs missing column {c}"
+
+    def test_batches_has_new_columns(self, db):
+        cols = {r[1] for r in db.conn.execute("PRAGMA table_info(batches)")}
+        for c in self._NEW_BATCH_COLS:
+            assert c in cols, f"batches missing column {c}"
+
+    @pytest.mark.parametrize("table", ["custom_sections", "custom_decks", "custom_meshes"])
+    def test_custom_tables_have_new_columns(self, db, table):
+        cols = {r[1] for r in db.conn.execute(f"PRAGMA table_info({table})")}
+        for c in self._NEW_CUSTOM_COLS:
+            assert c in cols, f"{table} missing column {c}"
+
+    @pytest.mark.parametrize("table", ["runs", "custom_sections", "custom_decks", "custom_meshes"])
+    def test_unique_index_on_uuid(self, db, table):
+        idx_name = f"idx_{table}_uuid"
+        rows = list(db.conn.execute(
+            "SELECT name, [unique] FROM pragma_index_list(?)", (table,)
+        ))
+        match = next((r for r in rows if r[0] == idx_name), None)
+        assert match is not None, f"missing index {idx_name}"
+        assert match[1] == 1, f"index {idx_name} is not UNIQUE"
+
+    def test_insert_run_populates_uuid(self, db):
+        params = {"span1": 9.0, "uSecSize": "IPE_500", "method": "iso", "time_limit": 60}
+        run_id = db.insert_run(params, outputs={"comp_failure": 0, "time_series": []})
+        row = db.conn.execute("SELECT uuid FROM runs WHERE id = ?", (run_id,)).fetchone()
+        assert row[0] is not None
+        assert len(row[0]) == 32  # uuid4().hex
+
+    def test_insert_run_uuids_are_unique(self, db):
+        params = {"span1": 9.0, "uSecSize": "IPE_500", "method": "iso", "time_limit": 60}
+        ids = [db.insert_run(params, outputs={"comp_failure": 0, "time_series": []})
+               for _ in range(5)]
+        uuids = {db.conn.execute("SELECT uuid FROM runs WHERE id = ?", (rid,)).fetchone()[0]
+                 for rid in ids}
+        assert len(uuids) == 5
+
+    def test_insert_run_default_device_name_from_hostname(self, db, monkeypatch):
+        monkeypatch.delenv("MACS_DEVICE_NAME", raising=False)
+        params = {"span1": 9.0, "uSecSize": "IPE_500", "method": "iso", "time_limit": 60}
+        run_id = db.insert_run(params, outputs={"comp_failure": 0, "time_series": []})
+        row = db.conn.execute("SELECT device_name FROM runs WHERE id = ?", (run_id,)).fetchone()
+        assert row[0] == socket.gethostname()
+
+    def test_insert_run_device_name_env_override(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("MACS_DEVICE_NAME", "fdg-laptop-42")
+        with ResultsDB(tmp_path / "dev.db") as db:
+            params = {"span1": 9.0, "uSecSize": "IPE_500", "method": "iso", "time_limit": 60}
+            run_id = db.insert_run(params, outputs={"comp_failure": 0, "time_series": []})
+            row = db.conn.execute("SELECT device_name FROM runs WHERE id = ?", (run_id,)).fetchone()
+            assert row[0] == "fdg-laptop-42"
+
+    def test_insert_run_app_version_from_env(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("MACS_APP_VERSION", "0.1.0-rc.4")
+        with ResultsDB(tmp_path / "ver.db") as db:
+            params = {"span1": 9.0, "uSecSize": "IPE_500", "method": "iso", "time_limit": 60}
+            run_id = db.insert_run(params, outputs={"comp_failure": 0, "time_series": []})
+            row = db.conn.execute("SELECT app_version FROM runs WHERE id = ?", (run_id,)).fetchone()
+            assert row[0] == "0.1.0-rc.4"
+
+    def test_insert_run_synced_at_starts_null(self, db):
+        params = {"span1": 9.0, "uSecSize": "IPE_500", "method": "iso", "time_limit": 60}
+        run_id = db.insert_run(params, outputs={"comp_failure": 0, "time_series": []})
+        row = db.conn.execute("SELECT synced_at FROM runs WHERE id = ?", (run_id,)).fetchone()
+        assert row[0] is None
+
+    def test_insert_batch_populates_provenance(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("MACS_DEVICE_NAME", "dev-box")
+        monkeypatch.setenv("MACS_APP_VERSION", "9.9.9")
+        with ResultsDB(tmp_path / "batch.db") as db:
+            db.insert_batch("bX", mode="sweep", total_expected=1)
+            row = db.conn.execute(
+                "SELECT device_name, app_version, synced_at FROM batches WHERE batch_id = ?",
+                ("bX",),
+            ).fetchone()
+            assert row[0] == "dev-box"
+            assert row[1] == "9.9.9"
+            assert row[2] is None
+
+    @pytest.mark.parametrize("adder_method,getter_method,args", [
+        ("add_custom_section", "get_custom_sections", ("name", 500.0, 200.0, 10.0, 16.0)),
+        ("add_custom_deck", "get_custom_decks",
+         ("name", "T", 58.0, 207.0, 106.0, 62.0, 0.0)),
+        ("add_custom_mesh", "get_custom_meshes", ("name", 142.0, 142.0)),
+    ])
+    def test_custom_add_populates_uuid_and_provenance(
+        self, tmp_path, monkeypatch, adder_method, getter_method, args
+    ):
+        monkeypatch.setenv("MACS_DEVICE_NAME", "dev-box")
+        monkeypatch.setenv("MACS_APP_VERSION", "9.9.9")
+        with ResultsDB(tmp_path / "c.db") as db:
+            getattr(db, adder_method)(*args)
+            rows = getattr(db, getter_method)()
+            assert len(rows) == 1
+            r = rows[0]
+            assert r.get("uuid") is not None and len(r["uuid"]) == 32
+            assert r.get("device_name") == "dev-box"
+            assert r.get("app_version") == "9.9.9"
+            assert r.get("synced_at") is None
+
+
+class TestSchemaMigrationLegacy:
+    """Opening a DB created before issue #11 must additively upgrade it:
+    columns added, existing rows backfilled with uuids and hostname-derived
+    device_name, app_version + synced_at left NULL (we can't reconstruct what
+    version produced the row, so don't lie)."""
+
+    def _build_legacy(self, path):
+        """Build a pre-#11 schema: no uuid / device_name / app_version / synced_at."""
+        conn = sqlite3.connect(path)
+        conn.executescript("""
+            CREATE TABLE runs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_timestamp TEXT,
+                span1 REAL,
+                error TEXT,
+                uf_max REAL,
+                comp_failure INTEGER,
+                side_a_load_ratio REAL,
+                side_b_load_ratio REAL,
+                side_c_load_ratio REAL,
+                side_d_load_ratio REAL,
+                batch_id TEXT
+            );
+            CREATE TABLE batches (
+                batch_id TEXT PRIMARY KEY,
+                created_at TEXT,
+                mode TEXT,
+                total_expected INTEGER
+            );
+            CREATE TABLE custom_sections (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                h REAL NOT NULL, b REAL NOT NULL, tw REAL NOT NULL, tf REAL NOT NULL,
+                created_at TEXT
+            );
+            CREATE TABLE custom_decks (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                deck_type TEXT, deck_depth REAL, deck_trug REAL,
+                deck_top REAL, deck_bot REAL, deck_stiff_height REAL,
+                created_at TEXT
+            );
+            CREATE TABLE custom_meshes (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                main_area REAL, trans_area REAL,
+                created_at TEXT
+            );
+        """)
+        conn.execute(
+            "INSERT INTO runs (run_timestamp, span1, uf_max) VALUES (?, ?, ?)",
+            ("2026-01-01", 9.0, 0.7),
+        )
+        conn.execute(
+            "INSERT INTO runs (run_timestamp, span1, uf_max) VALUES (?, ?, ?)",
+            ("2026-01-02", 10.0, 0.8),
+        )
+        conn.execute(
+            "INSERT INTO batches (batch_id, created_at, mode, total_expected) VALUES (?, ?, ?, ?)",
+            ("old_batch", "2026-01-01", "sweep", 5),
+        )
+        conn.execute(
+            "INSERT INTO custom_sections (id, name, h, b, tw, tf, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            ("CUSTOM_1", "Legacy UB", 500.0, 200.0, 10.0, 16.0, "2026-01-01"),
+        )
+        conn.commit()
+        conn.close()
+
+    def test_legacy_runs_backfilled(self, tmp_path):
+        legacy = tmp_path / "legacy.db"
+        self._build_legacy(legacy)
+
+        with ResultsDB(legacy) as upgraded:
+            rows = list(upgraded.conn.execute(
+                "SELECT uuid, device_name, app_version, synced_at FROM runs ORDER BY id"
+            ))
+        # Both legacy rows have uuids
+        assert all(r[0] is not None and len(r[0]) == 32 for r in rows)
+        # uuids are unique
+        assert len({r[0] for r in rows}) == len(rows)
+        # device_name backfilled to current hostname (best guess)
+        host = socket.gethostname()
+        assert all(r[1] == host for r in rows)
+        # app_version + synced_at left NULL — stamping them would lie
+        assert all(r[2] is None for r in rows)
+        assert all(r[3] is None for r in rows)
+
+    def test_legacy_custom_sections_backfilled(self, tmp_path):
+        legacy = tmp_path / "legacy.db"
+        self._build_legacy(legacy)
+
+        with ResultsDB(legacy) as upgraded:
+            cols = {r[1] for r in upgraded.conn.execute("PRAGMA table_info(custom_sections)")}
+            assert "uuid" in cols and "device_name" in cols
+            row = upgraded.conn.execute(
+                "SELECT uuid, device_name, app_version, synced_at "
+                "FROM custom_sections WHERE id = ?", ("CUSTOM_1",)
+            ).fetchone()
+        assert row[0] is not None and len(row[0]) == 32
+        assert row[1] == socket.gethostname()
+        assert row[2] is None and row[3] is None
+
+    def test_legacy_unique_index_created(self, tmp_path):
+        """Backfill must precede the unique-index create — otherwise the
+        index build fails on NULL collisions and the migration aborts."""
+        legacy = tmp_path / "legacy.db"
+        self._build_legacy(legacy)
+
+        with ResultsDB(legacy) as upgraded:
+            idx = upgraded.conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='index' AND name='idx_runs_uuid'"
+            ).fetchone()
+        assert idx is not None

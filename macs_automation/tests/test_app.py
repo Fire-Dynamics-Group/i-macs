@@ -102,6 +102,37 @@ class TestRefDataEndpoints:
         assert "A393" in data
 
 
+class TestStartupProbe:
+    """A bad DB_PATH must fail at FastAPI lifespan startup — _get_db is lazy
+    (per-request), so without a startup probe a path issue only surfaces on
+    the first API call. Tauri's 30s /healthz wait would happily return 200
+    while writes silently fail. The lifespan probe makes the sidecar crash
+    deterministically so SidecarErrorScreen surfaces it instead."""
+
+    def test_unwriteable_path_crashes_startup(self, tmp_path, monkeypatch):
+        # Make the "parent dir" actually be a regular file, so sqlite3 can't
+        # open or create anything under it.
+        blocker = tmp_path / "blocker.txt"
+        blocker.write_text("not a directory")
+        bad_path = blocker / "results.db"
+
+        import macs_automation.app as app_module
+        monkeypatch.setattr(app_module, "DB_PATH", bad_path)
+
+        with pytest.raises(Exception):
+            with TestClient(app_module.app):
+                # If startup succeeded, this is the bug we're testing against.
+                pass
+
+    def test_writeable_path_starts_cleanly(self, tmp_path, monkeypatch):
+        good_path = tmp_path / "ok.db"
+        import macs_automation.app as app_module
+        monkeypatch.setattr(app_module, "DB_PATH", good_path)
+        with TestClient(app_module.app) as client:
+            resp = client.get("/healthz")
+            assert resp.status_code == 200
+
+
 class TestRunEndpoints:
     def test_list_runs_empty(self, client):
         resp = client.get("/api/runs")
