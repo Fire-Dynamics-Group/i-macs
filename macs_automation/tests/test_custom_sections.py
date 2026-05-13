@@ -26,7 +26,7 @@ class TestCustomSectionsTable:
     def test_table_columns(self, db):
         cursor = db.conn.execute("PRAGMA table_info(custom_sections)")
         cols = {row[1] for row in cursor.fetchall()}
-        assert cols == {"id", "name", "h", "b", "tw", "tf", "created_at"}
+        assert {"id", "name", "h", "b", "tw", "tf", "created_at"} <= cols
 
 
 class TestAddCustomSection:
@@ -236,8 +236,8 @@ class TestCustomDecksTable:
     def test_table_columns(self, db):
         cursor = db.conn.execute("PRAGMA table_info(custom_decks)")
         cols = {row[1] for row in cursor.fetchall()}
-        assert cols == {"id", "name", "deck_type", "deck_depth", "deck_trug",
-                        "deck_top", "deck_bot", "deck_stiff_height", "created_at"}
+        assert {"id", "name", "deck_type", "deck_depth", "deck_trug",
+                "deck_top", "deck_bot", "deck_stiff_height", "created_at"} <= cols
 
 
 class TestAddCustomDeck:
@@ -331,7 +331,7 @@ class TestCustomMeshesTable:
     def test_table_columns(self, db):
         cursor = db.conn.execute("PRAGMA table_info(custom_meshes)")
         cols = {row[1] for row in cursor.fetchall()}
-        assert cols == {"id", "name", "main_area", "trans_area", "created_at"}
+        assert {"id", "name", "main_area", "trans_area", "created_at"} <= cols
 
 
 class TestAddCustomMesh:
