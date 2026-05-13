@@ -111,13 +111,12 @@ describe("BatchProgressPage — analytical view", () => {
   it("renders the analytical view when run_count === total_expected", async () => {
     mockResponses({ batch: COMPLETE_BATCH, runs: TWO_RUNS });
     renderPage();
-    // Wait for the analytical view's Download-report link — its presence
-    // implies the batch metadata loaded and the async URL state settled.
-    expect(await screen.findByRole("link", { name: /download report/i })).toBeInTheDocument();
+    // The Rerun-batch link is analytical-only; finding it implies the
+    // batch metadata loaded and the analytical branch rendered.
+    expect(await screen.findByRole("link", { name: /rerun batch/i })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: /batch BATCH123/i })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "#1" })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "#2" })).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: /rerun batch/i })).toBeInTheDocument();
   });
 
   it("Rerun batch link points at /?from_batch=BATCH123", async () => {
@@ -129,6 +128,25 @@ describe("BatchProgressPage — analytical view", () => {
     });
   });
 
+  it("does not request /api/report/* endpoints", async () => {
+    mockResponses({ batch: COMPLETE_BATCH, runs: TWO_RUNS });
+    renderPage();
+    // Wait for analytical view to settle.
+    await screen.findByRole("link", { name: /rerun batch/i });
+    const reportCalls = fetchMock.mock.calls.filter(([url]) =>
+      String(url).includes("/api/report/"),
+    );
+    expect(reportCalls).toEqual([]);
+  });
+
+  it("does not render the removed Download-report or capacity-chart UI", async () => {
+    mockResponses({ batch: COMPLETE_BATCH, runs: TWO_RUNS });
+    renderPage();
+    await screen.findByRole("link", { name: /rerun batch/i });
+    expect(screen.queryByRole("link", { name: /download report/i })).toBeNull();
+    expect(screen.queryByText(/total slab capacity/i)).toBeNull();
+  });
+
   it("falls back to the live-progress view when run_count < total_expected", async () => {
     mockResponses({ batch: IN_FLIGHT_BATCH });
     renderPage();
@@ -137,7 +155,6 @@ describe("BatchProgressPage — analytical view", () => {
     await waitFor(() => {
       expect(screen.getByText(/trend/i)).toBeInTheDocument();
     });
-    expect(screen.queryByRole("link", { name: /download report/i })).toBeNull();
     expect(screen.queryByRole("link", { name: /rerun batch/i })).toBeNull();
   });
 
@@ -146,7 +163,7 @@ describe("BatchProgressPage — analytical view", () => {
     renderPage();
     // No analytical buttons rendered.
     await waitFor(() => {
-      expect(screen.queryByRole("link", { name: /download report/i })).toBeNull();
+      expect(screen.queryByRole("link", { name: /rerun batch/i })).toBeNull();
     });
     // Live progress view's heading is still present.
     expect(screen.getByRole("heading", { name: /batch BATCH123/i })).toBeInTheDocument();

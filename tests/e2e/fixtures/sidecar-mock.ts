@@ -187,20 +187,6 @@ export async function installSidecarMock(page: Page, opts: MockOpts) {
       }
       return route.fulfill({ status: 200, json: summary });
     }
-    if (method === "GET" && url.pathname.startsWith("/api/report/chart/")) {
-      // 1x1 transparent PNG. <img> needs *something* or jsdom logs noise.
-      const png = Buffer.from(
-        "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c489" +
-          "0000000a49444154789c6300010000050001" +
-          "0d0a2db40000000049454e44ae426082",
-        "hex",
-      );
-      return route.fulfill({
-        status: 200,
-        contentType: "image/png",
-        body: png,
-      });
-    }
     if (method === "GET" && url.pathname === "/api/sweeps/events") {
       return route.fulfill({
         status: 200,

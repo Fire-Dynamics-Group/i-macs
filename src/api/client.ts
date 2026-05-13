@@ -175,22 +175,6 @@ export function listRuns(opts: { batchId?: string } = {}): Promise<RunsListRespo
 export const getBatch = (batchId: string) =>
   getJson<BatchSummary>(`/api/batches/${encodeURIComponent(batchId)}`);
 
-/** Resolved URL for the DOCX report — the dashboard's Download button
- *  navigates to this so the browser handles the file save dialog. */
-export async function getReportDocxUrl(batchId: string): Promise<string> {
-  const port = await invoke<number>("get_sidecar_port");
-  return `http://127.0.0.1:${port}/api/report/docx?batch_id=${encodeURIComponent(batchId)}`;
-}
-
-/** PNG chart URL (scatter / capacity) for embedding directly via <img>. */
-export async function getReportChartUrl(
-  chartType: "scatter" | "capacity",
-  batchId: string,
-): Promise<string> {
-  const port = await invoke<number>("get_sidecar_port");
-  return `http://127.0.0.1:${port}/api/report/chart/${chartType}?batch_id=${encodeURIComponent(batchId)}`;
-}
-
 export function listBatches(
   opts: { limit?: number; offset?: number } = {},
 ): Promise<BatchesListResponse> {
