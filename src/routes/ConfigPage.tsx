@@ -17,6 +17,10 @@ import {
 } from "../api/client";
 import { checkForUpdates } from "../lib/updater";
 import { hydrateFormFromRun } from "../lib/hydrateFormFromRun";
+import {
+  SearchableSelect,
+  type SearchableSelectOption,
+} from "../components/SearchableSelect";
 import { SweepConfigSection } from "../sweep/SweepConfigSection";
 import { VARYABLE_PARAMS } from "../sweep/varyableParams";
 import {
@@ -48,11 +52,18 @@ const numberField = (
   </label>
 );
 
-function flattenSections(refData: RefData): Array<{ id: string; label: string }> {
-  const out: Array<{ id: string; label: string }> = [];
+function flattenSections(refData: RefData): SearchableSelectOption[] {
+  const out: SearchableSelectOption[] = [];
   for (const family of Object.keys(refData.sections)) {
     for (const sec of refData.sections[family]) {
-      out.push({ id: sec.id, label: `${sec.name} (${family})` });
+      const depthStr = String(sec.h);
+      const widthStr = String(sec.b);
+      out.push({
+        id: sec.id,
+        label: `${sec.name} (${family})`,
+        secondary: `${depthStr} × ${widthStr}`,
+        searchTerms: [family, depthStr, widthStr],
+      });
     }
   }
   return out;
@@ -389,13 +400,13 @@ export default function ConfigPage() {
                 { id: "LW", label: "Lightweight" },
               ]}
             />
-            <SelectField
+            <SearchableSelectField
               label="Deck"
               name="deck_id"
               control={control}
               options={deckOptions}
             />
-            <SelectField
+            <SearchableSelectField
               label="Mesh"
               name="mesh_type"
               control={control}
@@ -407,7 +418,7 @@ export default function ConfigPage() {
         <Section title="Beams">
           <SubLegend>Centre (unprotected)</SubLegend>
           <Grid>
-            <SelectField
+            <SearchableSelectField
               label="Unprotected (centre) section"
               name="u_sec_size"
               control={control}
@@ -618,7 +629,7 @@ function BeamSideRow({
   errors,
 }: {
   side: "a" | "b" | "c" | "d";
-  sectionOptions: Array<{ id: string; label: string }>;
+  sectionOptions: SearchableSelectOption[];
   control: ReturnType<typeof useForm<FormValues>>["control"];
   register: ReturnType<typeof useForm<FormValues>>["register"];
   errors: ReturnType<typeof useForm<FormValues>>["formState"]["errors"];
@@ -627,8 +638,8 @@ function BeamSideRow({
     <>
       <SubLegend>Side {side.toUpperCase()}</SubLegend>
       <Grid>
-        <SelectField
-          label="Section"
+        <SearchableSelectField
+          label={`Side ${side.toUpperCase()} section`}
           name={`side_${side}_sec` as keyof FormValues}
           control={control}
           options={sectionOptions}
@@ -695,5 +706,43 @@ function SelectField({
         )}
       />
     </label>
+  );
+}
+
+function SearchableSelectField({
+  label,
+  name,
+  control,
+  options,
+}: {
+  label: string;
+  name: keyof FormValues;
+  control: ReturnType<typeof useForm<FormValues>>["control"];
+  options: SearchableSelectOption[];
+}) {
+  const triggerId = `picker-${String(name)}`;
+  return (
+    <div className="block">
+      <label
+        htmlFor={triggerId}
+        className="block text-sm font-medium text-slate-700"
+      >
+        {label}
+      </label>
+      <Controller
+        control={control}
+        name={name as never}
+        render={({ field }) => (
+          <SearchableSelect
+            id={triggerId}
+            value={(field.value as string) ?? ""}
+            onChange={field.onChange}
+            options={options}
+            ariaLabel={label}
+            placeholder="Choose…"
+          />
+        )}
+      />
+    </div>
   );
 }
