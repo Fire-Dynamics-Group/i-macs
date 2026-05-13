@@ -133,6 +133,11 @@ export interface BatchSummary {
   error_count: number;
   varying_params: Record<string, unknown>;
   fixed_params: Record<string, unknown>;
+  // Multi-desktop sync provenance (#11). Not surfaced in the dashboard yet —
+  // the cloud-sync slice owns the device-name display + friendly-name UI.
+  device_name?: string | null;
+  app_version?: string | null;
+  synced_at?: string | null;
 }
 
 export interface BatchesListResponse {

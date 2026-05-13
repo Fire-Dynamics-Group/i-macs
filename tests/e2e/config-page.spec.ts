@@ -20,13 +20,54 @@ test.describe("ConfigPage smoke", () => {
     // for the form heading.
     await expect(page.getByRole("heading", { name: "MACS+ Automation" })).toBeVisible();
 
-    // Mocked /api/ref-data populated dropdowns with two UB sections + IPE 500.
-    const sectionSelect = page.getByLabel("Unprotected (centre) section");
-    await expect(sectionSelect).toBeVisible();
-    await expect(sectionSelect.getByRole("option", { name: /UB 457 x 191 x 89/ }))
-      .toBeAttached();
-    await expect(sectionSelect.getByRole("option", { name: /IPE 500/ }))
-      .toBeAttached();
+    // The section picker is now a SearchableSelect (cmdk + Radix Popover).
+    // Open the popover, then assert the listbox contains the mocked options.
+    const sectionTrigger = page.getByLabel("Unprotected (centre) section");
+    await expect(sectionTrigger).toBeVisible();
+    await sectionTrigger.click();
+    const listbox = page.getByRole("listbox");
+    await expect(listbox.getByRole("option", { name: /UB 457 x 191 x 89/ }))
+      .toBeVisible();
+    await expect(listbox.getByRole("option", { name: /IPE 500/ }))
+      .toBeVisible();
+  });
+
+  test("searchable picker fuzzy-matches a partial name and selects on Enter", async ({ page }) => {
+    await page.goto("/");
+    await expect(page.getByRole("heading", { name: "MACS+ Automation" })).toBeVisible();
+
+    const sectionTrigger = page.getByLabel("Unprotected (centre) section");
+    await expect(sectionTrigger).toBeVisible();
+    await sectionTrigger.click();
+
+    // Typing a partial name fuzzy-matches via fuse.js. "457" picks out the
+    // single UB section whose name includes 457.
+    const searchInput = page.getByPlaceholder("Search…");
+    await searchInput.fill("457");
+
+    const listbox = page.getByRole("listbox");
+    await expect(listbox.getByRole("option", { name: /UB 457 x 191 x 89/ }))
+      .toBeVisible();
+    await expect(listbox.getByRole("option", { name: /IPE 500/ }))
+      .toHaveCount(0);
+
+    // ArrowDown then Enter selects the highlighted match. The trigger should
+    // then display the picked option's label.
+    await searchInput.press("ArrowDown");
+    await searchInput.press("Enter");
+    await expect(sectionTrigger).toContainText("UB 457 x 191 x 89");
+
+    // Submit and capture the POST body — the form should send the selected id.
+    const submitBodyPromise = new Promise<Record<string, unknown>>((resolve) => {
+      page.on("request", (req) => {
+        if (req.method() === "POST" && req.url().endsWith("/api/runs")) {
+          resolve(JSON.parse(req.postData() ?? "{}"));
+        }
+      });
+    });
+    await page.getByRole("button", { name: "Submit calculation" }).click();
+    const body = await submitBodyPromise;
+    expect(body.u_sec_size).toBe("UB_457x191x89");
   });
 
   test("submits a run and navigates to the run-detail page", async ({ page }) => {

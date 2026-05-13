@@ -71,6 +71,7 @@ fn spawn_sidecar(
     log_dir: &std::path::Path,
 ) -> Result<Child, String> {
     let log_dir_str = log_dir.to_string_lossy().into_owned();
+    let app_version = app.package_info().version.to_string();
 
     if cfg!(debug_assertions) {
         // Project root = parent of src-tauri/
@@ -92,6 +93,9 @@ fn spawn_sidecar(
             "python".to_string()
         };
 
+        // Dev: no MACS_DB_PATH set, so the sidecar falls back to
+        // <repo>/results.db (where the user's accumulated dev history
+        // already lives).
         return Command::new(python_cmd)
             .args([
                 "-m",
@@ -101,6 +105,7 @@ fn spawn_sidecar(
                 "--log-dir",
                 &log_dir_str,
             ])
+            .env("MACS_APP_VERSION", &app_version)
             .current_dir(&project_root)
             .stdout(Stdio::inherit())
             .stderr(Stdio::inherit())
@@ -134,8 +139,23 @@ fn spawn_sidecar(
         .ok_or_else(|| "no parent for sidecar exe".to_string())?
         .to_path_buf();
 
+    // %LOCALAPPDATA%\i-macs\results.db on Windows — same convention as
+    // log_dir. Without this the bundled sidecar resolved DB_PATH relative
+    // to __file__ inside _internal\, which Windows either ACL-denies (data
+    // wiped each launch) or silently virtualizes into VirtualStore (data
+    // exists but the user can't find it). See issue #11.
+    let db_path = resolver
+        .resolve("i-macs/results.db", BaseDirectory::LocalData)
+        .map_err(|e| format!("resolve db_path: {e}"))?;
+    if let Some(parent) = db_path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("create_dir_all db_path parent: {e}"))?;
+    }
+
     Command::new(&sidecar_exe)
         .args(["--port", &port.to_string(), "--log-dir", &log_dir_str])
+        .env("MACS_DB_PATH", &db_path)
+        .env("MACS_APP_VERSION", &app_version)
         .current_dir(&sidecar_dir)
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit())

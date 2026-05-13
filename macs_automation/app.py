@@ -12,10 +12,12 @@ import json
 import logging
 import os
 import re
+import sys
 import threading
 import time
 import uuid
 from collections import OrderedDict
+from contextlib import asynccontextmanager
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Optional
@@ -46,9 +48,47 @@ def _attach_status(run: dict) -> dict:
     return run
 
 APP_DIR = Path(__file__).parent
-DB_PATH = Path(os.environ["MACS_DB_PATH"]) if "MACS_DB_PATH" in os.environ else APP_DIR.parent / "results.db"
 
-app = FastAPI(title="MACS+ Automation")
+
+def _resolve_db_path() -> Path:
+    """Pick where SQLite lives.
+
+    Order:
+      1. MACS_DB_PATH env (set by main.rs in production; tests can override).
+      2. Frozen + no env: fall back to %LOCALAPPDATA%\\i-macs\\results.db.
+         This is belt-and-suspenders — main.rs sets MACS_DB_PATH on every
+         spawn, but if a future bundling regression unsets it we still land
+         somewhere writeable rather than under Program Files (where Windows
+         ACLs either virtualize the write into a hidden VirtualStore shadow
+         folder or wipe the DB at every launch — the bug we're fixing).
+      3. Dev (non-frozen): write to <repo>/results.db so the sidecar uses the
+         existing dev database with the user's accumulated history.
+    """
+    env = os.environ.get("MACS_DB_PATH")
+    if env:
+        return Path(env)
+    if getattr(sys, "frozen", False):
+        local_app_data = os.environ.get("LOCALAPPDATA")
+        if local_app_data:
+            return Path(local_app_data) / "i-macs" / "results.db"
+    return APP_DIR.parent / "results.db"
+
+
+DB_PATH = _resolve_db_path()
+
+
+@asynccontextmanager
+async def _lifespan(app: FastAPI):
+    """Open + close the DB once at startup so a bad MACS_DB_PATH (unwriteable
+    parent, broken bundling, etc.) crashes the sidecar before Tauri's 30s
+    /healthz wait succeeds. _get_db() is per-request, so without this probe
+    a path issue would only surface on the first user action — too late for
+    SidecarErrorScreen to catch."""
+    ResultsDB(DB_PATH).close()
+    yield
+
+
+app = FastAPI(title="MACS+ Automation", lifespan=_lifespan)
 # The Tauri webview's origin (tauri://localhost in prod, http://localhost:1420
 # in dev) is cross-origin to http://127.0.0.1:<port>, so fetch() responses
 # come back blocked unless we send the headers. The sidecar binds to 127.0.0.1
