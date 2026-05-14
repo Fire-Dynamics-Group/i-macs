@@ -180,4 +180,47 @@ describe("hydrateFormFromFrcParams", () => {
     expect(values.method).toBe("iso");
     expect(values.Lc).toBe(63);
   });
+
+  it("importedKeys flags only form fields whose source engine key was present", () => {
+    // Drop a handful of source keys so we can prove they're excluded.
+    const partial: Record<string, unknown> = { ...SAMPLE_PARAMS };
+    delete partial.Lc;
+    delete partial.Bc;
+    delete partial.qf;
+    delete partial.side_b_sh_con;
+    delete (partial as Record<string, unknown>).SideBsh_con;
+
+    const { importedKeys, values } = hydrateFormFromFrcParams(partial, REF_DATA);
+
+    // Present keys → imported.
+    expect(importedKeys.has("span1")).toBe(true);
+    expect(importedKeys.has("deck_id")).toBe(true);
+    expect(importedKeys.has("u_sec_size")).toBe(true);
+    expect(importedKeys.has("side_a_sec")).toBe(true);
+
+    // Absent keys → NOT imported, even though FormValues still has a
+    // default value (0) for them.
+    expect(importedKeys.has("Lc")).toBe(false);
+    expect(importedKeys.has("Bc")).toBe(false);
+    expect(importedKeys.has("qf")).toBe(false);
+    expect(importedKeys.has("side_b_sh_con")).toBe(false);
+
+    // FormValues fields still carry a numeric zero for the absent keys —
+    // important so react-hook-form's reset() doesn't see undefined.
+    expect(values.Lc).toBe(0);
+    expect(values.qf).toBe(0);
+  });
+
+  it("importedKeys is empty when params is empty", () => {
+    const { importedKeys } = hydrateFormFromFrcParams({}, REF_DATA);
+    expect(importedKeys.size).toBe(0);
+  });
+
+  it("importedKeys excludes a field whose source key is explicitly null", () => {
+    const params = { ...SAMPLE_PARAMS, Lc: null };
+    const { importedKeys } = hydrateFormFromFrcParams(params, REF_DATA);
+    expect(importedKeys.has("Lc")).toBe(false);
+    // Sibling field unaffected.
+    expect(importedKeys.has("Bc")).toBe(true);
+  });
 });

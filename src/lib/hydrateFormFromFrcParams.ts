@@ -12,6 +12,11 @@
  *     Unknown IDs land in `unknownFields` so the UI can yellow-hint the field
  *     and the user can pick a replacement. The mapped value is "" so the
  *     dropdown reads as "Choose…" rather than holding a phantom ID.
+ *
+ * The mapper always returns a complete FormValues (zero / "" for missing
+ * keys so react-hook-form's reset() doesn't see undefined). `importedKeys`
+ * separately records which form fields actually had a source key present
+ * in the .frc — used by the UI to dot only those labels, not every input.
  */
 import type { RefData } from "../api/client";
 import type { FormValues } from "../types/formValues";
@@ -20,7 +25,66 @@ export interface FrcHydrationResult {
   values: FormValues;
   /** FormValues field → the unrecognised engine ID that was dropped. */
   unknownFields: Partial<Record<keyof FormValues, string>>;
+  /** Form fields whose value came from an engine key actually present in
+   *  the .frc payload. Drives the per-label "●" provenance dot. */
+  importedKeys: Set<keyof FormValues>;
 }
+
+/** Map of FormValues field → the engine key (or keys) that populate it.
+ *  If any listed engine key is present in the .frc params, the form field
+ *  counts as imported. Listed in the same order as the FormValues struct
+ *  for readability. */
+const SOURCE_KEYS: Record<keyof FormValues, readonly string[]> = {
+  span1: ["span1"],
+  span2: ["span2"],
+  numbeam: ["numbeam"],
+  slab_depth: ["slab_depth"],
+  fck: ["fck"],
+  conc_type: ["conc_type"],
+  mesh_type: ["mesh_type"],
+  deck_id: ["DeckId"],
+  u_sec_size: ["uSecSize"],
+  u_sec_fy: ["fy5"],
+  u_sec_sh_con: ["ush_con"],
+  side_a_sec: ["SideASecSize"],
+  side_a_fy: ["fy1"],
+  side_a_edge: ["SideAEdgeFlag"],
+  side_a_composite: ["SideACompoFlag"],
+  side_a_sh_con: ["SideAsh_con"],
+  side_b_sec: ["SideBSecSize"],
+  side_b_fy: ["fy2"],
+  side_b_edge: ["SideBEdgeFlag"],
+  side_b_composite: ["SideBCompoFlag"],
+  side_b_sh_con: ["SideBsh_con"],
+  side_c_sec: ["SideCSecSize"],
+  side_c_fy: ["fy3"],
+  side_c_edge: ["SideCEdgeFlag"],
+  side_c_composite: ["SideCCompoFlag"],
+  side_c_sh_con: ["SideCsh_con"],
+  side_d_sec: ["SideDSecSize"],
+  side_d_fy: ["fy4"],
+  side_d_edge: ["SideDEdgeFlag"],
+  side_d_composite: ["SideDCompoFlag"],
+  side_d_sh_con: ["SideDsh_con"],
+  slab_weight: ["slab_weight"],
+  cold_perm: ["cold_perm"],
+  lead_var_act: ["lead_var_act"],
+  othr_var_act: ["othr_var_act"],
+  lead_var_fac: ["lead_var_fac"],
+  othr_var_fac: ["othr_var_fac"],
+  method: ["method"],
+  time_limit: ["time_limit"],
+  qf: ["qf"],
+  window_percent: ["window_percent"],
+  Lc: ["Lc"],
+  Bc: ["Bc"],
+  Hc: ["Hc"],
+  Hw: ["Hw"],
+  Lw: ["Lw"],
+  Bfac: ["Bfac"],
+  combustion_factor: ["combustion_factor"],
+  growth_rate: ["growth_rate"],
+};
 
 export function hydrateFormFromFrcParams(
   params: Record<string, unknown>,
@@ -111,7 +175,17 @@ export function hydrateFormFromFrcParams(
     growth_rate: asNumber(params.growth_rate),
   };
 
-  return { values, unknownFields };
+  const importedKeys = new Set<keyof FormValues>();
+  for (const formKey of Object.keys(SOURCE_KEYS) as Array<keyof FormValues>) {
+    for (const engineKey of SOURCE_KEYS[formKey]) {
+      if (engineKey in params && params[engineKey] != null) {
+        importedKeys.add(formKey);
+        break;
+      }
+    }
+  }
+
+  return { values, unknownFields, importedKeys };
 }
 
 function asNumber(v: unknown): number {

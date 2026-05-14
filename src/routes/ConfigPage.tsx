@@ -346,13 +346,6 @@ export default function ConfigPage() {
   const applyFrcImport = (data: ImportFrcResponse, filename: string) => {
     if (!refDataQuery.data) return;
     const result = hydrateFormFromFrcParams(data.params, refDataQuery.data);
-    // Mark every form field as "from the .frc" — source-based provenance,
-    // not a diff. As the engineer touches fields the dot clears per-field
-    // (react-hook-form's dirty signal), so the remaining dots show what
-    // hasn't been reviewed/overridden.
-    const imported = new Set<keyof FormValues>(
-      Object.keys(result.values) as Array<keyof FormValues>,
-    );
     seededRef.current = `frc:${filename}`;
     reset(result.values);
     setMode("single");
@@ -364,7 +357,7 @@ export default function ConfigPage() {
       clientName: data.project?.ClientName ?? "",
     });
     setFrcUnknownFields(result.unknownFields);
-    setImportedFields(imported);
+    setImportedFields(result.importedKeys);
     setFrcError(null);
     // Import beats ?from_run / ?from_batch — clear those so a refresh
     // doesn't re-hydrate from a stale URL.
