@@ -65,6 +65,15 @@ interface MockOpts {
   /** Map of run id → row for GET /api/runs/{id}. Falls back to the default
    *  pass response when the requested id isn't in the map. */
   runs?: Record<string, Record<string, unknown>>;
+  /** Map of column → payload returned by GET /api/batches/:id/distribution.
+   *  Falls back to an empty payload (renders the "No successful runs"
+   *  placeholder) when not configured. */
+  distribution?: Record<string, {
+    average: Array<[number, number]>;
+    spaghetti: Array<{ run_id: number; points: Array<[number, number]> }>;
+    factored_hot_min: number | null;
+    factored_hot_max: number | null;
+  }>;
 }
 
 /**
@@ -180,7 +189,19 @@ export async function installSidecarMock(page: Page, opts: MockOpts) {
       });
     }
     if (method === "GET" && url.pathname.startsWith("/api/batches/")) {
-      const id = url.pathname.slice("/api/batches/".length);
+      const tail = url.pathname.slice("/api/batches/".length);
+      const slash = tail.indexOf("/");
+      if (slash >= 0 && tail.slice(slash + 1) === "distribution") {
+        const column = url.searchParams.get("column") ?? "";
+        const payload = (opts.distribution ?? {})[column] ?? {
+          average: [],
+          spaghetti: [],
+          factored_hot_min: null,
+          factored_hot_max: null,
+        };
+        return route.fulfill({ status: 200, json: payload });
+      }
+      const id = tail;
       const summary = (opts.batchSummaries ?? {})[id];
       if (!summary) {
         return route.fulfill({ status: 404, json: { error: "Not found" } });

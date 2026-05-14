@@ -71,6 +71,18 @@ function mockResponses(opts: {
   runs?: Array<Record<string, unknown>>;
 }) {
   fetchMock.mockImplementation((url: string) => {
+    if (url.includes("/distribution")) {
+      // AnalyticalView mounts 3x DistributionChart — return a benign payload
+      // so the chart wrapper renders without blowing up on undefined arrays.
+      return Promise.resolve(
+        jsonResponse({
+          average: [],
+          spaghetti: [],
+          factored_hot_min: null,
+          factored_hot_max: null,
+        }),
+      );
+    }
     if (url.includes("/api/batches/BATCH123")) {
       const status = opts.batchStatus ?? 200;
       return Promise.resolve(jsonResponse(opts.batch ?? COMPLETE_BATCH, status));

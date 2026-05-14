@@ -3,12 +3,10 @@ import { Link, useParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 
 import type { BatchSummary, Run } from "../api/client";
-import {
-  getBatch,
-  getReportChartUrl,
-  getReportDocxUrl,
-} from "../api/client";
+import { getBatch, getReportDocxUrl } from "../api/client";
 import { detectVaryingFields } from "../sweep/buildScatterTraces";
+import { DistributionChart } from "../sweep/DistributionChart";
+import { MacsScatter } from "../sweep/MacsScatter";
 import { SweepScatter } from "../sweep/SweepScatter";
 import { useSweepEvents } from "../sweep/useSweepEvents";
 import { VARYABLE_PARAMS } from "../sweep/varyableParams";
@@ -143,22 +141,23 @@ function AnalyticalView({ batch }: { batch: BatchSummary }) {
     [runs, candidateNames],
   );
 
+  // The MACS+ scatter (chart 1) is only informative when at least one of
+  // its two axes varies across the batch. When the sweep varies neither
+  // qf nor window_percent the points collapse to a single cluster — hide
+  // it entirely and just show the three distribution charts.
+  const scatterAxesVary = useMemo(
+    () => detectVaryingFields(runs, ["qf", "window_percent"]).length > 0,
+    [runs],
+  );
+
   const [docxUrl, setDocxUrl] = useState<string | null>(null);
-  const [scatterUrl, setScatterUrl] = useState<string | null>(null);
-  const [capacityUrl, setCapacityUrl] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
-    Promise.all([
-      getReportDocxUrl(batch.batch_id),
-      getReportChartUrl("scatter", batch.batch_id),
-      getReportChartUrl("capacity", batch.batch_id),
-    ])
-      .then(([d, s, c]) => {
+    getReportDocxUrl(batch.batch_id)
+      .then((d) => {
         if (cancelled) return;
         setDocxUrl(d);
-        setScatterUrl(s);
-        setCapacityUrl(c);
       })
       .catch(() => {});
     return () => {
@@ -205,30 +204,37 @@ function AnalyticalView({ batch }: { batch: BatchSummary }) {
         </div>
       </header>
 
+      {/* MACS+ Monte Carlo Simulation Output Summary — 4 charts. */}
       <section className="mt-6 grid gap-4 md:grid-cols-2">
-        <div className="rounded-md border border-slate-200 bg-white p-4 shadow-sm">
-          <h2 className="mb-2 text-sm font-semibold uppercase tracking-wide text-slate-500">
-            UF max vs {varyingFields[0] ?? "input"}
-          </h2>
-          <SweepScatter
-            runs={runs}
-            varyingX={varyingFields[0] ?? null}
-            varyingColor={varyingFields[1] ?? null}
-          />
-          {scatterUrl && runs.length === 0 && (
-            <img src={scatterUrl} alt="UF max scatter" className="w-full" />
-          )}
-        </div>
-        <div className="rounded-md border border-slate-200 bg-white p-4 shadow-sm">
-          <h2 className="mb-2 text-sm font-semibold uppercase tracking-wide text-slate-500">
-            Total slab capacity
-          </h2>
-          {capacityUrl ? (
-            <img src={capacityUrl} alt="Capacity over time" className="w-full" />
-          ) : (
-            <p className="text-sm text-slate-400">Loading capacity chart…</p>
-          )}
-        </div>
+        {scatterAxesVary && (
+          <div
+            data-chart="macs-scatter"
+            className="rounded-md border border-slate-200 bg-white p-4 shadow-sm"
+          >
+            <h2 className="mb-2 text-sm font-semibold uppercase tracking-wide text-slate-500">
+              Fire Load Density vs Glazing Breakage
+            </h2>
+            <MacsScatter runs={runs} />
+          </div>
+        )}
+        <DistributionChart
+          batchId={batch.batch_id}
+          column="total_plate_capacity"
+          title="Total Capacity Distribution"
+          yLabel="Total Slab Capacity (kN/m²)"
+        />
+        <DistributionChart
+          batchId={batch.batch_id}
+          column="lofl_temp"
+          title="Unprotected Beam Temperature Distribution"
+          yLabel="Temperature (°C)"
+        />
+        <DistributionChart
+          batchId={batch.batch_id}
+          column="mesh_temp"
+          title="Reinforcement Bar Temperature Distribution"
+          yLabel="Temperature (°C)"
+        />
       </section>
 
       <section className="mt-6 overflow-hidden rounded-md border border-slate-200 bg-white shadow-sm">
