@@ -11,6 +11,7 @@ from docx.shared import Inches, Pt
 from docx.enum.table import WD_TABLE_ALIGNMENT
 
 from macs_automation.db import ResultsDB
+from macs_automation.report import _factored_hot_range, _inputs_vary
 
 # ─── Brand styling (matches constants.py / table_constants.py) ───────────────
 
@@ -57,7 +58,7 @@ def _render_timeseries_chart(
     ylabel: str,
     runs: list[dict],
     batch_id: Optional[str] = None,
-    hline_value: Optional[float] = None,
+    hline_band: Optional[tuple[float, float]] = None,
     legend_loc: str = "center right",
 ) -> Optional[bytes]:
     """Render a time-series chart to PNG bytes using brand styling."""
@@ -111,9 +112,14 @@ def _render_timeseries_chart(
             ax.plot(sorted_times, avg_values, color=_CORAL, linewidth=2,
                     label="Average Value")
 
-        if hline_value is not None:
-            ax.axhline(y=hline_value, color="red", linewidth=1.5,
-                       label="Factored Load")
+        if hline_band is not None:
+            lo, hi = hline_band
+            if abs(hi - lo) < 1e-9:
+                ax.axhline(y=lo, color="red", linewidth=1.5,
+                           label="Factored Load")
+            else:
+                ax.axhspan(lo, hi, color="red", alpha=0.2,
+                           label="Factored Load (range)")
 
         ax.set_xlabel("Time (minutes)")
         ax.set_ylabel(ylabel)
@@ -272,19 +278,22 @@ def generate_batch_docx(
     # ── Charts ───────────────────────────────────────────────────────────
     doc.add_heading("Charts", level=1)
 
-    factored_hot = runs[0].get("factored_hot") if runs else None
+    factored_band = _factored_hot_range(runs)
 
-    # Scatter chart
-    scatter_png = _render_scatter_chart(runs)
-    if scatter_png:
-        doc.add_paragraph("All combinations of Fire Load Density vs Glazing Breakage")
-        doc.add_picture(io.BytesIO(scatter_png), width=Inches(5.5))
+    # Scatter chart — only when at least one of qf / window_percent varies
+    if _inputs_vary(runs, "qf", "window_percent"):
+        scatter_png = _render_scatter_chart(runs)
+        if scatter_png:
+            doc.add_paragraph(
+                "All combinations of Fire Load Density vs Glazing Breakage"
+            )
+            doc.add_picture(io.BytesIO(scatter_png), width=Inches(5.5))
 
     # Total capacity vs time
     capacity_png = _render_timeseries_chart(
         db, "total_plate_capacity",
         "Total Slab Capacity (kN/m2)",
-        runs, batch_id=batch_id, hline_value=factored_hot,
+        runs, batch_id=batch_id, hline_band=factored_band,
         legend_loc="center right",
     )
     if capacity_png:

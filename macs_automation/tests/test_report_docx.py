@@ -103,6 +103,37 @@ class TestBatchDBMethods:
 
 # ─── Tests: DOCX generation ─────────────────────────────────────────────────
 
+@pytest.fixture
+def constant_inputs_batch_db(tmp_path):
+    """Batch where qf and window_percent are identical across all runs."""
+    db_path = tmp_path / "constant_batch.db"
+    db = ResultsDB(db_path, check_same_thread=False)
+    batch_id = "batch_constant"
+    db.insert_batch(batch_id, mode="sweep", total_expected=4)
+    for i in range(4):
+        run_id = _insert_populated_run(
+            db, i, uf_max=0.4 + i * 0.1, qf=500.0, window_percent=50.0,
+        )
+        db.conn.execute(
+            "UPDATE runs SET batch_id = ? WHERE id = ?", (batch_id, run_id),
+        )
+    db.conn.commit()
+    yield db, batch_id
+    db.close()
+
+
+class TestDocxScatterDegenerateDrop:
+    def test_no_scatter_image_when_inputs_constant(self, constant_inputs_batch_db):
+        db, batch_id = constant_inputs_batch_db
+        path = generate_batch_docx(db, batch_id)
+        doc = Document(path)
+        image_count = sum(
+            1 for rel in doc.part.rels.values() if "image" in rel.reltype
+        )
+        # 3 timeseries charts, no scatter
+        assert image_count == 3
+
+
 class TestGenerateBatchDocx:
     def test_returns_path(self, batch_db):
         path = generate_batch_docx(batch_db, "batch_A_001")
