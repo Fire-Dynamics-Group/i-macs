@@ -194,7 +194,7 @@ export default function ConfigPage() {
     [refDataQuery.data],
   );
 
-  const { register, handleSubmit, control, watch, reset, getValues, formState } =
+  const { register, handleSubmit, control, watch, reset, formState } =
     useForm<FormValues>({
       defaultValues: {
         method: "iso",
@@ -317,11 +317,11 @@ export default function ConfigPage() {
   const [frcUnknownFields, setFrcUnknownFields] = useState<
     FrcHydrationResult["unknownFields"]
   >({});
-  // Names of fields the FRC import actually changed (vs. the form's
-  // pre-import snapshot). Drives the "● Imported" dot on each field's
-  // label so the user can see at a glance which values came from the .frc
-  // and which are still their previous edits / sidecar defaults. Cleared
-  // per-field via the dirty-fields signal as the user touches inputs.
+  // Names of fields whose value came from the most recent .frc import.
+  // Drives the "●" dot on each field's label so the user can see at a
+  // glance which inputs are still in the as-imported state vs. which
+  // they've reviewed and overridden. Cleared per-field via the dirty-
+  // fields signal as the user touches inputs.
   const [importedFields, setImportedFields] = useState<Set<keyof FormValues>>(
     new Set(),
   );
@@ -346,16 +346,13 @@ export default function ConfigPage() {
   const applyFrcImport = (data: ImportFrcResponse, filename: string) => {
     if (!refDataQuery.data) return;
     const result = hydrateFormFromFrcParams(data.params, refDataQuery.data);
-    // Diff the form's pre-import state against the incoming values so the
-    // banner can call out exactly what the .frc changed. Without this, a
-    // naive "everything in the file is imported" highlight tints all ~45
-    // fields blue on first import — useless signal.
-    const before = getValues() as unknown as Record<string, unknown>;
-    const after = result.values as unknown as Record<string, unknown>;
-    const changed = new Set<keyof FormValues>();
-    for (const k of Object.keys(result.values) as Array<keyof FormValues>) {
-      if (!Object.is(before[k], after[k])) changed.add(k);
-    }
+    // Mark every form field as "from the .frc" — source-based provenance,
+    // not a diff. As the engineer touches fields the dot clears per-field
+    // (react-hook-form's dirty signal), so the remaining dots show what
+    // hasn't been reviewed/overridden.
+    const imported = new Set<keyof FormValues>(
+      Object.keys(result.values) as Array<keyof FormValues>,
+    );
     seededRef.current = `frc:${filename}`;
     reset(result.values);
     setMode("single");
@@ -367,7 +364,7 @@ export default function ConfigPage() {
       clientName: data.project?.ClientName ?? "",
     });
     setFrcUnknownFields(result.unknownFields);
-    setImportedFields(changed);
+    setImportedFields(imported);
     setFrcError(null);
     // Import beats ?from_run / ?from_batch — clear those so a refresh
     // doesn't re-hydrate from a stale URL.
@@ -666,7 +663,7 @@ export default function ConfigPage() {
             )}
             {importedFields.size > 0 && (
               <span className="ml-1 text-blue-700">
-                — fields with <span className="mx-0.5 inline-block h-1.5 w-1.5 rounded-full bg-blue-500 align-middle" aria-hidden /> were changed by the import.
+                — fields with <span className="mx-0.5 inline-block h-1.5 w-1.5 rounded-full bg-blue-500 align-middle" aria-hidden /> are still set to the imported value.
               </span>
             )}
           </span>
