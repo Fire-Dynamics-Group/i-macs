@@ -6,22 +6,21 @@ from pathlib import Path
 from typing import Optional
 
 from macs_automation.blue_book_sections import get_blue_book_sections
+from macs_automation import macs_detect
+
 
 def _find_macs_data_xml() -> Path:
-    """Auto-detect Data.xml by searching for MACS+* folders in Program Files (x86)."""
-    prog_x86 = Path(r"C:\Program Files (x86)")
-    if prog_x86.is_dir():
-        # Prefer MACS+_304, MACS+_303, etc. (versioned), then MACS+
-        matches = sorted(prog_x86.glob("MACS+*"), reverse=True)
-        for macs_dir in matches:
-            candidate = macs_dir / "EN" / "Data" / "Data.xml"
-            if candidate.is_file():
-                return candidate
-    # Fallback: try common install folder names (e.g. MACS+_304, MACS+)
-    for name in ("MACS+_304", "MACS+"):
-        fallback = prog_x86 / name / "EN" / "Data" / "Data.xml"
-        if fallback.is_file():
-            return fallback
+    """Locate the MACS+ Data.xml via the full detection chain.
+
+    Returns the resolved path if any detection step hits, otherwise a
+    nominal "expected" path so callers that just want a value can format
+    error messages without dealing with `None`. Pair with `.is_file()`
+    to test whether MACS+ is actually installed — both `_macs_install_info`
+    and `_get_ref_data` already do this.
+    """
+    result = macs_detect.detect()
+    if result.data_xml_path is not None:
+        return result.data_xml_path
     return Path(r"C:\Program Files (x86)\MACS+_304\EN\Data\Data.xml")
 
 

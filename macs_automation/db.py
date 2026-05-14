@@ -123,6 +123,14 @@ CREATE TABLE IF NOT EXISTS custom_meshes (
     app_version TEXT,
     synced_at TEXT
 );
+
+-- Key/value store for app-level settings. v1 holds the user-picked
+-- MACS_DATA_PATH override (#23). Intentionally NOT in cloud sync — install
+-- location is per-machine.
+CREATE TABLE IF NOT EXISTS settings (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
 """
 
 # Tables that grow a uuid + device_name + app_version + synced_at quartet for
@@ -843,6 +851,31 @@ class ResultsDB:
     def delete_custom_mesh(self, mesh_id: str):
         """Delete a custom mesh by ID. No error if not found."""
         self.conn.execute("DELETE FROM custom_meshes WHERE id = ?", (mesh_id,))
+        self.conn.commit()
+
+    # ─── Settings (key/value) ────────────────────────────────────────────
+
+    def get_setting(self, key: str) -> Optional[str]:
+        """Return the stored value for `key`, or None if missing."""
+        cursor = self.conn.execute(
+            "SELECT value FROM settings WHERE key = ?", (key,)
+        )
+        row = cursor.fetchone()
+        return row[0] if row else None
+
+    def set_setting(self, key: str, value: str) -> None:
+        """Insert-or-replace a setting. Used for the manual MACS_DATA_PATH
+        override (#23); Tauri reads `macs_data_path` at spawn time and
+        injects it as the env var the sidecar's data_loader picks up."""
+        self.conn.execute(
+            "INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)",
+            (key, value),
+        )
+        self.conn.commit()
+
+    def delete_setting(self, key: str) -> None:
+        """Remove a setting. No error if not present."""
+        self.conn.execute("DELETE FROM settings WHERE key = ?", (key,))
         self.conn.commit()
 
     # ─── Batch-scoped report methods ──────────────────────────────────────

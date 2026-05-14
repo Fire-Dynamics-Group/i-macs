@@ -21,6 +21,10 @@ tauri-plugin-process = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 ureq = { version = "2", default-features = false, features = ["tls", "json"] }
+# rusqlite (bundled) is used to read the `settings` table from results.db at
+# startup so we can inject MACS_DATA_PATH when spawning the sidecar (#23).
+# `bundled` ships SQLite with the binary — no system dependency on user machines.
+rusqlite = { version = "0.31", features = ["bundled"] }
 
 [target.'cfg(windows)'.dependencies]
 win32job = "2"

@@ -109,6 +109,17 @@ export interface HealthResponse {
   sidecar: string;
   macs_installed: boolean;
   macs_version: string | null;
+  // Issue #23: richer install signal.
+  data_xml?: boolean;
+  com?: boolean;
+  install_path?: string | null;
+  attempted_paths?: string[];
+}
+
+export interface InstallLocationResponse {
+  ok: boolean;
+  validated_path: string | null;
+  error: string | null;
 }
 
 export interface RunsListResponse {
@@ -161,6 +172,8 @@ export interface StatsResponse {
 // ─── Endpoints ──────────────────────────────────────────────────────────
 
 export const fetchHealth = () => getJson<HealthResponse>("/healthz");
+export const setInstallLocation = (folder: string) =>
+  postJson<InstallLocationResponse>("/api/install-location", { folder });
 export const fetchRefData = () => getJson<RefData>("/api/ref-data");
 export const submitRun = (payload: Record<string, unknown>) =>
   postJson<SubmitRunResponse>("/api/runs", payload);

@@ -29,6 +29,7 @@ from pydantic import BaseModel
 
 from macs_automation.db import ResultsDB
 from macs_automation.data_loader import load_data, DEFAULT_DATA_PATH, _find_macs_data_xml
+from macs_automation import macs_detect
 from macs_automation.blue_book_sections import get_blue_book_sections
 from macs_automation.frc_parser import parse_frc_string
 from macs_automation.status import compute_status
@@ -520,31 +521,106 @@ def api_delete_custom_mesh(mesh_id: str):
 _MACS_FOLDER_RE = re.compile(r"^MACS\+_?(.+)$")
 
 
-def _macs_install_info() -> tuple[bool, Optional[str]]:
-    """Detect whether MACS+ is installed and parse its version from the folder name.
+def _macs_install_info() -> dict:
+    """Detect MACS+ install state via the full detection chain.
 
-    Looks at where data_loader._find_macs_data_xml() resolves to. If Data.xml
-    doesn't exist on disk, MACS+ is not installed. Otherwise extract the
-    version from the `MACS+_NNN` folder segment (e.g. 'MACS+_304' → '304').
-    Returns (False, None) when not installed; (True, None) when installed but
-    version can't be parsed (e.g. MACS_DATA_PATH points outside the install).
+    Returns a dict with:
+      - `data_xml`: bool — whether `Data.xml` was found anywhere.
+      - `com`: bool — whether `HKCR\\SCTI11.FRACOF` (or SCTI9) is registered.
+      - `version`: str|None — numeric suffix from the `MACS+_NNN` segment.
+      - `install_path`: str|None — `data_xml.parent.parent.parent`, or null.
+      - `attempted_paths`: list[str] — every mechanism tried (for support diag).
+
+    Re-runs the detection chain only when the cached path went away — the
+    chain itself is cached at the `macs_detect` module level.
     """
-    path = _find_macs_data_xml()
-    if not path.is_file():
-        return False, None
-    for part in path.parts:
-        m = _MACS_FOLDER_RE.match(part)
-        if m:
-            return True, m.group(1)
-    return True, None
+    result = macs_detect.detect()
+    return {
+        "data_xml": result.data_xml_path is not None
+                    and result.data_xml_path.is_file(),
+        "com": result.com_registered,
+        "version": result.version,
+        "install_path": str(result.install_path) if result.install_path else None,
+        "attempted_paths": list(result.attempted_paths),
+    }
 
 
 @app.get("/healthz")
 def healthz():
     """Tauri shell hits this after spawning the sidecar to confirm liveness
-    and to decide whether to show the MACS+ install dialog."""
-    installed, version = _macs_install_info()
-    return {"sidecar": "alive", "macs_installed": installed, "macs_version": version}
+    and to decide whether to show the MACS+ install dialog.
+
+    Back-compat: `macs_installed` and `macs_version` keys retain their
+    rc.5 semantics — `macs_installed` mirrors `data_xml` (Data.xml file
+    exists), `macs_version` is the parsed `MACS+_NNN` suffix or null.
+    Added in #23: `data_xml`, `com`, `install_path`, `attempted_paths`.
+    """
+    info = _macs_install_info()
+    return {
+        "sidecar": "alive",
+        "macs_installed": info["data_xml"],
+        "macs_version": info["version"],
+        "data_xml": info["data_xml"],
+        "com": info["com"],
+        "install_path": info["install_path"],
+        "attempted_paths": info["attempted_paths"],
+    }
+
+
+# ─── API: Install-location override ──────────────────────────────────────────
+
+
+class InstallLocationBody(BaseModel):
+    folder: str
+
+
+@app.post("/api/install-location")
+def api_set_install_location(body: InstallLocationBody):
+    """Validate a user-picked MACS+ folder, persist the resolved Data.xml
+    path to `settings`, and invalidate the detection cache so the next
+    `/healthz` reflects the new location.
+
+    Stores the full file path to `Data.xml` (not the folder) because that
+    matches the existing `MACS_DATA_PATH` env-var contract. The Tauri
+    shell reads this on startup and injects `MACS_DATA_PATH` when spawning
+    the sidecar.
+    """
+    folder = Path(body.folder)
+    ok, validated, err = macs_detect.validate_install_folder(folder)
+    if not ok:
+        return JSONResponse(
+            {"ok": False, "validated_path": None, "error": err},
+            status_code=400,
+        )
+
+    db = _get_db()
+    try:
+        db.set_setting("macs_data_path", str(validated))
+    finally:
+        db.close()
+
+    # Reload reference data so the in-memory cache picks up the new install
+    # within this sidecar's lifetime — but env-var propagation to the engine
+    # requires a sidecar restart, which the Tauri shell prompts for.
+    global _ref_data
+    _ref_data = None
+    macs_detect.reset_cache()
+    # Also flip the in-process default so subsequent `_find_macs_data_xml()`
+    # callers see the override without a restart.
+    os.environ["MACS_DATA_PATH"] = str(validated)
+
+    return {"ok": True, "validated_path": str(validated), "error": None}
+
+
+@app.get("/api/install-location")
+def api_get_install_location():
+    """Return the currently persisted manual override, if any."""
+    db = _get_db()
+    try:
+        value = db.get_setting("macs_data_path")
+    finally:
+        db.close()
+    return {"macs_data_path": value}
 
 
 # ─── API: Reference data endpoints ───────────────────────────────────────────
