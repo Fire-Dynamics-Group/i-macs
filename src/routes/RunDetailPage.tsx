@@ -3,7 +3,8 @@ import { useQuery } from "@tanstack/react-query";
 
 import { getRun, getRunTimeseries, type Run, type TimeSeriesRow } from "../api/client";
 import { CheckBreakdown } from "../components/CheckBreakdown";
-import { RunTimeseriesChart } from "../sweep/RunTimeseriesChart";
+import { RunTemperatureChart } from "../sweep/RunTemperatureChart";
+import { RunCapacityDeflectionChart } from "../sweep/RunCapacityDeflectionChart";
 
 export default function RunDetailPage() {
   const { id } = useParams<{ id: string }>();
@@ -52,16 +53,40 @@ export default function RunDetailPage() {
         <CheckBreakdown checks={runQuery.data.checks ?? []} />
       )}
       {tsQuery.data && tsQuery.data.length > 0 && (
-        <section className="mt-6 rounded-md border border-slate-200 bg-white p-4 shadow-sm">
-          <h2 className="mb-2 text-sm font-semibold uppercase tracking-wide text-slate-500">
-            Utilisation + fire temperature
-          </h2>
-          <RunTimeseriesChart rows={tsQuery.data} />
-        </section>
+        <>
+          <section className="mt-6 rounded-md border border-slate-200 bg-white p-4 shadow-sm">
+            <h2 className="mb-2 text-sm font-semibold uppercase tracking-wide text-slate-500">
+              Temperature
+            </h2>
+            <RunTemperatureChart
+              rows={tsQuery.data}
+              timeLimit={toNumber(runQuery.data?.time_limit)}
+            />
+          </section>
+          <section className="mt-6 rounded-md border border-slate-200 bg-white p-4 shadow-sm">
+            <h2 className="mb-2 text-sm font-semibold uppercase tracking-wide text-slate-500">
+              Bending capacity + maximum allowable deflection
+            </h2>
+            <RunCapacityDeflectionChart
+              rows={tsQuery.data}
+              factoredHot={toNumber(runQuery.data?.factored_hot)}
+              timeLimit={toNumber(runQuery.data?.time_limit)}
+            />
+          </section>
+        </>
       )}
       {tsQuery.data && <TimeSeriesTable rows={tsQuery.data} />}
     </div>
   );
+}
+
+function toNumber(v: unknown): number | null {
+  if (typeof v === "number" && Number.isFinite(v)) return v;
+  if (typeof v === "string" && v.trim() !== "") {
+    const n = Number(v);
+    return Number.isFinite(n) ? n : null;
+  }
+  return null;
 }
 
 function RunSummary({ run }: { run: Run }) {
