@@ -891,3 +891,47 @@ class TestSchemaMigrationLegacy:
                 "SELECT name FROM sqlite_master WHERE type='index' AND name='idx_runs_uuid'"
             ).fetchone()
         assert idx is not None
+
+
+class TestSettings:
+    """Issue #23 — key/value settings table for the manual MACS+ install-location override."""
+
+    def test_settings_table_exists(self, db):
+        cursor = db.conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='settings'"
+        )
+        assert cursor.fetchone() is not None
+
+    def test_get_setting_missing_returns_none(self, db):
+        assert db.get_setting("does_not_exist") is None
+
+    def test_set_and_get_roundtrip(self, db):
+        db.set_setting("macs_data_path", r"C:\foo\bar\Data.xml")
+        assert db.get_setting("macs_data_path") == r"C:\foo\bar\Data.xml"
+
+    def test_set_overwrites(self, db):
+        db.set_setting("macs_data_path", "old")
+        db.set_setting("macs_data_path", "new")
+        assert db.get_setting("macs_data_path") == "new"
+
+    def test_delete(self, db):
+        db.set_setting("k", "v")
+        db.delete_setting("k")
+        assert db.get_setting("k") is None
+
+    def test_legacy_db_gets_settings_table(self, tmp_path):
+        """Opening a legacy DB without `settings` must auto-create it
+        via the `CREATE TABLE IF NOT EXISTS` in SCHEMA_SQL."""
+        legacy = tmp_path / "legacy.db"
+        conn = sqlite3.connect(legacy)
+        # Pre-existing tables; intentionally NO settings table.
+        conn.execute("CREATE TABLE runs (id INTEGER PRIMARY KEY)")
+        conn.commit()
+        conn.close()
+
+        with ResultsDB(legacy) as upgraded:
+            assert upgraded.conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='settings'"
+            ).fetchone() is not None
+            upgraded.set_setting("k", "v")
+            assert upgraded.get_setting("k") == "v"

@@ -2,7 +2,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use std::net::TcpListener;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::Mutex;
 use std::thread;
@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 use serde::Deserialize;
 use tauri::{AppHandle, Emitter, Manager, RunEvent, State};
 use tauri::path::BaseDirectory;
-use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
+use tauri_plugin_dialog::{DialogExt, FilePath, MessageDialogButtons, MessageDialogKind};
 
 #[cfg(windows)]
 use win32job::Job;
@@ -40,6 +40,27 @@ struct HealthResponse {
     sidecar: String,
     macs_installed: bool,
     macs_version: Option<String>,
+    // New in #23. `serde(default)` so an older sidecar still deserializes
+    // — useful during dev when the python tree is on rc.5 and the Rust
+    // binary is rebuilt first.
+    #[serde(default)]
+    #[allow(dead_code)]
+    data_xml: bool,
+    #[serde(default)]
+    #[allow(dead_code)]
+    com: bool,
+    #[serde(default)]
+    install_path: Option<String>,
+    #[serde(default)]
+    attempted_paths: Vec<String>,
+}
+
+#[derive(Deserialize)]
+struct InstallLocationResponse {
+    ok: bool,
+    #[allow(dead_code)]
+    validated_path: Option<String>,
+    error: Option<String>,
 }
 
 /// Reserve an OS-assigned free TCP port on 127.0.0.1, then close the socket so
@@ -50,6 +71,24 @@ fn pick_free_port() -> std::io::Result<u16> {
     let port = listener.local_addr()?.port();
     drop(listener);
     Ok(port)
+}
+
+/// Read a key from the sidecar's `settings` table without involving the
+/// sidecar itself — we need this before the sidecar boots so we can inject
+/// `MACS_DATA_PATH` at spawn time. Returns None if the DB doesn't exist
+/// yet (first launch), the table doesn't exist (legacy DB), or the key
+/// isn't set.
+fn read_setting_from_db(db_path: &Path, key: &str) -> Option<String> {
+    if !db_path.exists() {
+        return None;
+    }
+    let conn = rusqlite::Connection::open(db_path).ok()?;
+    let mut stmt = conn
+        .prepare("SELECT value FROM settings WHERE key = ?1")
+        .ok()?;
+    let mut rows = stmt.query([key]).ok()?;
+    let row = rows.next().ok()??;
+    row.get::<_, String>(0).ok()
 }
 
 /// Spawn the Python FastAPI sidecar.
@@ -95,20 +134,28 @@ fn spawn_sidecar(
 
         // Dev: no MACS_DB_PATH set, so the sidecar falls back to
         // <repo>/results.db (where the user's accumulated dev history
-        // already lives).
-        return Command::new(python_cmd)
-            .args([
-                "-m",
-                "macs_automation.app",
-                "--port",
-                &port.to_string(),
-                "--log-dir",
-                &log_dir_str,
-            ])
-            .env("MACS_APP_VERSION", &app_version)
-            .current_dir(&project_root)
-            .stdout(Stdio::inherit())
-            .stderr(Stdio::inherit())
+        // already lives). Also check that DB for a persisted
+        // MACS_DATA_PATH override so dev runs honour the same setting
+        // the user picked from a previous run.
+        let dev_db = project_root.join("results.db");
+        let mut cmd = Command::new(python_cmd);
+        cmd.args([
+            "-m",
+            "macs_automation.app",
+            "--port",
+            &port.to_string(),
+            "--log-dir",
+            &log_dir_str,
+        ])
+        .env("MACS_APP_VERSION", &app_version)
+        .current_dir(&project_root)
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit());
+        if let Some(macs_data_path) = read_setting_from_db(&dev_db, "macs_data_path") {
+            println!("[tauri] (dev) injecting MACS_DATA_PATH from settings: {macs_data_path}");
+            cmd.env("MACS_DATA_PATH", macs_data_path);
+        }
+        return cmd
             .spawn()
             .map_err(|e| format!("failed to spawn dev sidecar: {e}"));
     }
@@ -152,14 +199,26 @@ fn spawn_sidecar(
             .map_err(|e| format!("create_dir_all db_path parent: {e}"))?;
     }
 
-    Command::new(&sidecar_exe)
-        .args(["--port", &port.to_string(), "--log-dir", &log_dir_str])
+    let mut cmd = Command::new(&sidecar_exe);
+    cmd.args(["--port", &port.to_string(), "--log-dir", &log_dir_str])
         .env("MACS_DB_PATH", &db_path)
         .env("MACS_APP_VERSION", &app_version)
         .current_dir(&sidecar_dir)
         .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit())
-        .spawn()
+        .stderr(Stdio::inherit());
+
+    // Read the user's persisted MACS+ install-location override (#23).
+    // The sidecar's data_loader checks `MACS_DATA_PATH` as the first
+    // step of the detection chain, so any value here wins over registry
+    // / Start Menu / filesystem discovery.
+    if let Some(macs_data_path) = read_setting_from_db(&db_path, "macs_data_path") {
+        println!(
+            "[tauri] injecting MACS_DATA_PATH from settings: {macs_data_path}"
+        );
+        cmd.env("MACS_DATA_PATH", macs_data_path);
+    }
+
+    cmd.spawn()
         .map_err(|e| format!("failed to spawn release sidecar: {e}"))
 }
 
@@ -189,10 +248,17 @@ fn wait_for_health(port: u16, timeout: Duration) -> Result<HealthResponse, Strin
     Err(format!("sidecar /healthz never went green: {last_err}"))
 }
 
-/// Show the "MACS+ is missing — please install it from macs-steel.org" dialog
-/// when /healthz reports macs_installed=false. Non-blocking so the user can
-/// still see the rest of the UI and read logs.
-fn show_macs_missing_dialog(app: &AppHandle) {
+/// Show the "MACS+ is missing" dialog when /healthz reports macs_installed=false.
+///
+/// `MessageDialogButtons::OkCancelCustom` is two-button only, so we run two
+/// dialogs in sequence:
+///   1. First dialog (this fn): "Locate MACS+" / "Open download page".
+///   2. If the user picks neither (cancels), we open a "Continue" / "Locate
+///      MACS+" follow-up so they can come back to locating later. Choosing
+///      Continue dismisses the whole flow.
+///
+/// Non-blocking so the user can still see the rest of the UI and read logs.
+fn show_macs_missing_dialog(app: &AppHandle, sidecar_port: u16) {
     let app_for_dialog = app.clone();
     let _ = app
         .dialog()
@@ -200,19 +266,120 @@ fn show_macs_missing_dialog(app: &AppHandle) {
             "MACS+ is not installed on this machine.\n\n\
              i-macs needs MACS+ to drive its FRACOF calculation engine. \
              Install MACS+ from {MACS_DOWNLOAD_URL}, then restart i-macs.\n\n\
-             You can keep using the app to inspect logs and previous results, \
-             but new calculations will fail until MACS+ is present."
+             If MACS+ is already installed in a non-standard location, \
+             click 'Locate MACS+' to point i-macs at the install folder."
         ))
         .title("MACS+ not detected")
         .kind(MessageDialogKind::Warning)
         .buttons(MessageDialogButtons::OkCancelCustom(
+            "Locate MACS+".into(),
             "Open download page".into(),
-            "Continue".into(),
         ))
-        .show(move |opened| {
-            if opened {
+        .show(move |locate_clicked| {
+            if locate_clicked {
+                start_locate_flow(&app_for_dialog, sidecar_port);
+            } else {
                 use tauri_plugin_opener::OpenerExt;
-                let _ = app_for_dialog.opener().open_url(MACS_DOWNLOAD_URL, None::<&str>);
+                let _ = app_for_dialog
+                    .opener()
+                    .open_url(MACS_DOWNLOAD_URL, None::<&str>);
+            }
+        });
+}
+
+/// Open a folder picker, POST the selection to /api/install-location, and
+/// surface the result via a follow-up dialog. On success we ask the user to
+/// restart — the sidecar reads MACS_DATA_PATH at spawn time, so a live refresh
+/// would leave the engine looking at the wrong install.
+fn start_locate_flow(app: &AppHandle, sidecar_port: u16) {
+    let app_for_pick = app.clone();
+    app.dialog()
+        .file()
+        .set_title("Locate your MACS+ install folder (e.g. MACS+_304)")
+        .pick_folder(move |selected: Option<FilePath>| {
+            let Some(folder) = selected else {
+                return;
+            };
+            let folder_str = match folder.into_path() {
+                Ok(p) => p.to_string_lossy().into_owned(),
+                Err(_) => return,
+            };
+            // POST the folder to the sidecar. Do it on a worker thread so
+            // the dialog callback returns promptly.
+            let app_inner = app_for_pick.clone();
+            thread::spawn(move || {
+                post_install_location(&app_inner, sidecar_port, &folder_str);
+            });
+        });
+}
+
+fn post_install_location(app: &AppHandle, port: u16, folder: &str) {
+    let url = format!("http://127.0.0.1:{port}/api/install-location");
+    let body = serde_json::json!({ "folder": folder });
+    let resp = ureq::post(&url)
+        .timeout(Duration::from_secs(10))
+        .send_json(body);
+
+    let app_dialog = app.clone();
+    match resp {
+        Ok(r) => {
+            let parsed: Result<InstallLocationResponse, _> = r.into_json();
+            match parsed {
+                Ok(ok_body) if ok_body.ok => {
+                    let _ = app_dialog
+                        .dialog()
+                        .message(
+                            "MACS+ install location saved.\n\n\
+                             Please restart i-macs so the calculation engine picks up the new path.",
+                        )
+                        .title("MACS+ located")
+                        .kind(MessageDialogKind::Info)
+                        .buttons(MessageDialogButtons::Ok)
+                        .blocking_show();
+                    let _ = app_dialog.emit("macs-install-located", folder);
+                }
+                Ok(err_body) => {
+                    show_locate_error(
+                        &app_dialog,
+                        port,
+                        &err_body
+                            .error
+                            .unwrap_or_else(|| "unknown error".to_string()),
+                    );
+                }
+                Err(e) => {
+                    show_locate_error(&app_dialog, port, &format!("decode response: {e}"));
+                }
+            }
+        }
+        Err(ureq::Error::Status(_, r)) => {
+            let text = r.into_string().unwrap_or_else(|_| "no body".into());
+            show_locate_error(&app_dialog, port, &text);
+        }
+        Err(e) => {
+            show_locate_error(&app_dialog, port, &e.to_string());
+        }
+    }
+}
+
+fn show_locate_error(app: &AppHandle, port: u16, err: &str) {
+    let app_clone = app.clone();
+    let _ = app
+        .dialog()
+        .message(format!(
+            "That folder doesn't look like a MACS+ install:\n\n{err}\n\n\
+             A valid install contains EN\\Data\\Data.xml directly under it \
+             (e.g. C:\\Program Files (x86)\\MACS+_304\\)."
+        ))
+        .title("MACS+ folder not valid")
+        .kind(MessageDialogKind::Warning)
+        .buttons(MessageDialogButtons::OkCancelCustom(
+            "Try again".into(),
+            "Cancel".into(),
+        ))
+        .show(move |try_again| {
+            if try_again {
+                start_locate_flow(&app_clone, port);
             }
         });
 }
@@ -320,7 +487,16 @@ fn main() {
                             health.macs_installed, health.macs_version
                         );
                         if !health.macs_installed {
-                            show_macs_missing_dialog(&app_handle_for_health);
+                            if !health.attempted_paths.is_empty() {
+                                println!(
+                                    "[tauri] MACS+ detection attempted: {:?}",
+                                    health.attempted_paths
+                                );
+                            }
+                            if let Some(ref p) = health.install_path {
+                                println!("[tauri] MACS+ install_path hint: {p}");
+                            }
+                            show_macs_missing_dialog(&app_handle_for_health, port);
                         }
                         // Let the React side know the sidecar is ready so it
                         // can drop any "starting…" UI and fetch ref-data.

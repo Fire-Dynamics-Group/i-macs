@@ -4,17 +4,21 @@ import { useForm, Controller, type SubmitHandler } from "react-hook-form";
 import { useMutation, useQuery } from "@tanstack/react-query";
 
 import {
+  fetchHealth,
   fetchRefData,
   getBatch,
   getRun,
+  setInstallLocation,
   submitRun,
   submitSweep,
   type BatchSummary,
+  type HealthResponse,
   type RefData,
   type Run,
   type SubmitRunResponse,
   type SubmitSweepResponse,
 } from "../api/client";
+import { open as openDialog, message as showMessage } from "@tauri-apps/plugin-dialog";
 import { checkForUpdates } from "../lib/updater";
 import { hydrateFormFromRun } from "../lib/hydrateFormFromRun";
 import {
@@ -80,6 +84,49 @@ export default function ConfigPage() {
     queryKey: ["ref-data"],
     queryFn: fetchRefData,
   });
+
+  // Issue #23: if Data.xml didn't resolve, show a banner offering to
+  // locate the install manually. The native dialog at startup is the
+  // primary surface; this banner is the in-app fallback for the
+  // "Continue" path through that dialog.
+  const healthQuery = useQuery<HealthResponse>({
+    queryKey: ["healthz"],
+    queryFn: fetchHealth,
+    refetchOnWindowFocus: false,
+  });
+  const macsDetected =
+    healthQuery.data === undefined ? true : healthQuery.data.macs_installed;
+  const comRegistered =
+    healthQuery.data === undefined ? true : healthQuery.data.com !== false;
+
+  const locateMacs = async () => {
+    try {
+      const picked = await openDialog({
+        directory: true,
+        multiple: false,
+        title: "Locate your MACS+ install folder (e.g. MACS+_304)",
+      });
+      if (!picked || typeof picked !== "string") return;
+      const resp = await setInstallLocation(picked);
+      if (resp.ok) {
+        await showMessage(
+          "MACS+ install location saved.\n\nPlease restart i-macs so the calculation engine picks up the new path.",
+          { title: "MACS+ located", kind: "info" },
+        );
+        await healthQuery.refetch();
+      } else {
+        await showMessage(
+          `That folder doesn't look like a MACS+ install:\n\n${resp.error ?? "unknown error"}\n\nA valid install contains EN\\Data\\Data.xml directly under it (e.g. C:\\Program Files (x86)\\MACS+_304\\).`,
+          { title: "MACS+ folder not valid", kind: "warning" },
+        );
+      }
+    } catch (err) {
+      await showMessage(`Locate failed: ${err}`, {
+        title: "MACS+ locate failed",
+        kind: "error",
+      });
+    }
+  };
 
   const fromRunQuery = useQuery<Run>({
     queryKey: ["run", fromRunId],
@@ -336,6 +383,37 @@ export default function ConfigPage() {
           </button>
         </div>
       </header>
+
+      {!macsDetected && (
+        <div
+          data-testid="macs-missing-banner"
+          className="mb-4 flex items-start justify-between gap-3 rounded-md border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-900"
+        >
+          <span>
+            <strong>MACS+ not detected.</strong> Pickers will be empty and
+            runs will fail. If MACS+ is installed in a non-standard location,
+            click <em>Locate MACS+</em> to point i-macs at the install folder.
+          </span>
+          <button
+            type="button"
+            onClick={locateMacs}
+            className="rounded border border-amber-400 bg-white px-3 py-1 text-xs font-semibold text-amber-900 hover:bg-amber-100"
+          >
+            Locate MACS+
+          </button>
+        </div>
+      )}
+      {macsDetected && !comRegistered && (
+        <div
+          data-testid="macs-com-missing-banner"
+          className="mb-4 rounded-md border border-rose-300 bg-rose-50 px-4 py-3 text-sm text-rose-900"
+        >
+          <strong>FRACOF COM not registered.</strong> MACS+ Data.xml was
+          found but its COM component isn't registered, so calculations
+          will fail. Re-run the MACS+ installer (it registers SCTI11.FRACOF
+          / SCTI9.FRACOF on first install).
+        </div>
+      )}
 
       {hydrationSource && (
         <div

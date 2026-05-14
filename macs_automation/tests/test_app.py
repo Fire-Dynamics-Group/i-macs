@@ -507,8 +507,19 @@ class TestFrcImport:
         assert "signature" in resp.json()["error"].lower()
 
 class TestHealthz:
+    @pytest.fixture(autouse=True)
+    def _reset_detect_cache(self):
+        from macs_automation import macs_detect as _md
+        _md.reset_cache()
+        yield
+        _md.reset_cache()
+
     def test_healthz_shape(self, client):
-        """GET /healthz always returns the three keys the Tauri shell expects."""
+        """GET /healthz always returns the keys the Tauri shell expects.
+
+        Back-compat keys (rc.5): sidecar, macs_installed, macs_version.
+        New keys (#23): data_xml, com, install_path, attempted_paths.
+        """
         resp = client.get("/healthz")
         assert resp.status_code == 200
         data = resp.json()
@@ -516,33 +527,133 @@ class TestHealthz:
         assert isinstance(data["macs_installed"], bool)
         # macs_version is str when installed and version-parseable, else None
         assert data["macs_version"] is None or isinstance(data["macs_version"], str)
+        # New fields
+        assert isinstance(data["data_xml"], bool)
+        assert isinstance(data["com"], bool)
+        assert data["install_path"] is None or isinstance(data["install_path"], str)
+        assert isinstance(data["attempted_paths"], list)
 
     def test_healthz_when_macs_missing(self, client, monkeypatch, tmp_path):
-        """If Data.xml resolves to a missing path, macs_installed=False, version=None."""
-        from macs_automation import app as app_module
+        """When detection returns no Data.xml, macs_installed/data_xml are False
+        and macs_version is None."""
+        from macs_automation import macs_detect as _md
         monkeypatch.setattr(
-            app_module, "_find_macs_data_xml",
-            lambda: tmp_path / "definitely-not-here" / "Data.xml",
+            _md, "_detect_uncached",
+            lambda: _md.DetectResult(
+                data_xml_path=None, install_path=None,
+                version=None, com_registered=False,
+                attempted_paths=["mock: nothing found"],
+            ),
         )
+        _md.reset_cache()
         resp = client.get("/healthz")
         assert resp.status_code == 200
         data = resp.json()
         assert data["macs_installed"] is False
+        assert data["data_xml"] is False
         assert data["macs_version"] is None
+        assert data["install_path"] is None
+        assert data["com"] is False
+        assert "mock: nothing found" in data["attempted_paths"]
 
     def test_healthz_parses_version_from_folder(self, client, monkeypatch, tmp_path):
         """Folder named MACS+_304/EN/Data/Data.xml → macs_version='304'."""
-        from macs_automation import app as app_module
+        from macs_automation import macs_detect as _md
         macs_dir = tmp_path / "MACS+_304" / "EN" / "Data"
         macs_dir.mkdir(parents=True)
         data_xml = macs_dir / "Data.xml"
         data_xml.write_text("<root/>")
-        monkeypatch.setattr(app_module, "_find_macs_data_xml", lambda: data_xml)
+        install_root = tmp_path / "MACS+_304"
+        monkeypatch.setattr(
+            _md, "_detect_uncached",
+            lambda: _md.DetectResult(
+                data_xml_path=data_xml, install_path=install_root,
+                version="304", com_registered=True,
+                attempted_paths=["mock: hit"],
+            ),
+        )
+        _md.reset_cache()
         resp = client.get("/healthz")
         assert resp.status_code == 200
         data = resp.json()
         assert data["macs_installed"] is True
         assert data["macs_version"] == "304"
+        assert data["data_xml"] is True
+        assert data["com"] is True
+        assert data["install_path"] == str(install_root)
+
+    def test_healthz_com_missing_but_data_xml_present(self, client, monkeypatch, tmp_path):
+        """Acceptance: Data.xml found but COM not registered surfaces as
+        macs_installed=True, com=False — the UI banner relies on this split."""
+        from macs_automation import macs_detect as _md
+        macs_dir = tmp_path / "MACS+_304" / "EN" / "Data"
+        macs_dir.mkdir(parents=True)
+        data_xml = macs_dir / "Data.xml"
+        data_xml.write_text("<root/>")
+        monkeypatch.setattr(
+            _md, "_detect_uncached",
+            lambda: _md.DetectResult(
+                data_xml_path=data_xml,
+                install_path=tmp_path / "MACS+_304",
+                version="304",
+                com_registered=False,
+                attempted_paths=[],
+            ),
+        )
+        _md.reset_cache()
+        data = client.get("/healthz").json()
+        assert data["data_xml"] is True
+        assert data["com"] is False
+
+
+class TestInstallLocationEndpoint:
+    @pytest.fixture(autouse=True)
+    def _reset_detect_cache(self):
+        from macs_automation import macs_detect as _md
+        _md.reset_cache()
+        yield
+        _md.reset_cache()
+
+    def _make_valid_install(self, tmp_path):
+        install = tmp_path / "MyMacs"
+        data_dir = install / "EN" / "Data"
+        data_dir.mkdir(parents=True)
+        (data_dir / "Data.xml").write_text("<root/>")
+        return install
+
+    def test_rejects_folder_without_data_xml(self, client, tmp_path):
+        empty = tmp_path / "empty"
+        empty.mkdir()
+        resp = client.post("/api/install-location", json={"folder": str(empty)})
+        assert resp.status_code == 400
+        body = resp.json()
+        assert body["ok"] is False
+        assert body["validated_path"] is None
+        assert body["error"]
+
+    def test_rejects_unparseable_xml(self, client, tmp_path):
+        install = tmp_path / "MyMacs"
+        data_dir = install / "EN" / "Data"
+        data_dir.mkdir(parents=True)
+        (data_dir / "Data.xml").write_text("<not closed")
+        resp = client.post("/api/install-location", json={"folder": str(install)})
+        assert resp.status_code == 400
+        assert resp.json()["ok"] is False
+
+    def test_accepts_and_persists_valid_folder(self, client, tmp_path):
+        install = self._make_valid_install(tmp_path)
+        resp = client.post("/api/install-location", json={"folder": str(install)})
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["ok"] is True
+        assert body["validated_path"] == str(install / "EN" / "Data" / "Data.xml")
+
+        # Persisted to settings.
+        get_resp = client.get("/api/install-location")
+        assert get_resp.status_code == 200
+        assert get_resp.json()["macs_data_path"] == str(
+            install / "EN" / "Data" / "Data.xml"
+        )
 
 
 class TestRefDataAggregate:
