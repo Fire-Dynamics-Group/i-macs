@@ -8,11 +8,13 @@ import {
   fetchRefData,
   getBatch,
   getRun,
+  importFrc,
   setInstallLocation,
   submitRun,
   submitSweep,
   type BatchSummary,
   type HealthResponse,
+  type ImportFrcResponse,
   type RefData,
   type Run,
   type SubmitRunResponse,
@@ -21,6 +23,8 @@ import {
 import { open as openDialog, message as showMessage } from "@tauri-apps/plugin-dialog";
 import { checkForUpdates } from "../lib/updater";
 import { hydrateFormFromRun } from "../lib/hydrateFormFromRun";
+import { hydrateFormFromFrcParams } from "../lib/hydrateFormFromFrcParams";
+import type { FrcHydrationResult } from "../lib/hydrateFormFromFrcParams";
 import {
   SearchableSelect,
   type SearchableSelectOption,
@@ -276,13 +280,132 @@ export default function ConfigPage() {
     setHydrationSource(`batch ${fromBatchId}`);
   }, [fromBatchId, fromBatchQuery.data, refDataQuery.data, reset]);
 
+  // FRC import state. `frcImportSource` drives the post-import banner;
+  // `frcUnknownFields` carries the yellow-hint payload from the mapper —
+  // populated when a `.frc` references a section/deck/mesh ID not in this
+  // device's catalogue. The user picks a replacement; we just flag.
+  const [frcImportSource, setFrcImportSource] = useState<{
+    filename: string;
+    projectName: string;
+    clientName: string;
+  } | null>(null);
+  const [frcUnknownFields, setFrcUnknownFields] = useState<
+    FrcHydrationResult["unknownFields"]
+  >({});
+  const [frcError, setFrcError] = useState<string | null>(null);
+  const [isDragOver, setIsDragOver] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
   const dismissBanner = () => {
     setHydrationSource(null);
+    setFrcImportSource(null);
+    setFrcUnknownFields({});
     const next = new URLSearchParams(searchParams);
     next.delete("from_run");
     next.delete("from_batch");
     setSearchParams(next, { replace: true });
   };
+
+  // Apply a parsed FRC payload — refData must be loaded so the mapper can
+  // run its catalogue lookups. Caller is responsible for the dirty-form
+  // confirm and reading the File.name → filename for the banner.
+  const applyFrcImport = (data: ImportFrcResponse, filename: string) => {
+    if (!refDataQuery.data) return;
+    const result = hydrateFormFromFrcParams(data.params, refDataQuery.data);
+    seededRef.current = `frc:${filename}`;
+    reset(result.values);
+    setMode("single");
+    setVarying({});
+    setHydrationSource(null);
+    setFrcImportSource({
+      filename,
+      projectName: data.project?.ProjectName ?? "",
+      clientName: data.project?.ClientName ?? "",
+    });
+    setFrcUnknownFields(result.unknownFields);
+    setFrcError(null);
+    // Import beats ?from_run / ?from_batch — clear those so a refresh
+    // doesn't re-hydrate from a stale URL.
+    const next = new URLSearchParams(searchParams);
+    if (next.has("from_run") || next.has("from_batch")) {
+      next.delete("from_run");
+      next.delete("from_batch");
+      setSearchParams(next, { replace: true });
+    }
+  };
+
+  const handleFrcFile = async (file: File) => {
+    if (!file) return;
+    if (formState.isDirty || hydrationSource || frcImportSource) {
+      const ok = window.confirm(
+        "Replace current form contents with the imported .frc?",
+      );
+      if (!ok) return;
+    }
+    try {
+      const data = await importFrc(file);
+      applyFrcImport(data, file.name);
+    } catch (err) {
+      setFrcError(
+        err instanceof Error ? err.message : "Failed to import .frc file",
+      );
+    }
+  };
+
+  // Window-level drag-and-drop. dragenter/over set the overlay; dragleave
+  // only clears when we leave the window (relatedTarget === null) so the
+  // overlay doesn't flicker as the pointer crosses child elements.
+  useEffect(() => {
+    function onDragEnter(e: DragEvent) {
+      if (e.dataTransfer?.types?.includes("Files")) {
+        e.preventDefault();
+        setIsDragOver(true);
+      }
+    }
+    function onDragOver(e: DragEvent) {
+      if (e.dataTransfer?.types?.includes("Files")) {
+        e.preventDefault();
+      }
+    }
+    function onDragLeave(e: DragEvent) {
+      if (e.relatedTarget === null) setIsDragOver(false);
+    }
+    function onDrop(e: DragEvent) {
+      if (!e.dataTransfer?.files?.length) return;
+      e.preventDefault();
+      setIsDragOver(false);
+      const file = e.dataTransfer.files[0];
+      if (!file.name.toLowerCase().endsWith(".frc")) {
+        setFrcError(`Only .frc files can be imported (got "${file.name}")`);
+        return;
+      }
+      void handleFrcFile(file);
+    }
+    window.addEventListener("dragenter", onDragEnter);
+    window.addEventListener("dragover", onDragOver);
+    window.addEventListener("dragleave", onDragLeave);
+    window.addEventListener("drop", onDrop);
+    return () => {
+      window.removeEventListener("dragenter", onDragEnter);
+      window.removeEventListener("dragover", onDragOver);
+      window.removeEventListener("dragleave", onDragLeave);
+      window.removeEventListener("drop", onDrop);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [refDataQuery.data, formState.isDirty, hydrationSource, frcImportSource]);
+
+  // Ctrl+O / Cmd+O — open the file picker. Same handler the header button
+  // wires to, so the entry points share one input element.
+  useEffect(() => {
+    function onKeyDown(e: KeyboardEvent) {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "o") {
+        e.preventDefault();
+        fileInputRef.current?.click();
+      }
+    }
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, []);
 
   const submit = useMutation<SubmitRunResponse, Error, FormValues>({
     mutationFn: (values) => submitRun(values as unknown as Record<string, unknown>),
@@ -376,6 +499,15 @@ export default function ConfigPage() {
           </div>
           <button
             type="button"
+            onClick={() => fileInputRef.current?.click()}
+            className="rounded border border-slate-300 px-2 py-0.5 text-xs text-slate-700 hover:bg-slate-100"
+            data-testid="import-frc-button"
+            title="Import settings from a .frc file (Ctrl+O)"
+          >
+            Import .frc
+          </button>
+          <button
+            type="button"
             onClick={() => checkForUpdates({ silent: false })}
             className="rounded border border-slate-300 px-2 py-0.5 text-xs text-slate-700 hover:bg-slate-100"
           >
@@ -412,6 +544,83 @@ export default function ConfigPage() {
           found but its COM component isn't registered, so calculations
           will fail. Re-run the MACS+ installer (it registers SCTI11.FRACOF
           / SCTI9.FRACOF on first install).
+        </div>
+      )}
+
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept=".frc"
+        className="hidden"
+        data-testid="frc-file-input"
+        onChange={(e) => {
+          const file = e.target.files?.[0];
+          if (file) void handleFrcFile(file);
+          // Reset so picking the same filename twice still fires onChange.
+          e.target.value = "";
+        }}
+      />
+
+      {isDragOver && (
+        <div
+          data-testid="frc-drop-overlay"
+          className="pointer-events-none fixed inset-0 z-50 flex items-center justify-center bg-blue-900/30"
+        >
+          <div className="rounded-md border-2 border-dashed border-blue-300 bg-white/90 px-8 py-6 text-center shadow-lg">
+            <p className="text-lg font-semibold text-blue-900">
+              Drop .frc to import
+            </p>
+            <p className="mt-1 text-sm text-blue-700">
+              Settings will replace the current form contents.
+            </p>
+          </div>
+        </div>
+      )}
+
+      {frcError && (
+        <div
+          role="alert"
+          data-testid="frc-import-error"
+          className="mb-4 flex items-start justify-between gap-3 rounded-md border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-900"
+        >
+          <span>{frcError}</span>
+          <button
+            type="button"
+            aria-label="Dismiss"
+            onClick={() => setFrcError(null)}
+            className="rounded p-0.5 text-rose-700 hover:bg-rose-100"
+          >
+            ×
+          </button>
+        </div>
+      )}
+
+      {frcImportSource && (
+        <div
+          data-testid="frc-import-banner"
+          className="mb-4 flex items-start justify-between gap-3 rounded-md border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-900"
+        >
+          <span>
+            Imported from <code className="font-mono">{frcImportSource.filename}</code>
+            {frcImportSource.projectName && (
+              <>
+                {" "}— Project: <code className="font-mono">{frcImportSource.projectName}</code>
+              </>
+            )}
+            {frcImportSource.clientName && (
+              <>
+                {" "}(Client: <code className="font-mono">{frcImportSource.clientName}</code>)
+              </>
+            )}
+          </span>
+          <button
+            type="button"
+            aria-label="Dismiss"
+            onClick={dismissBanner}
+            className="rounded p-0.5 text-blue-700 hover:bg-blue-100"
+          >
+            ×
+          </button>
         </div>
       )}
 
@@ -483,12 +692,22 @@ export default function ConfigPage() {
               name="deck_id"
               control={control}
               options={deckOptions}
+              hint={
+                frcUnknownFields.deck_id
+                  ? `Deck \`${frcUnknownFields.deck_id}\` not in catalogue — pick a replacement`
+                  : undefined
+              }
             />
             <SearchableSelectField
               label="Mesh"
               name="mesh_type"
               control={control}
               options={meshOptions}
+              hint={
+                frcUnknownFields.mesh_type
+                  ? `Mesh \`${frcUnknownFields.mesh_type}\` not in catalogue — pick a replacement`
+                  : undefined
+              }
             />
           </Grid>
         </Section>
@@ -501,6 +720,11 @@ export default function ConfigPage() {
               name="u_sec_size"
               control={control}
               options={sectionOptions}
+              hint={
+                frcUnknownFields.u_sec_size
+                  ? `Section \`${frcUnknownFields.u_sec_size}\` not in catalogue — pick a replacement`
+                  : undefined
+              }
             />
             <SelectField
               label="Steel grade"
@@ -510,16 +734,25 @@ export default function ConfigPage() {
             />
             {numberField("Shear conn. spacing (mm)", "u_sec_sh_con", register, errors)}
           </Grid>
-          {(["a", "b", "c", "d"] as const).map((side) => (
-            <BeamSideRow
-              key={side}
-              side={side}
-              sectionOptions={sectionOptions}
-              control={control}
-              register={register}
-              errors={errors}
-            />
-          ))}
+          {(["a", "b", "c", "d"] as const).map((side) => {
+            const secKey = `side_${side}_sec` as keyof FormValues;
+            const unknown = frcUnknownFields[secKey];
+            return (
+              <BeamSideRow
+                key={side}
+                side={side}
+                sectionOptions={sectionOptions}
+                control={control}
+                register={register}
+                errors={errors}
+                sectionHint={
+                  unknown
+                    ? `Section \`${unknown}\` not in catalogue — pick a replacement`
+                    : undefined
+                }
+              />
+            );
+          })}
         </Section>
 
         <Section title="Loading">
@@ -705,12 +938,14 @@ function BeamSideRow({
   control,
   register,
   errors,
+  sectionHint,
 }: {
   side: "a" | "b" | "c" | "d";
   sectionOptions: SearchableSelectOption[];
   control: ReturnType<typeof useForm<FormValues>>["control"];
   register: ReturnType<typeof useForm<FormValues>>["register"];
   errors: ReturnType<typeof useForm<FormValues>>["formState"]["errors"];
+  sectionHint?: string;
 }) {
   return (
     <>
@@ -721,6 +956,7 @@ function BeamSideRow({
           name={`side_${side}_sec` as keyof FormValues}
           control={control}
           options={sectionOptions}
+          hint={sectionHint}
         />
         <SelectField
           label="Steel grade"
@@ -792,11 +1028,13 @@ function SearchableSelectField({
   name,
   control,
   options,
+  hint,
 }: {
   label: string;
   name: keyof FormValues;
   control: ReturnType<typeof useForm<FormValues>>["control"];
   options: SearchableSelectOption[];
+  hint?: string;
 }) {
   const triggerId = `picker-${String(name)}`;
   return (
@@ -821,6 +1059,14 @@ function SearchableSelectField({
           />
         )}
       />
+      {hint && (
+        <p
+          data-testid={`frc-hint-${String(name)}`}
+          className="mt-1 text-xs text-amber-700"
+        >
+          {hint}
+        </p>
+      )}
     </div>
   );
 }

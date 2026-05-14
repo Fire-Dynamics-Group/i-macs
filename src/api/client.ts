@@ -190,6 +190,35 @@ export const getRun = (id: number) => getJson<Run>(`/api/runs/${id}`);
 export const getRunTimeseries = (id: number) =>
   getJson<TimeSeriesRow[]>(`/api/runs/${id}/timeseries`);
 
+export interface ImportFrcResponse {
+  params: Record<string, unknown>;
+  project: Record<string, string>;
+}
+
+/** Upload a .frc file to the sidecar for parsing. Returns engine-keyed
+ *  params + project metadata. The frontend then runs these through
+ *  hydrateFormFromFrcParams to map them to FormValues. */
+export async function importFrc(file: File): Promise<ImportFrcResponse> {
+  const base = await baseUrl();
+  const form = new FormData();
+  form.append("file", file, file.name);
+  const resp = await fetch(`${base}/api/import-frc`, {
+    method: "POST",
+    body: form,
+  });
+  if (!resp.ok) {
+    let detail = "";
+    try {
+      const err = await resp.json();
+      detail = err.error ?? err.detail ?? JSON.stringify(err);
+    } catch {
+      detail = resp.statusText;
+    }
+    throw new Error(detail || `Failed to import .frc (${resp.status})`);
+  }
+  return (await resp.json()) as ImportFrcResponse;
+}
+
 export function listRuns(opts: { batchId?: string } = {}): Promise<RunsListResponse> {
   const path = opts.batchId
     ? `/api/runs?batch_id=${encodeURIComponent(opts.batchId)}`
