@@ -40,14 +40,39 @@ import type { FormValues } from "../types/formValues";
 
 const FY_OPTIONS = ["235", "275", "355", "460"];
 
+/** Label text with an optional "● Imported from .frc" blue dot. */
+function FieldLabel({
+  children,
+  imported,
+}: {
+  children: React.ReactNode;
+  imported?: boolean;
+}) {
+  return (
+    <span className="text-sm font-medium text-slate-700">
+      {imported && (
+        <span
+          aria-hidden
+          title="Imported from .frc"
+          className="mr-1.5 inline-block h-1.5 w-1.5 rounded-full bg-blue-500 align-middle"
+          data-testid="frc-imported-dot"
+        />
+      )}
+      {children}
+      {imported && <span className="sr-only"> (imported from .frc)</span>}
+    </span>
+  );
+}
+
 const numberField = (
   label: string,
   name: keyof FormValues,
   register: ReturnType<typeof useForm<FormValues>>["register"],
   errors: ReturnType<typeof useForm<FormValues>>["formState"]["errors"],
+  imported?: boolean,
 ) => (
   <label className="block">
-    <span className="text-sm font-medium text-slate-700">{label}</span>
+    <FieldLabel imported={imported}>{label}</FieldLabel>
     <input
       type="number"
       step="any"
@@ -169,7 +194,7 @@ export default function ConfigPage() {
     [refDataQuery.data],
   );
 
-  const { register, handleSubmit, control, watch, reset, formState } =
+  const { register, handleSubmit, control, watch, reset, getValues, formState } =
     useForm<FormValues>({
       defaultValues: {
         method: "iso",
@@ -292,6 +317,14 @@ export default function ConfigPage() {
   const [frcUnknownFields, setFrcUnknownFields] = useState<
     FrcHydrationResult["unknownFields"]
   >({});
+  // Names of fields the FRC import actually changed (vs. the form's
+  // pre-import snapshot). Drives the "● Imported" dot on each field's
+  // label so the user can see at a glance which values came from the .frc
+  // and which are still their previous edits / sidecar defaults. Cleared
+  // per-field via the dirty-fields signal as the user touches inputs.
+  const [importedFields, setImportedFields] = useState<Set<keyof FormValues>>(
+    new Set(),
+  );
   const [frcError, setFrcError] = useState<string | null>(null);
   const [isDragOver, setIsDragOver] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -300,6 +333,7 @@ export default function ConfigPage() {
     setHydrationSource(null);
     setFrcImportSource(null);
     setFrcUnknownFields({});
+    setImportedFields(new Set());
     const next = new URLSearchParams(searchParams);
     next.delete("from_run");
     next.delete("from_batch");
@@ -312,6 +346,16 @@ export default function ConfigPage() {
   const applyFrcImport = (data: ImportFrcResponse, filename: string) => {
     if (!refDataQuery.data) return;
     const result = hydrateFormFromFrcParams(data.params, refDataQuery.data);
+    // Diff the form's pre-import state against the incoming values so the
+    // banner can call out exactly what the .frc changed. Without this, a
+    // naive "everything in the file is imported" highlight tints all ~45
+    // fields blue on first import — useless signal.
+    const before = getValues() as unknown as Record<string, unknown>;
+    const after = result.values as unknown as Record<string, unknown>;
+    const changed = new Set<keyof FormValues>();
+    for (const k of Object.keys(result.values) as Array<keyof FormValues>) {
+      if (!Object.is(before[k], after[k])) changed.add(k);
+    }
     seededRef.current = `frc:${filename}`;
     reset(result.values);
     setMode("single");
@@ -323,6 +367,7 @@ export default function ConfigPage() {
       clientName: data.project?.ClientName ?? "",
     });
     setFrcUnknownFields(result.unknownFields);
+    setImportedFields(changed);
     setFrcError(null);
     // Import beats ?from_run / ?from_batch — clear those so a refresh
     // doesn't re-hydrate from a stale URL.
@@ -467,6 +512,13 @@ export default function ConfigPage() {
 
   const method = watch("method");
   const errors = formState.errors;
+  // `dirtyFields` is a react-hook-form proxy — accessing it here registers
+  // the subscription so the highlight clears as the user edits a field.
+  const dirtyFields = formState.dirtyFields as Partial<
+    Record<keyof FormValues, boolean>
+  >;
+  const isImported = (name: keyof FormValues): boolean =>
+    importedFields.has(name) && !dirtyFields[name];
 
   if (refDataQuery.isLoading) {
     return <div className="p-8 text-slate-600">Loading reference data…</div>;
@@ -612,6 +664,11 @@ export default function ConfigPage() {
                 {" "}(Client: <code className="font-mono">{frcImportSource.clientName}</code>)
               </>
             )}
+            {importedFields.size > 0 && (
+              <span className="ml-1 text-blue-700">
+                — fields with <span className="mx-0.5 inline-block h-1.5 w-1.5 rounded-full bg-blue-500 align-middle" aria-hidden /> were changed by the import.
+              </span>
+            )}
           </span>
           <button
             type="button"
@@ -668,16 +725,16 @@ export default function ConfigPage() {
 
         <Section title="Geometry">
           <Grid>
-            {numberField("Span 1 (m)", "span1", register, errors)}
-            {numberField("Span 2 (m)", "span2", register, errors)}
-            {numberField("Number of beams", "numbeam", register, errors)}
-            {numberField("Slab depth (mm)", "slab_depth", register, errors)}
+            {numberField("Span 1 (m)", "span1", register, errors, isImported("span1"))}
+            {numberField("Span 2 (m)", "span2", register, errors, isImported("span2"))}
+            {numberField("Number of beams", "numbeam", register, errors, isImported("numbeam"))}
+            {numberField("Slab depth (mm)", "slab_depth", register, errors, isImported("slab_depth"))}
           </Grid>
         </Section>
 
         <Section title="Slab + deck + mesh">
           <Grid>
-            {numberField("fck (MPa)", "fck", register, errors)}
+            {numberField("fck (MPa)", "fck", register, errors, isImported("fck"))}
             <SelectField
               label="Concrete type"
               name="conc_type"
@@ -686,12 +743,14 @@ export default function ConfigPage() {
                 { id: "NW", label: "Normal weight" },
                 { id: "LW", label: "Lightweight" },
               ]}
+              imported={isImported("conc_type")}
             />
             <SearchableSelectField
               label="Deck"
               name="deck_id"
               control={control}
               options={deckOptions}
+              imported={isImported("deck_id")}
               hint={
                 frcUnknownFields.deck_id
                   ? `Deck \`${frcUnknownFields.deck_id}\` not in catalogue — pick a replacement`
@@ -703,6 +762,7 @@ export default function ConfigPage() {
               name="mesh_type"
               control={control}
               options={meshOptions}
+              imported={isImported("mesh_type")}
               hint={
                 frcUnknownFields.mesh_type
                   ? `Mesh \`${frcUnknownFields.mesh_type}\` not in catalogue — pick a replacement`
@@ -720,6 +780,7 @@ export default function ConfigPage() {
               name="u_sec_size"
               control={control}
               options={sectionOptions}
+              imported={isImported("u_sec_size")}
               hint={
                 frcUnknownFields.u_sec_size
                   ? `Section \`${frcUnknownFields.u_sec_size}\` not in catalogue — pick a replacement`
@@ -731,8 +792,15 @@ export default function ConfigPage() {
               name="u_sec_fy"
               control={control}
               options={FY_OPTIONS.map((v) => ({ id: v, label: `S${v}` }))}
+              imported={isImported("u_sec_fy")}
             />
-            {numberField("Shear conn. spacing (mm)", "u_sec_sh_con", register, errors)}
+            {numberField(
+              "Shear conn. spacing (mm)",
+              "u_sec_sh_con",
+              register,
+              errors,
+              isImported("u_sec_sh_con"),
+            )}
           </Grid>
           {(["a", "b", "c", "d"] as const).map((side) => {
             const secKey = `side_${side}_sec` as keyof FormValues;
@@ -745,6 +813,7 @@ export default function ConfigPage() {
                 control={control}
                 register={register}
                 errors={errors}
+                isImported={isImported}
                 sectionHint={
                   unknown
                     ? `Section \`${unknown}\` not in catalogue — pick a replacement`
@@ -757,12 +826,12 @@ export default function ConfigPage() {
 
         <Section title="Loading">
           <Grid>
-            {numberField("Slab self-weight (kN/m²)", "slab_weight", register, errors)}
-            {numberField("Cold permanent excl. slab (kN/m²)", "cold_perm", register, errors)}
-            {numberField("Leading variable (kN/m²)", "lead_var_act", register, errors)}
-            {numberField("Other variable (kN/m²)", "othr_var_act", register, errors)}
-            {numberField("Leading factor (ψ)", "lead_var_fac", register, errors)}
-            {numberField("Other factor (ψ)", "othr_var_fac", register, errors)}
+            {numberField("Slab self-weight (kN/m²)", "slab_weight", register, errors, isImported("slab_weight"))}
+            {numberField("Cold permanent excl. slab (kN/m²)", "cold_perm", register, errors, isImported("cold_perm"))}
+            {numberField("Leading variable (kN/m²)", "lead_var_act", register, errors, isImported("lead_var_act"))}
+            {numberField("Other variable (kN/m²)", "othr_var_act", register, errors, isImported("othr_var_act"))}
+            {numberField("Leading factor (ψ)", "lead_var_fac", register, errors, isImported("lead_var_fac"))}
+            {numberField("Other factor (ψ)", "othr_var_fac", register, errors, isImported("othr_var_fac"))}
           </Grid>
         </Section>
 
@@ -776,21 +845,22 @@ export default function ConfigPage() {
                 { id: "iso", label: "ISO standard fire" },
                 { id: "parametric", label: "Parametric (EN 1991-1-2)" },
               ]}
+              imported={isImported("method")}
             />
-            {numberField("Time limit (min)", "time_limit", register, errors)}
-            {numberField("Fire load qf (MJ/m²)", "qf", register, errors)}
-            {numberField("Window opening (%)", "window_percent", register, errors)}
+            {numberField("Time limit (min)", "time_limit", register, errors, isImported("time_limit"))}
+            {numberField("Fire load qf (MJ/m²)", "qf", register, errors, isImported("qf"))}
+            {numberField("Window opening (%)", "window_percent", register, errors, isImported("window_percent"))}
           </Grid>
           {method === "parametric" && (
             <Grid>
-              {numberField("Compartment Lc (m)", "Lc", register, errors)}
-              {numberField("Compartment Bc (m)", "Bc", register, errors)}
-              {numberField("Compartment Hc (m)", "Hc", register, errors)}
-              {numberField("Window Hw (m)", "Hw", register, errors)}
-              {numberField("Window Lw (m)", "Lw", register, errors)}
-              {numberField("Bfac (J/m²s½K)", "Bfac", register, errors)}
-              {numberField("Combustion factor", "combustion_factor", register, errors)}
-              {numberField("Growth rate", "growth_rate", register, errors)}
+              {numberField("Compartment Lc (m)", "Lc", register, errors, isImported("Lc"))}
+              {numberField("Compartment Bc (m)", "Bc", register, errors, isImported("Bc"))}
+              {numberField("Compartment Hc (m)", "Hc", register, errors, isImported("Hc"))}
+              {numberField("Window Hw (m)", "Hw", register, errors, isImported("Hw"))}
+              {numberField("Window Lw (m)", "Lw", register, errors, isImported("Lw"))}
+              {numberField("Bfac (J/m²s½K)", "Bfac", register, errors, isImported("Bfac"))}
+              {numberField("Combustion factor", "combustion_factor", register, errors, isImported("combustion_factor"))}
+              {numberField("Growth rate", "growth_rate", register, errors, isImported("growth_rate"))}
             </Grid>
           )}
         </Section>
@@ -908,10 +978,12 @@ function CheckboxField({
   label,
   name,
   control,
+  imported,
 }: {
   label: string;
   name: keyof FormValues;
   control: ReturnType<typeof useForm<FormValues>>["control"];
+  imported?: boolean;
 }) {
   return (
     <label className="flex items-center gap-2 self-end pb-2">
@@ -927,7 +999,7 @@ function CheckboxField({
           />
         )}
       />
-      <span className="text-sm font-medium text-slate-700">{label}</span>
+      <FieldLabel imported={imported}>{label}</FieldLabel>
     </label>
   );
 }
@@ -939,6 +1011,7 @@ function BeamSideRow({
   register,
   errors,
   sectionHint,
+  isImported,
 }: {
   side: "a" | "b" | "c" | "d";
   sectionOptions: SearchableSelectOption[];
@@ -946,39 +1019,50 @@ function BeamSideRow({
   register: ReturnType<typeof useForm<FormValues>>["register"];
   errors: ReturnType<typeof useForm<FormValues>>["formState"]["errors"];
   sectionHint?: string;
+  isImported: (name: keyof FormValues) => boolean;
 }) {
+  const secKey = `side_${side}_sec` as keyof FormValues;
+  const fyKey = `side_${side}_fy` as keyof FormValues;
+  const edgeKey = `side_${side}_edge` as keyof FormValues;
+  const compoKey = `side_${side}_composite` as keyof FormValues;
+  const shConKey = `side_${side}_sh_con` as keyof FormValues;
   return (
     <>
       <SubLegend>Side {side.toUpperCase()}</SubLegend>
       <Grid>
         <SearchableSelectField
           label={`Side ${side.toUpperCase()} section`}
-          name={`side_${side}_sec` as keyof FormValues}
+          name={secKey}
           control={control}
           options={sectionOptions}
           hint={sectionHint}
+          imported={isImported(secKey)}
         />
         <SelectField
           label="Steel grade"
-          name={`side_${side}_fy` as keyof FormValues}
+          name={fyKey}
           control={control}
           options={FY_OPTIONS.map((v) => ({ id: v, label: `S${v}` }))}
+          imported={isImported(fyKey)}
         />
         <CheckboxField
           label="Edge beam"
-          name={`side_${side}_edge` as keyof FormValues}
+          name={edgeKey}
           control={control}
+          imported={isImported(edgeKey)}
         />
         <CheckboxField
           label="Composite"
-          name={`side_${side}_composite` as keyof FormValues}
+          name={compoKey}
           control={control}
+          imported={isImported(compoKey)}
         />
         {numberField(
           "Shear conn. spacing (mm)",
-          `side_${side}_sh_con` as keyof FormValues,
+          shConKey,
           register,
           errors,
+          isImported(shConKey),
         )}
       </Grid>
     </>
@@ -990,15 +1074,17 @@ function SelectField({
   name,
   control,
   options,
+  imported,
 }: {
   label: string;
   name: keyof FormValues;
   control: ReturnType<typeof useForm<FormValues>>["control"];
   options: Array<{ id: string; label: string }>;
+  imported?: boolean;
 }) {
   return (
     <label className="block">
-      <span className="text-sm font-medium text-slate-700">{label}</span>
+      <FieldLabel imported={imported}>{label}</FieldLabel>
       <Controller
         control={control}
         name={name as never}
@@ -1029,21 +1115,20 @@ function SearchableSelectField({
   control,
   options,
   hint,
+  imported,
 }: {
   label: string;
   name: keyof FormValues;
   control: ReturnType<typeof useForm<FormValues>>["control"];
   options: SearchableSelectOption[];
   hint?: string;
+  imported?: boolean;
 }) {
   const triggerId = `picker-${String(name)}`;
   return (
     <div className="block">
-      <label
-        htmlFor={triggerId}
-        className="block text-sm font-medium text-slate-700"
-      >
-        {label}
+      <label htmlFor={triggerId} className="block">
+        <FieldLabel imported={imported}>{label}</FieldLabel>
       </label>
       <Controller
         control={control}

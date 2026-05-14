@@ -197,6 +197,22 @@ test.describe("FRC import", () => {
     // No yellow hints — every section/deck/mesh ID is in scope.
     await expect(page.getByTestId("frc-hint-side_a_sec")).toHaveCount(0);
     await expect(page.getByTestId("frc-hint-deck_id")).toHaveCount(0);
+
+    // Blue "● Imported" dots flag at least the fields that diverge from
+    // the seeded defaults (span1, qf, slab_depth, etc.). The exact count
+    // depends on which seeded defaults happen to equal the .frc values,
+    // so just assert that several dots are present and the banner legend
+    // mentions them.
+    const dots = page.getByTestId("frc-imported-dot");
+    expect(await dots.count()).toBeGreaterThan(5);
+    await expect(banner).toContainText("were changed by the import");
+
+    // Editing a field clears its dot — react-hook-form's dirty signal.
+    const span1Input = page.getByLabel("Span 1 (m)");
+    const dotsBefore = await dots.count();
+    await span1Input.fill("12.3");
+    await span1Input.blur();
+    expect(await dots.count()).toBeLessThan(dotsBefore);
   });
 
   test("unknown section → yellow hint on Side A, other sides unaffected", async ({
