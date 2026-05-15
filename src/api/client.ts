@@ -100,8 +100,15 @@ export interface TimeSeriesRow {
   time_step: number;
   time_min: number;
   fire_temp: number;
-  utilization_factor: number;
+  lofl_temp: number;
+  mesh_temp: number;
+  slabtop_temp: number;
+  slabbot_temp: number;
+  beam_hot_capacity: number;
+  deflection: number;
+  slab_cap: number;
   total_plate_capacity: number;
+  utilization_factor: number;
   [k: string]: number;
 }
 
