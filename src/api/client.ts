@@ -200,6 +200,33 @@ export function listRuns(opts: { batchId?: string } = {}): Promise<RunsListRespo
 export const getBatch = (batchId: string) =>
   getJson<BatchSummary>(`/api/batches/${encodeURIComponent(batchId)}`);
 
+export interface DistributionResponse {
+  /** [time_min, value] tuples; exact arithmetic mean across all successful runs. */
+  average: Array<[number, number]>;
+  /** Up to `spaghetti_n` runs (stride-sampled when batch size exceeds N). */
+  spaghetti: Array<{ run_id: number; points: Array<[number, number]> }>;
+  /** Null for non-capacity columns. */
+  factored_hot_min: number | null;
+  factored_hot_max: number | null;
+}
+
+/** Fetch the distribution payload for one column of a batch (capacity /
+ *  lofl_temp / mesh_temp). Powers the 3 MACS+-style distribution charts on
+ *  the AnalyticalView. */
+export function fetchDistribution(
+  batchId: string,
+  column: "total_plate_capacity" | "lofl_temp" | "mesh_temp",
+  spaghettiN = 500,
+): Promise<DistributionResponse> {
+  const params = new URLSearchParams({
+    column,
+    spaghetti_n: String(spaghettiN),
+  });
+  return getJson<DistributionResponse>(
+    `/api/batches/${encodeURIComponent(batchId)}/distribution?${params.toString()}`,
+  );
+}
+
 /** Resolved URL for the DOCX report — the dashboard's Download button
  *  navigates to this so the browser handles the file save dialog. */
 export async function getReportDocxUrl(batchId: string): Promise<string> {

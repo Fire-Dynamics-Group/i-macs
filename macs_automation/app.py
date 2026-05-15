@@ -859,6 +859,121 @@ def api_get_batch(batch_id: str):
     }
 
 
+# ─── Distribution endpoint for batch detail page ─────────────────────────────
+
+# Whitelist enforced at the route layer — narrower than db.TIME_SERIES_COLUMNS
+# because only these three feed the MACS+ Monte Carlo Summary charts.
+_DISTRIBUTION_COLUMNS = frozenset({
+    "total_plate_capacity", "lofl_temp", "mesh_temp",
+})
+
+
+@app.get("/api/batches/{batch_id}/distribution")
+def api_batch_distribution(
+    batch_id: str,
+    column: str,
+    spaghetti_n: int = 500,
+):
+    """Return spaghetti + exact server-side average for a batch's column.
+
+    AnalyticalView hits this 3x (one per distribution chart). The shape mirrors
+    what `DistributionChart` expects: an `average` curve, up to `spaghetti_n`
+    individual run curves (stride-sampled when count > N), and the
+    factored_hot min/max for the capacity chart's horizontal indicator.
+
+    `column` is whitelisted to {total_plate_capacity, lofl_temp, mesh_temp}
+    so the SQL interpolation in `get_batch_time_series_column` stays safe
+    (same pattern as that method's own check, but tighter at the API layer
+    so we never push other valid TIME_SERIES_COLUMNS to the client by
+    accident).
+    """
+    if column not in _DISTRIBUTION_COLUMNS:
+        return JSONResponse(
+            {"error": f"Invalid column: {column!r}. "
+                      f"Must be one of {sorted(_DISTRIBUTION_COLUMNS)}."},
+            status_code=400,
+        )
+    if spaghetti_n < 1:
+        spaghetti_n = 1
+
+    db = _get_db()
+    try:
+        rows = db.get_batch_time_series_column(batch_id, column)
+        runs = db.get_batch_successful_runs(batch_id)
+    finally:
+        db.close()
+
+    # Group (run_id, time_min, value) tuples by run.
+    by_run: "OrderedDict[int, list[tuple[float, float]]]" = OrderedDict()
+    for run_id, time_min, value in rows:
+        by_run.setdefault(run_id, []).append((float(time_min), float(value)))
+
+    # Empty-state: no successful runs → 4-chart placeholder branch.
+    if not by_run:
+        return {
+            "average": [],
+            "spaghetti": [],
+            "factored_hot_min": None,
+            "factored_hot_max": None,
+        }
+
+    # ── Average: exact, computed over ALL successful runs at every timestep
+    all_times: set = set()
+    for points in by_run.values():
+        for t, _ in points:
+            all_times.add(t)
+    sorted_times = sorted(all_times)
+    average: list[list[float]] = []
+    # Index each run by time for O(1) lookup; missing timesteps drop out
+    # of the mean (same semantics as report_docx._render_timeseries_chart).
+    indexed = {rid: dict(pts) for rid, pts in by_run.items()}
+    for t in sorted_times:
+        vals = [d[t] for d in indexed.values() if t in d]
+        if not vals:
+            continue
+        average.append([t, sum(vals) / len(vals)])
+
+    # ── Spaghetti: stride-sample down to spaghetti_n (visually identical
+    # density at 10k scale, per issue rendering strategy).
+    run_ids = list(by_run.keys())
+    if len(run_ids) > spaghetti_n:
+        # Stride pick ~evenly-spaced indices so the sample preserves order.
+        stride = len(run_ids) / float(spaghetti_n)
+        picked_idx = sorted({int(i * stride) for i in range(spaghetti_n)})
+        picked_idx = [i for i in picked_idx if i < len(run_ids)]
+        picked = [run_ids[i] for i in picked_idx]
+    else:
+        picked = run_ids
+
+    spaghetti = []
+    for rid in picked:
+        spaghetti.append({
+            "run_id": rid,
+            "points": [[t, v] for t, v in by_run[rid]],
+        })
+
+    # ── Factored hot range: only meaningful for the capacity chart.
+    if column == "total_plate_capacity":
+        factored_values = [r.get("factored_hot") for r in runs
+                           if r.get("factored_hot") is not None]
+        if factored_values:
+            f_min = min(factored_values)
+            f_max = max(factored_values)
+        else:
+            f_min = None
+            f_max = None
+    else:
+        f_min = None
+        f_max = None
+
+    return {
+        "average": average,
+        "spaghetti": spaghetti,
+        "factored_hot_min": f_min,
+        "factored_hot_max": f_max,
+    }
+
+
 @app.get("/api/runs/ungrouped")
 def api_list_ungrouped_runs(limit: int = 50, offset: int = 0):
     """Paginated runs where batch_id IS NULL, newest first."""
