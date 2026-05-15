@@ -117,13 +117,105 @@ def generate_prot_beam_csv(db: ResultsDB) -> str:
     return buf.getvalue()
 
 
-def generate_plots(db: ResultsDB, output_dir: Path) -> list[Path]:
-    """Generate 4 PNG plots and return their paths.
+def _factored_hot_range(runs) -> Optional[tuple[float, float]]:
+    """Return (min, max) of factored_hot across runs, or None if no values."""
+    values = [r.get("factored_hot") for r in runs if r.get("factored_hot") is not None]
+    if not values:
+        return None
+    return (min(values), max(values))
 
-    1. Total capacity vs time — all runs light blue, average coral, factored load red
-    2. Beam temperature vs time — all runs + average
-    3. Mesh temperature vs time — all runs + average
-    4. Scatter — fireload vs glazing_breakage, colored by pass/fail
+
+def _inputs_vary(runs, *fields: str) -> bool:
+    """True if any of ``fields`` has more than one distinct non-None value across runs."""
+    for field in fields:
+        values = {r.get(field) for r in runs if r.get(field) is not None}
+        if len(values) > 1:
+            return True
+    return False
+
+
+def _plot_timeseries(
+    db: ResultsDB,
+    column: str,
+    title: str,
+    ylabel: str,
+    filename: str,
+    output_dir: Path,
+    hline_band: Optional[tuple[float, float]] = None,
+):
+    """Plot time series for all runs + average; save to PNG.
+
+    ``hline_band`` is ``(min, max)``: equal values render as a dashed line,
+    unequal values render as a shaded band between them.
+
+    Returns ``(path, fig)`` or ``None`` if no data. Caller closes ``fig``.
+    """
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    fig, ax = plt.subplots(figsize=(10, 6))
+
+    rows = db.get_all_time_series_column(column)
+    if not rows:
+        plt.close(fig)
+        return None
+
+    by_run = defaultdict(list)
+    for run_id, time_min, value in rows:
+        by_run[run_id].append((time_min, value))
+
+    for rid, data in by_run.items():
+        data.sort()
+        times = [d[0] for d in data]
+        values = [d[1] for d in data]
+        ax.plot(times, values, color="lightsteelblue", linewidth=0.5, alpha=0.6)
+
+    all_times = set()
+    for data in by_run.values():
+        for t, _ in data:
+            all_times.add(t)
+    sorted_times = sorted(all_times)
+
+    if sorted_times and by_run:
+        avg_values = []
+        for t in sorted_times:
+            vals = [dict(data).get(t) for data in by_run.values()]
+            vals = [v for v in vals if v is not None]
+            avg_values.append(sum(vals) / len(vals) if vals else 0)
+        ax.plot(sorted_times, avg_values, color="coral", linewidth=2,
+                label="Average")
+
+    if hline_band is not None:
+        lo, hi = hline_band
+        if abs(hi - lo) < 1e-9:
+            ax.axhline(y=lo, color="red", linewidth=1.5,
+                       linestyle="--", label=f"Factored load = {lo:.1f}")
+        else:
+            ax.axhspan(lo, hi, color="red", alpha=0.2,
+                       label=f"Factored load ({lo:.1f}–{hi:.1f})")
+
+    ax.set_xlabel("Time (min)")
+    ax.set_ylabel(ylabel)
+    ax.set_title(title)
+    ax.legend()
+    ax.grid(True, alpha=0.3)
+
+    path = output_dir / filename
+    fig.savefig(path, dpi=150, bbox_inches="tight")
+    return path, fig
+
+
+def generate_plots(db: ResultsDB, output_dir: Path) -> list[Path]:
+    """Generate up to 4 PNG plots and return their paths.
+
+    1. Total capacity vs time — spaghetti + average + factored band/line
+    2. Beam temperature vs time — spaghetti + average
+    3. Mesh temperature vs time — spaghetti + average
+    4. Scatter — fireload vs glazing_breakage; omitted when neither varies
     """
     import matplotlib
     matplotlib.use("Agg")
@@ -133,100 +225,30 @@ def generate_plots(db: ResultsDB, output_dir: Path) -> list[Path]:
     output_dir.mkdir(parents=True, exist_ok=True)
     paths = []
 
-    run_ids = db.get_successful_run_ids()
     runs = db.get_successful_runs()
+    factored_band = _factored_hot_range(runs)
 
-    def _plot_timeseries(column, title, ylabel, filename, hline_value=None):
-        """Helper to plot time series for all runs + average."""
-        fig, ax = plt.subplots(figsize=(10, 6))
+    plot_specs = [
+        ("total_plate_capacity", "Total Plate Capacity vs Time",
+         "Capacity (kN/m)", "total_capacity.png", factored_band),
+        ("lofl_temp", "Beam Temperature vs Time",
+         "Temperature (°C)", "beam_temperature.png", None),
+        ("mesh_temp", "Mesh Temperature vs Time",
+         "Temperature (°C)", "mesh_temperature.png", None),
+    ]
 
-        rows = db.get_all_time_series_column(column)
-        if not rows:
+    for column, title, ylabel, filename, band in plot_specs:
+        result = _plot_timeseries(
+            db, column, title, ylabel, filename, output_dir,
+            hline_band=band,
+        )
+        if result:
+            path, fig = result
             plt.close(fig)
-            return None
+            paths.append(path)
 
-        # Group by run_id
-        by_run = defaultdict(list)
-        for run_id, time_min, value in rows:
-            by_run[run_id].append((time_min, value))
-
-        # Plot individual runs
-        for rid, data in by_run.items():
-            data.sort()
-            times = [d[0] for d in data]
-            values = [d[1] for d in data]
-            ax.plot(times, values, color="lightsteelblue", linewidth=0.5, alpha=0.6)
-
-        # Compute and plot average
-        all_times = set()
-        for data in by_run.values():
-            for t, _ in data:
-                all_times.add(t)
-        sorted_times = sorted(all_times)
-
-        if sorted_times and by_run:
-            avg_values = []
-            for t in sorted_times:
-                vals = [dict(data).get(t) for data in by_run.values()]
-                vals = [v for v in vals if v is not None]
-                avg_values.append(sum(vals) / len(vals) if vals else 0)
-            ax.plot(sorted_times, avg_values, color="coral", linewidth=2,
-                    label="Average")
-
-        # Optional horizontal line (e.g., factored load)
-        if hline_value is not None:
-            ax.axhline(y=hline_value, color="red", linewidth=1.5,
-                       linestyle="--", label=f"Factored load = {hline_value:.1f}")
-
-        ax.set_xlabel("Time (min)")
-        ax.set_ylabel(ylabel)
-        ax.set_title(title)
-        ax.legend()
-        ax.grid(True, alpha=0.3)
-
-        path = output_dir / filename
-        fig.savefig(path, dpi=150, bbox_inches="tight")
-        plt.close(fig)
-        return path
-
-    # Get factored_hot from first run for the capacity plot
-    factored_hot = None
-    if runs:
-        factored_hot = runs[0].get("factored_hot")
-
-    # Plot 1: Total capacity vs time
-    p = _plot_timeseries(
-        "total_plate_capacity",
-        "Total Plate Capacity vs Time",
-        "Capacity (kN/m)",
-        "total_capacity.png",
-        hline_value=factored_hot,
-    )
-    if p:
-        paths.append(p)
-
-    # Plot 2: Beam temperature vs time
-    p = _plot_timeseries(
-        "lofl_temp",
-        "Beam Temperature vs Time",
-        "Temperature (\u00b0C)",
-        "beam_temperature.png",
-    )
-    if p:
-        paths.append(p)
-
-    # Plot 3: Mesh temperature vs time
-    p = _plot_timeseries(
-        "mesh_temp",
-        "Mesh Temperature vs Time",
-        "Temperature (\u00b0C)",
-        "mesh_temperature.png",
-    )
-    if p:
-        paths.append(p)
-
-    # Plot 4: Scatter — fireload vs glazing_breakage
-    if runs:
+    # Scatter — only when at least one of qf / window_percent actually varies
+    if runs and _inputs_vary(runs, "qf", "window_percent"):
         fig, ax = plt.subplots(figsize=(10, 6))
         pass_qf, pass_wp = [], []
         fail_qf, fail_wp = [], []
@@ -250,7 +272,7 @@ def generate_plots(db: ResultsDB, output_dir: Path) -> list[Path]:
             ax.scatter(fail_qf, fail_wp, color="coral", alpha=0.7,
                        label=f"Fail ({len(fail_qf)})", s=30)
 
-        ax.set_xlabel("Fire Load (MJ/m\u00b2)")
+        ax.set_xlabel("Fire Load (MJ/m²)")
         ax.set_ylabel("Glazing Breakage (%)")
         ax.set_title("Fire Load vs Glazing Breakage")
         ax.legend()

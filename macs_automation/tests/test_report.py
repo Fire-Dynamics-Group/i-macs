@@ -7,14 +7,19 @@ from pathlib import Path
 
 import pytest
 
+from macs_automation.db import ResultsDB
 from macs_automation.report import (
     WIDE_CSV_COLUMNS,
+    _factored_hot_range,
+    _inputs_vary,
+    _plot_timeseries,
     generate_prot_beam_csv,
     generate_plots,
     generate_report_zip,
     generate_summary_csv,
     generate_wide_timeseries_csv,
 )
+from macs_automation.tests.conftest import _insert_populated_run
 
 
 class TestSummaryCSV:
@@ -141,6 +146,127 @@ class TestGeneratePlots:
         assert "total_capacity.png" in names
         assert "beam_temperature.png" in names
         assert "mesh_temperature.png" in names
+        assert "scatter_passfail.png" in names
+
+
+class TestFactoredHotRange:
+    def test_returns_min_max(self):
+        runs = [{"factored_hot": 3.0}, {"factored_hot": 5.0}, {"factored_hot": 4.0}]
+        assert _factored_hot_range(runs) == (3.0, 5.0)
+
+    def test_constant_returns_same_min_max(self):
+        runs = [{"factored_hot": 3.7}, {"factored_hot": 3.7}]
+        assert _factored_hot_range(runs) == (3.7, 3.7)
+
+    def test_ignores_none(self):
+        runs = [{"factored_hot": 3.7}, {"factored_hot": None}, {"factored_hot": 5.0}]
+        assert _factored_hot_range(runs) == (3.7, 5.0)
+
+    def test_empty_returns_none(self):
+        assert _factored_hot_range([]) is None
+
+    def test_all_none_returns_none(self):
+        assert _factored_hot_range([{"factored_hot": None}]) is None
+
+
+class TestInputsVary:
+    def test_varying_returns_true(self):
+        runs = [{"qf": 400}, {"qf": 500}]
+        assert _inputs_vary(runs, "qf") is True
+
+    def test_constant_returns_false(self):
+        runs = [{"qf": 400}, {"qf": 400}]
+        assert _inputs_vary(runs, "qf") is False
+
+    def test_any_field_varies(self):
+        runs = [{"qf": 400, "window_percent": 30},
+                {"qf": 400, "window_percent": 50}]
+        assert _inputs_vary(runs, "qf", "window_percent") is True
+
+    def test_all_fields_constant(self):
+        runs = [{"qf": 400, "window_percent": 30},
+                {"qf": 400, "window_percent": 30}]
+        assert _inputs_vary(runs, "qf", "window_percent") is False
+
+    def test_ignores_none(self):
+        runs = [{"qf": 400}, {"qf": None}, {"qf": 400}]
+        assert _inputs_vary(runs, "qf") is False
+
+
+class TestPlotTimeseries:
+    def test_constant_factored_hot_renders_dashed_line(self, populated_db, tmp_path):
+        import matplotlib.pyplot as plt
+        result = _plot_timeseries(
+            populated_db, "total_plate_capacity",
+            "Total Plate Capacity", "Capacity (kN/m)",
+            "test.png", tmp_path,
+            hline_band=(3.7, 3.7),
+        )
+        assert result is not None
+        path, fig = result
+        ax = fig.axes[0]
+        # Constant band → no shaded patch, just a dashed hline
+        assert len(ax.patches) == 0
+        dashed = [ln for ln in ax.lines if ln.get_linestyle() == "--"]
+        assert len(dashed) >= 1
+        plt.close(fig)
+
+    def test_varying_factored_hot_renders_shaded_band(self, populated_db, tmp_path):
+        import matplotlib.pyplot as plt
+        result = _plot_timeseries(
+            populated_db, "total_plate_capacity",
+            "Total Plate Capacity", "Capacity (kN/m)",
+            "test.png", tmp_path,
+            hline_band=(3.0, 5.0),
+        )
+        assert result is not None
+        path, fig = result
+        ax = fig.axes[0]
+        # Varying band → at least one axhspan patch
+        assert len(ax.patches) >= 1
+        plt.close(fig)
+
+    def test_no_hline_when_band_is_none(self, populated_db, tmp_path):
+        import matplotlib.pyplot as plt
+        result = _plot_timeseries(
+            populated_db, "total_plate_capacity",
+            "Total Plate Capacity", "Capacity (kN/m)",
+            "test.png", tmp_path,
+            hline_band=None,
+        )
+        assert result is not None
+        path, fig = result
+        ax = fig.axes[0]
+        assert len(ax.patches) == 0
+        dashed = [ln for ln in ax.lines if ln.get_linestyle() == "--"]
+        assert len(dashed) == 0
+        plt.close(fig)
+
+
+@pytest.fixture
+def constant_inputs_db(tmp_path):
+    """Database where qf and window_percent are identical across all runs."""
+    db_path = tmp_path / "constant.db"
+    db = ResultsDB(db_path)
+    for i in range(5):
+        uf = 0.3 + i * 0.1
+        _insert_populated_run(
+            db, i, uf_max=round(uf, 2), qf=500.0, window_percent=50.0,
+        )
+    yield db
+    db.close()
+
+
+class TestScatterDegenerateDrop:
+    def test_no_scatter_when_inputs_constant(self, constant_inputs_db, tmp_path):
+        paths = generate_plots(constant_inputs_db, tmp_path / "plots")
+        names = {p.name for p in paths}
+        assert "scatter_passfail.png" not in names
+        assert len(paths) == 3
+
+    def test_scatter_present_when_inputs_vary(self, populated_db, tmp_path):
+        paths = generate_plots(populated_db, tmp_path / "plots")
+        names = {p.name for p in paths}
         assert "scatter_passfail.png" in names
 
 
