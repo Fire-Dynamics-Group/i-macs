@@ -1,13 +1,9 @@
-import { useEffect, useMemo, useState } from "react";
+import { useMemo } from "react";
 import { Link, useParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 
 import type { BatchSummary, Run } from "../api/client";
-import {
-  getBatch,
-  getReportChartUrl,
-  getReportDocxUrl,
-} from "../api/client";
+import { getBatch } from "../api/client";
 import { detectVaryingFields } from "../sweep/buildScatterTraces";
 import { SweepScatter } from "../sweep/SweepScatter";
 import { useSweepEvents } from "../sweep/useSweepEvents";
@@ -143,31 +139,8 @@ function AnalyticalView({ batch }: { batch: BatchSummary }) {
     [runs, candidateNames],
   );
 
-  const [docxUrl, setDocxUrl] = useState<string | null>(null);
-  const [scatterUrl, setScatterUrl] = useState<string | null>(null);
-  const [capacityUrl, setCapacityUrl] = useState<string | null>(null);
-
-  useEffect(() => {
-    let cancelled = false;
-    Promise.all([
-      getReportDocxUrl(batch.batch_id),
-      getReportChartUrl("scatter", batch.batch_id),
-      getReportChartUrl("capacity", batch.batch_id),
-    ])
-      .then(([d, s, c]) => {
-        if (cancelled) return;
-        setDocxUrl(d);
-        setScatterUrl(s);
-        setCapacityUrl(c);
-      })
-      .catch(() => {});
-    return () => {
-      cancelled = true;
-    };
-  }, [batch.batch_id]);
-
   return (
-    <div className="mx-auto max-w-6xl p-8">
+    <div className="mx-auto max-w-5xl p-8">
       <Link to="/runs" className="text-sm text-blue-700 hover:underline">
         ← Back to history
       </Link>
@@ -184,18 +157,6 @@ function AnalyticalView({ batch }: { batch: BatchSummary }) {
           </p>
         </div>
         <div className="flex items-center gap-2">
-          {docxUrl ? (
-            <a
-              href={docxUrl}
-              className="rounded-md bg-slate-200 px-3 py-1.5 text-sm font-medium text-slate-800 hover:bg-slate-300"
-            >
-              Download report
-            </a>
-          ) : (
-            <span className="rounded-md bg-slate-100 px-3 py-1.5 text-sm font-medium text-slate-400">
-              Download report
-            </span>
-          )}
           <Link
             to={`/?from_batch=${encodeURIComponent(batch.batch_id)}`}
             className="rounded-md bg-blue-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-blue-500"
@@ -205,30 +166,15 @@ function AnalyticalView({ batch }: { batch: BatchSummary }) {
         </div>
       </header>
 
-      <section className="mt-6 grid gap-4 md:grid-cols-2">
-        <div className="rounded-md border border-slate-200 bg-white p-4 shadow-sm">
-          <h2 className="mb-2 text-sm font-semibold uppercase tracking-wide text-slate-500">
-            UF max vs {varyingFields[0] ?? "input"}
-          </h2>
-          <SweepScatter
-            runs={runs}
-            varyingX={varyingFields[0] ?? null}
-            varyingColor={varyingFields[1] ?? null}
-          />
-          {scatterUrl && runs.length === 0 && (
-            <img src={scatterUrl} alt="UF max scatter" className="w-full" />
-          )}
-        </div>
-        <div className="rounded-md border border-slate-200 bg-white p-4 shadow-sm">
-          <h2 className="mb-2 text-sm font-semibold uppercase tracking-wide text-slate-500">
-            Total slab capacity
-          </h2>
-          {capacityUrl ? (
-            <img src={capacityUrl} alt="Capacity over time" className="w-full" />
-          ) : (
-            <p className="text-sm text-slate-400">Loading capacity chart…</p>
-          )}
-        </div>
+      <section className="mt-6 rounded-md border border-slate-200 bg-white p-4 shadow-sm">
+        <h2 className="mb-2 text-sm font-semibold uppercase tracking-wide text-slate-500">
+          UF max vs {varyingFields[0] ?? "input"}
+        </h2>
+        <SweepScatter
+          runs={runs}
+          varyingX={varyingFields[0] ?? null}
+          varyingColor={varyingFields[1] ?? null}
+        />
       </section>
 
       <section className="mt-6 overflow-hidden rounded-md border border-slate-200 bg-white shadow-sm">
