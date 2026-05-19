@@ -59,7 +59,5 @@ function formatValue(v: number | null | undefined): string {
 }
 
 function formatLimit(check: Check): string {
-  // The composite-section check uses a 0/1 flag rather than a numeric ratio.
-  if (check.name === "Composite section") return "flag = 0";
   return `≤ ${check.limit.toFixed(2)}`;
 }

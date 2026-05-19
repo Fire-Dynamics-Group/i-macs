@@ -1,15 +1,19 @@
 """Combined pass/fail status for a MACS+ run.
 
 A run passes only when every applicable check passes:
-  - Slab utilization factor (uf_max) <= 1.0
-  - Composite section did not fail (comp_failure != 1)
+  - Slab utilization factor (uf_max) < 1.001
   - Each defined perimeter beam load ratio (side_X_load_ratio) <= 1.0
+
+This mirrors the verdict cell MACS+ itself computes (PrintP.js:388,
+TabReport.js:846): ``UF1Max < 1.001 ? 'strAdequate' : ...``. MACS+'s
+``COMPFAILURE`` flag is a failure-mode *label*, not an independent pass/fail
+criterion, so it does not gate the verdict here.
 
 NULL side ratios are skipped (e.g. when a side wasn't analyzed). A run with an
 error or no uf_max returns overall_pass=None — we can't say either way.
 """
 
-UF_LIMIT = 1.0
+UF_LIMIT = 1.001
 LOAD_RATIO_LIMIT = 1.0
 
 
@@ -28,12 +32,8 @@ def compute_status(row: dict) -> dict:
 
     checks = []
 
-    slab_pass = uf_max <= UF_LIMIT
+    slab_pass = uf_max < UF_LIMIT
     checks.append(_check("Slab UF", uf_max, UF_LIMIT, slab_pass))
-
-    comp_failure = row.get("comp_failure")
-    comp_pass = comp_failure != 1
-    checks.append(_check("Composite section", comp_failure, 0, comp_pass))
 
     for letter in ("a", "b", "c", "d"):
         ratio = row.get(f"side_{letter}_load_ratio")

@@ -27,9 +27,17 @@ class TestOverallPass:
         s = compute_status(_row(uf_max=1.05))
         assert s["overall_pass"] is False
 
-    def test_slab_uf_at_limit_passes(self):
-        s = compute_status(_row(uf_max=1.0))
+    def test_slab_uf_below_limit_passes(self):
+        """uf_max in (1.0, 1.001) passes — MACS+ verdict is uf < 1.001."""
+        s = compute_status(_row(uf_max=1.0005))
         assert s["overall_pass"] is True
+
+    def test_slab_uf_at_or_above_limit_fails(self):
+        """uf_max >= 1.001 fails — MACS+ uses a strict < 1.001 comparison."""
+        s = compute_status(_row(uf_max=1.001))
+        assert s["overall_pass"] is False
+        s = compute_status(_row(uf_max=1.5))
+        assert s["overall_pass"] is False
 
     def test_side_a_load_ratio_fails(self):
         s = compute_status(_row(side_a_load_ratio=1.4))
@@ -47,12 +55,13 @@ class TestOverallPass:
         s = compute_status(_row(side_d_load_ratio=1.5))
         assert s["overall_pass"] is False
 
-    def test_comp_failure_one_fails(self):
-        s = compute_status(_row(comp_failure=1))
-        assert s["overall_pass"] is False
+    def test_comp_failure_does_not_affect_verdict(self):
+        """comp_failure is a MACS+ failure-mode *label*, not a pass/fail gate.
 
-    def test_comp_failure_zero_passes(self):
-        s = compute_status(_row(comp_failure=0))
+        A run with comp_failure=1 but uf_max below the threshold still passes —
+        MACS+'s verdict (PrintP.js:388) never reads COMPFAILURE when UF passes.
+        """
+        s = compute_status(_row(comp_failure=1, uf_max=0.6))
         assert s["overall_pass"] is True
 
     def test_null_side_ratios_skipped(self):
@@ -80,10 +89,11 @@ class TestChecksList:
         names = [c["name"] for c in s["checks"]]
         assert "Slab UF" in names
 
-    def test_composite_check_present(self):
+    def test_composite_check_absent(self):
+        """MACS+ has no standalone composite-section pass/fail check."""
         s = compute_status(_row())
         names = [c["name"] for c in s["checks"]]
-        assert "Composite section" in names
+        assert "Composite section" not in names
 
     def test_all_four_sides_present_when_defined(self):
         s = compute_status(_row())

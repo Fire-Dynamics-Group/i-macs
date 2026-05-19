@@ -25,9 +25,7 @@ describe("CheckBreakdown", () => {
   it("renders dash for null/undefined check values", () => {
     render(
       <CheckBreakdown
-        checks={[
-          { name: "Composite section", value: null, limit: 0, pass: true },
-        ]}
+        checks={[{ name: "Slab UF", value: null, limit: 1.001, pass: true }]}
       />,
     );
     expect(screen.getByText("—")).toBeInTheDocument();
@@ -40,17 +38,6 @@ describe("CheckBreakdown", () => {
       />,
     );
     expect(screen.getByText(/≤\s*1\.00/)).toBeInTheDocument();
-  });
-
-  it("formats the composite-section limit as flag = 0 (not a number)", () => {
-    render(
-      <CheckBreakdown
-        checks={[
-          { name: "Composite section", value: 0, limit: 0, pass: true },
-        ]}
-      />,
-    );
-    expect(screen.getByText(/flag\s*=\s*0/)).toBeInTheDocument();
   });
 
   it("returns null when there are no checks", () => {
