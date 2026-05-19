@@ -140,15 +140,17 @@ _SYNC_PROVENANCE_TABLES_WITH_UUID = ("runs", "custom_sections", "custom_decks", 
 _SYNC_PROVENANCE_TABLES_NO_UUID = ("batches",)
 
 # Combined pass predicate — must mirror compute_status() in status.py.
-# A run passes only when the slab UF, MACS+'s composite-failure flag, and every
-# defined perimeter beam load ratio all stay within their limits. NULL side
-# ratios (sides that weren't analyzed) are treated as 0 so they don't block.
+# A run passes only when the slab UF stays strictly below MACS+'s 1.001
+# threshold (PrintP.js:388: `UF1Max < 1.001 ? 'strAdequate' : ...`) and every
+# defined perimeter beam load ratio stays within its limit. NULL side ratios
+# (sides that weren't analyzed) are treated as 0 so they don't block.
+# COMPFAILURE is a MACS+ failure-mode *label*, not a pass/fail gate, so it is
+# deliberately not part of this predicate.
 def _pass_where(table: str = "") -> str:
     p = f"{table}." if table else ""
     return (
         f"{p}error IS NULL "
-        f"AND {p}uf_max <= 1.0 "
-        f"AND COALESCE({p}comp_failure, 0) != 1 "
+        f"AND {p}uf_max < 1.001 "
         f"AND COALESCE({p}side_a_load_ratio, 0) <= 1.0 "
         f"AND COALESCE({p}side_b_load_ratio, 0) <= 1.0 "
         f"AND COALESCE({p}side_c_load_ratio, 0) <= 1.0 "

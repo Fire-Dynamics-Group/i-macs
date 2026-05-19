@@ -361,10 +361,33 @@ class TestGetStats:
         assert stats["pass_count"] == 0
         assert stats["fail_count"] == 1
 
-    def test_comp_failure_counts_as_fail(self, db):
-        """A run with comp_failure=1 is a FAIL even if uf_max <= 1.0."""
+    def test_comp_failure_does_not_count_as_fail(self, db):
+        """A run with comp_failure=1 but uf_max below the threshold is a PASS.
+
+        comp_failure is a MACS+ failure-mode *label*, not an independent
+        pass/fail gate — the verdict (PrintP.js:388) never reads COMPFAILURE
+        when UF passes. _pass_where() must mirror that.
+        """
         params = {"span1": 9.0, "uSecSize": "IPE_500", "method": "iso", "time_limit": 60}
         outputs = {"comp_failure": 1, "uf_max": 0.6, "time_series": []}
+        db.insert_run(params, outputs=outputs)
+        stats = db.get_stats()
+        assert stats["pass_count"] == 1
+        assert stats["fail_count"] == 0
+
+    def test_uf_below_strict_threshold_passes(self, db):
+        """uf_max in (1.0, 1.001) is a PASS — MACS+ verdict is uf < 1.001."""
+        params = {"span1": 9.0, "uSecSize": "IPE_500", "method": "iso", "time_limit": 60}
+        outputs = {"comp_failure": 0, "uf_max": 1.0005, "time_series": []}
+        db.insert_run(params, outputs=outputs)
+        stats = db.get_stats()
+        assert stats["pass_count"] == 1
+        assert stats["fail_count"] == 0
+
+    def test_uf_at_strict_threshold_fails(self, db):
+        """uf_max >= 1.001 is a FAIL — MACS+ uses a strict < 1.001 comparison."""
+        params = {"span1": 9.0, "uSecSize": "IPE_500", "method": "iso", "time_limit": 60}
+        outputs = {"comp_failure": 0, "uf_max": 1.001, "time_series": []}
         db.insert_run(params, outputs=outputs)
         stats = db.get_stats()
         assert stats["pass_count"] == 0
@@ -528,7 +551,11 @@ class TestBatches:
         assert b["error_count"] == 1
 
     def test_get_batches_pass_count_includes_beam_check(self, db):
-        """get_batches.pass_count must respect side load ratios + comp_failure, not just uf_max."""
+        """get_batches.pass_count must respect side load ratios, not just uf_max.
+
+        comp_failure does NOT gate the verdict — it's a MACS+ failure-mode
+        label — so a run with comp_failure=1 but uf_max below threshold passes.
+        """
         db.insert_batch("b2", mode="sweep", total_expected=3)
         # Slab passes but beam B is overloaded — should be FAIL
         db.insert_run(
@@ -537,7 +564,7 @@ class TestBatches:
             outputs={"comp_failure": 0, "uf_max": 0.5, "side_b_load_ratio": 1.3,
                      "time_series": []},
         )
-        # Slab passes, comp_failure flag set — should be FAIL
+        # Slab passes, comp_failure flag set — still a PASS (label, not a gate)
         db.insert_run(
             {"span1": 2.0, "uSecSize": "IPE_500", "method": "iso",
              "time_limit": 60, "_batch_id": "b2"},
@@ -551,7 +578,7 @@ class TestBatches:
         )
         batches = db.get_batches()
         b2 = next(b for b in batches if b["batch_id"] == "b2")
-        assert b2["pass_count"] == 1
+        assert b2["pass_count"] == 2
 
     def test_get_batch_runs(self, db):
         """get_batch_runs returns correct runs for a batch, ordered by id."""
