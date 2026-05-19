@@ -37,7 +37,7 @@ DEFAULTS = {
     "calc_slab_weight": "1",
     "lead_var_fac": 0.5, "othr_var_fac": 0.3,
     # Fire
-    "method": "iso", "time_limit": 60,
+    "method": "parametric", "time_limit": 60,
     "Lc": 27, "Bc": 18, "Hc": 3.6, "Hw": 1.8, "Lw": 30,
     "window_percent": 95, "qf": 511, "Bfac": 720,
     "combustion_factor": 0.8, "growth_rate": 1,

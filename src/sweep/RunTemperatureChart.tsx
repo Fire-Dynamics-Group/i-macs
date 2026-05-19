@@ -25,7 +25,7 @@ export function RunTemperatureChart({ rows, timeLimit }: Props) {
         xaxis: {
           title: { text: "Time (min)" },
           range: [0, xMax],
-          dtick: 5,
+          dtick: 20,
         },
         yaxis: { title: { text: "Temperature (°C)" } },
         showlegend: true,
@@ -44,5 +44,5 @@ export function RunTemperatureChart({ rows, timeLimit }: Props) {
   }, [rows, timeLimit]);
 
   if (rows.length === 0) return null;
-  return <div ref={ref} className="h-80 w-full" />;
+  return <div ref={ref} className="mx-auto aspect-square w-full max-w-xl" />;
 }

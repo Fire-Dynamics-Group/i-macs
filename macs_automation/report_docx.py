@@ -33,9 +33,8 @@ _CHART_RC = {
     "grid.color": _LIGHT_TEXT,
 }
 
-_MID_BLUE_20A = "#4798EA33"   # individual runs
-_MID_BLUE = "#4798EA"         # scatter pass dots
-_CORAL = "coral"              # average line / scatter fail dots
+_MID_BLUE = "#4798EA"         # individual runs (solid) / scatter pass dots
+_CORAL = "coral"              # scatter fail dots
 
 
 def _register_font():
@@ -87,13 +86,13 @@ def _render_timeseries_chart(
             data.sort()
             times = [d[0] for d in data]
             values = [d[1] for d in data]
-            ax.plot(times, values, color=_MID_BLUE_20A)
+            ax.plot(times, values, color=_MID_BLUE)
         # Add legend entry via last run
         if by_run:
             last_data = list(by_run.values())[-1]
             ax.plot(
                 [d[0] for d in last_data], [d[1] for d in last_data],
-                color=_MID_BLUE_20A, label="Recorded Temperature",
+                color=_MID_BLUE, label="Recorded Temperature",
             )
 
         # Compute and plot average
@@ -109,8 +108,8 @@ def _render_timeseries_chart(
                 vals = [dict(data).get(t) for data in by_run.values()]
                 vals = [v for v in vals if v is not None]
                 avg_values.append(sum(vals) / len(vals) if vals else 0)
-            ax.plot(sorted_times, avg_values, color=_CORAL, linewidth=2,
-                    label="Average Value")
+            ax.plot(sorted_times, avg_values, color="black", linewidth=2,
+                    linestyle=":", label="Average Value")
 
         if hline_band is not None:
             lo, hi = hline_band

@@ -26,7 +26,7 @@ export function RunCapacityDeflectionChart({ rows, factoredHot, timeLimit }: Pro
         xaxis: {
           title: { text: "Time (min)" },
           range: [0, xMax],
-          dtick: 5,
+          dtick: 20,
         },
         yaxis: { title: { text: "Bending capacity (kN/m²)" } },
         yaxis2: {
@@ -50,5 +50,5 @@ export function RunCapacityDeflectionChart({ rows, factoredHot, timeLimit }: Pro
   }, [rows, factoredHot, timeLimit]);
 
   if (rows.length === 0) return null;
-  return <div ref={ref} className="h-80 w-full" />;
+  return <div ref={ref} className="mx-auto aspect-square w-full max-w-xl" />;
 }

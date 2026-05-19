@@ -197,7 +197,7 @@ export default function ConfigPage() {
   const { register, handleSubmit, control, watch, reset, formState } =
     useForm<FormValues>({
       defaultValues: {
-        method: "iso",
+        method: "parametric",
         time_limit: 60,
       },
     });
@@ -255,7 +255,7 @@ export default function ConfigPage() {
       othr_var_act: Number(d.othr_var_act ?? 0.0),
       lead_var_fac: Number(d.lead_var_fac ?? 0.5),
       othr_var_fac: Number(d.othr_var_fac ?? 0.3),
-      method: ((d.method as string) ?? "iso") as "iso" | "parametric",
+      method: ((d.method as string) ?? "parametric") as "iso" | "parametric",
       time_limit: Number(d.time_limit ?? 60),
       qf: Number(d.qf ?? 511),
       window_percent: Number(d.window_percent ?? 95),

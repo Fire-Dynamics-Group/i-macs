@@ -59,3 +59,7 @@ tmp_logs_32/
 test-results/
 playwright-report/
 playwright/.cache/
+
+# Claude Code runtime artefacts (agent worktrees, scheduler lock)
+.claude/worktrees/
+.claude/scheduled_tasks.lock

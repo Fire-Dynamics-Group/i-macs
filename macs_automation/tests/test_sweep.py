@@ -12,6 +12,12 @@ from macs_automation.sweep import (
 )
 
 
+class TestDefaults:
+    def test_default_method_is_parametric(self):
+        """The fire analysis method defaults to parametric."""
+        assert DEFAULTS["method"] == "parametric"
+
+
 class TestGenerateCombinations:
     def test_no_sweep_returns_defaults(self):
         config = {"analysis_method": "iso"}

@@ -191,7 +191,7 @@ class TestRunEndpoints:
         sent = mock_run.call_args[0][0]
         # Defaults from sweep.DEFAULTS made it through.
         assert sent["span1"] == 9.0
-        assert sent["method"] == "iso"
+        assert sent["method"] == "parametric"
         assert sent["fck"] == 25
         assert sent["uSecSize"] == "IPE_500"
 
