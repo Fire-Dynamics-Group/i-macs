@@ -49,7 +49,7 @@ export interface BuiltDistribution {
 // Brand palette — keep in step with report_docx._render_timeseries_chart so
 // the in-browser and DOCX charts stay visually consistent.
 const SPAGHETTI_COLOR = "#4798EA"; // mid blue, solid — individual runs
-const AVERAGE_COLOR = "#000000"; // black — average curve (dotted)
+const AVERAGE_COLOR = "coral"; // orange — average curve (matches MACS+ #26)
 const FACTORED_COLOR = "#DC2626"; // crimson — factored load
 const FACTORED_BAND_FILL = "rgba(220, 38, 38, 0.15)";
 
@@ -92,7 +92,7 @@ export function buildDistributionTraces(
       mode: "lines",
       type: "scatter",
       name: "Average Value",
-      line: { color: AVERAGE_COLOR, width: 2, dash: "dot" },
+      line: { color: AVERAGE_COLOR, width: 2 },
     });
   }
 

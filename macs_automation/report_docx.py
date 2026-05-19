@@ -34,7 +34,7 @@ _CHART_RC = {
 }
 
 _MID_BLUE = "#4798EA"         # individual runs (solid) / scatter pass dots
-_CORAL = "coral"              # scatter fail dots
+_CORAL = "coral"              # average line / scatter fail dots
 
 
 def _register_font():
@@ -108,8 +108,8 @@ def _render_timeseries_chart(
                 vals = [dict(data).get(t) for data in by_run.values()]
                 vals = [v for v in vals if v is not None]
                 avg_values.append(sum(vals) / len(vals) if vals else 0)
-            ax.plot(sorted_times, avg_values, color="black", linewidth=2,
-                    linestyle=":", label="Average Value")
+            ax.plot(sorted_times, avg_values, color=_CORAL, linewidth=2,
+                    label="Average Value")
 
         if hline_band is not None:
             lo, hi = hline_band
