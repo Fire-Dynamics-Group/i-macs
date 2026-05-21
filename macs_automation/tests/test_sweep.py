@@ -36,26 +36,6 @@ class TestGenerateCombinations:
         spans = [c["span1"] for c in combos]
         assert spans == [6, 9, 12]
 
-    def test_two_param_sweep(self):
-        config = {
-            "analysis_method": "iso",
-            "sweep": {"span1": [6, 9], "span2": [6, 9]},
-        }
-        combos = generate_combinations(config)
-        assert len(combos) == 4  # 2 x 2
-
-    def test_three_param_sweep(self):
-        config = {
-            "analysis_method": "iso",
-            "sweep": {
-                "span1": [6, 9, 12],
-                "slab_depth": [130, 150],
-                "fck": [25, 30],
-            },
-        }
-        combos = generate_combinations(config)
-        assert len(combos) == 12  # 3 x 2 x 2
-
     def test_fixed_overrides(self):
         config = {
             "analysis_method": "iso",
@@ -106,21 +86,6 @@ class TestGenerateCombinations:
         config = {"analysis_method": "parametric"}
         combos = generate_combinations(config)
         assert combos[0]["method"] == "parametric"
-
-    def test_large_sweep(self):
-        config = {
-            "analysis_method": "iso",
-            "sweep": {
-                "span1": [6, 9, 12],
-                "span2": [6, 9, 12],
-                "slab_depth": [130, 150, 180],
-                "fck": [25, 30, 40],
-                "u_sec_size": ["IPE_300", "IPE_400", "IPE_500"],
-                "time_limit": [60, 90, 120],
-            },
-        }
-        combos = generate_combinations(config)
-        assert len(combos) == 3 * 3 * 3 * 3 * 3 * 3  # 729
 
     def test_defaults_populated(self):
         config = {"analysis_method": "iso"}
@@ -184,22 +149,10 @@ class TestLoadConfig:
 
 
 class TestSamplingDispatch:
-    def test_grid_mode_default(self):
-        """Default (no sampling key) uses grid mode."""
+    def test_paired_is_default(self):
+        """Default (no sampling key) uses paired mode."""
         config = {
             "analysis_method": "iso",
-            "sweep": {"span1": [6, 9]},
-        }
-        combos = generate_combinations(config)
-        assert len(combos) == 2
-        # Grid mode: no _sample_index
-        assert "_sample_index" not in combos[0]
-
-    def test_grid_mode_explicit(self):
-        """Explicit sampling: 'grid' uses grid mode."""
-        config = {
-            "analysis_method": "iso",
-            "sampling": "grid",
             "sweep": {"span1": [6, 9]},
         }
         combos = generate_combinations(config)
@@ -226,23 +179,6 @@ class TestSamplingDispatch:
 class TestSweepWithFireParams:
     """Verify sweep handles fire/loading params (not just geometry)."""
 
-    def test_sweep_qf_and_window_percent(self):
-        config = {
-            "analysis_method": "parametric",
-            "sweep": {
-                "qf": [300, 500, 700],
-                "window_percent": [50, 80],
-            },
-            "fixed": {"span1": 9, "span2": 9},
-        }
-        combos = generate_combinations(config)
-        assert len(combos) == 6  # 3 x 2
-        qf_values = sorted(set(c["qf"] for c in combos))
-        assert qf_values == [300, 500, 700]
-        wp_values = sorted(set(c["window_percent"] for c in combos))
-        assert wp_values == [50, 80]
-        assert all(c["span1"] == 9 for c in combos)
-
     def test_sweep_combustion_factor(self):
         config = {
             "analysis_method": "parametric",
@@ -255,15 +191,83 @@ class TestSweepWithFireParams:
         cf_values = [c["combustion_factor"] for c in combos]
         assert cf_values == [0.6, 0.8, 1.0]
 
-    def test_sweep_loading_params(self):
+
+class TestPairedMode:
+    """Paired mode is the default — sweep arrays zip row-wise."""
+
+    def test_zips_two_arrays(self):
         config = {
-            "analysis_method": "iso",
+            "analysis_method": "parametric",
             "sweep": {
-                "lead_var_act": [3.0, 5.0, 7.5],
-                "cold_perm": [0.5, 1.2],
+                "qf": [300, 500, 700],
+                "window_percent": [50, 80, 95],
             },
         }
         combos = generate_combinations(config)
-        assert len(combos) == 6  # 3 x 2
-        lva_values = sorted(set(c["lead_var_act"] for c in combos))
-        assert lva_values == [3.0, 5.0, 7.5]
+        assert len(combos) == 3
+        assert [c["qf"] for c in combos] == [300, 500, 700]
+        assert [c["window_percent"] for c in combos] == [50, 80, 95]
+
+    def test_explicit_sampling_key(self):
+        config = {
+            "analysis_method": "iso",
+            "sampling": "paired",
+            "sweep": {"qf": [300, 500]},
+        }
+        combos = generate_combinations(config)
+        assert len(combos) == 2
+
+    def test_rejects_unequal_lengths(self):
+        config = {
+            "analysis_method": "parametric",
+            "sweep": {
+                "qf": [300, 500, 700],
+                "window_percent": [50, 80],
+            },
+        }
+        with pytest.raises(ValueError) as exc:
+            generate_combinations(config)
+        msg = str(exc.value)
+        assert "qf" in msg
+        assert "window_percent" in msg
+        assert "3" in msg
+        assert "2" in msg
+
+    def test_with_fixed(self):
+        config = {
+            "analysis_method": "iso",
+            "sweep": {"qf": [300, 500]},
+            "fixed": {"span1": 7.3, "span2": 7.48},
+        }
+        combos = generate_combinations(config)
+        assert len(combos) == 2
+        for c in combos:
+            assert c["span1"] == 7.3
+            assert c["span2"] == 7.48
+
+    def test_three_params(self):
+        config = {
+            "analysis_method": "parametric",
+            "sweep": {
+                "qf": [100, 200, 300, 400],
+                "window_percent": [10, 20, 30, 40],
+                "Bfac": [500, 700, 900, 1100],
+            },
+        }
+        combos = generate_combinations(config)
+        assert len(combos) == 4
+        assert combos[0]["qf"] == 100
+        assert combos[0]["window_percent"] == 10
+        assert combos[0]["Bfac"] == 500
+        assert combos[3]["qf"] == 400
+        assert combos[3]["Bfac"] == 1100
+
+    def test_single_value_per_param(self):
+        config = {
+            "analysis_method": "iso",
+            "sweep": {"qf": [500], "window_percent": [80]},
+        }
+        combos = generate_combinations(config)
+        assert len(combos) == 1
+        assert combos[0]["qf"] == 500
+        assert combos[0]["window_percent"] == 80

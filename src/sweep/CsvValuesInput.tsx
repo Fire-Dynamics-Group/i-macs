@@ -1,9 +1,33 @@
 import { useId, useState } from "react";
 
-import { parseCsvText } from "./parseCsvText";
-
 interface Props {
   onChange: (values: number[] | null) => void;
+}
+
+/**
+ * Parse a single-column numeric CSV. One value per line, no header, no commas
+ * inside any row. A row with a comma (multi-column) or a non-numeric token is
+ * rejected with a `Row N: ...` error so the user can locate the offender.
+ * Empty lines are skipped.
+ */
+function parseSingleColumnCsv(text: string): number[] {
+  const lines = text.split(/\r?\n/);
+  const out: number[] = [];
+  let rowNumber = 0;
+  for (const raw of lines) {
+    const trimmed = raw.trim();
+    if (trimmed === "") continue;
+    rowNumber++;
+    if (trimmed.includes(",")) {
+      throw new Error(`Row ${rowNumber}: expected one numeric value, got "${trimmed}"`);
+    }
+    const n = Number(trimmed);
+    if (!Number.isFinite(n)) {
+      throw new Error(`Row ${rowNumber}: expected one numeric value, got "${trimmed}"`);
+    }
+    out.push(n);
+  }
+  return out;
 }
 
 export function CsvValuesInput({ onChange }: Props) {
@@ -21,7 +45,13 @@ export function CsvValuesInput({ onChange }: Props) {
     }
     const text = await file.text();
     try {
-      const values = parseCsvText(text);
+      const values = parseSingleColumnCsv(text);
+      if (values.length === 0) {
+        setSummary(null);
+        setErrorMsg("CSV is empty");
+        onChange(null);
+        return;
+      }
       const min = Math.min(...values);
       const max = Math.max(...values);
       setSummary(`${values.length} values · ${min}–${max}`);

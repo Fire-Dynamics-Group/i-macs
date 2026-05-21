@@ -105,8 +105,8 @@ test.describe("Sweep config + batch dashboard", () => {
     await page.getByRole("button", { name: "Sweep", exact: true }).click();
     await page.getByRole("checkbox", { name: /Fire load qf/i }).check();
 
-    // Upload a small CSV.
-    const csv = "10, 20, 30, 40, 95";
+    // Upload a single-column CSV (one value per row).
+    const csv = "10\n20\n30\n40\n95";
     await page
       .getByLabel(/CSV file/i)
       .setInputFiles({ name: "qf.csv", mimeType: "text/csv", buffer: Buffer.from(csv) });

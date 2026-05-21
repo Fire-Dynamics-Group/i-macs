@@ -144,6 +144,9 @@ export interface BatchSummary {
   batch_id: string;
   created_at: string | null;
   mode: string | null;
+  /** Sampling mode from the stored config: "paired" | "lhs" | null.
+   *  null = historical grid sweep (predates paired-mode); Rerun is disabled. */
+  sampling?: string | null;
   total_expected: number;
   run_count: number;
   pass_count: number;

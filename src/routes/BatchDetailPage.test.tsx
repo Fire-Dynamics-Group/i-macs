@@ -46,10 +46,23 @@ function jsonResponse(body: unknown, status = 200): Response {
   });
 }
 
-const COMPLETE_BATCH = {
+const COMPLETE_BATCH: {
+  batch_id: string;
+  created_at: string;
+  mode: string;
+  sampling: string | null;
+  total_expected: number;
+  run_count: number;
+  pass_count: number;
+  fail_count: number;
+  error_count: number;
+  varying_params: Record<string, unknown>;
+  fixed_params: Record<string, unknown>;
+} = {
   batch_id: "BATCH123",
   created_at: "2026-04-01T12:00:00+00:00",
   mode: "sweep",
+  sampling: "paired",
   total_expected: 2,
   run_count: 2,
   pass_count: 2,
@@ -59,6 +72,7 @@ const COMPLETE_BATCH = {
   fixed_params: { span1: 9 },
 };
 const IN_FLIGHT_BATCH = { ...COMPLETE_BATCH, run_count: 1, pass_count: 1 };
+const HISTORICAL_GRID_BATCH = { ...COMPLETE_BATCH, sampling: null };
 
 const TWO_RUNS = [
   { id: 1, qf: 400, uf_max: 0.4, error: null, overall_pass: true, checks: [] },
@@ -162,5 +176,16 @@ describe("BatchProgressPage — analytical view", () => {
     });
     // Live progress view's heading is still present.
     expect(screen.getByRole("heading", { name: /batch BATCH123/i })).toBeInTheDocument();
+  });
+
+  it("disables Rerun batch on historical grid batches (no sampling: paired)", async () => {
+    mockResponses({ batch: HISTORICAL_GRID_BATCH, runs: TWO_RUNS });
+    renderPage();
+    expect(await screen.findByRole("link", { name: /download report/i })).toBeInTheDocument();
+    // Rerun is a non-link span with a tooltip, not a clickable Link
+    expect(screen.queryByRole("link", { name: /rerun batch/i })).toBeNull();
+    const rerun = screen.getByText(/rerun batch/i);
+    expect(rerun.tagName).toBe("SPAN");
+    expect(rerun).toHaveAttribute("title", expect.stringMatching(/grid-mode/i));
   });
 });

@@ -285,6 +285,55 @@ class TestSweepLHS:
         assert all(c["span1"] == 9 for c in combinations)
 
 
+class TestSweepRunCap:
+    """The 30k server-side hard cap (Q5)."""
+
+    @pytest.fixture(autouse=True)
+    def reset_sweep_state(self):
+        with _sweep_lock:
+            _sweep_state["active"] = False
+        yield
+        with _sweep_lock:
+            _sweep_state["active"] = False
+
+    def test_rejects_over_cap(self, client):
+        """POST /api/sweeps with > 30000 paired rows returns 400."""
+        payload = {
+            "analysis_method": "iso",
+            "sweep": {"qf": list(range(30001))},
+        }
+        resp = client.post("/api/sweeps", json=payload)
+        assert resp.status_code == 400
+        msg = resp.json().get("error", "")
+        assert "30000" in msg
+        assert "30001" in msg
+
+    def test_allows_at_cap(self, client):
+        """POST /api/sweeps with exactly 30000 paired rows is accepted."""
+        payload = {
+            "analysis_method": "iso",
+            "sweep": {"qf": list(range(30000))},
+        }
+        with patch("macs_automation.app._run_sweep_background"):
+            resp = client.post("/api/sweeps", json=payload)
+            assert resp.status_code == 200
+
+    def test_rejects_unequal_paired_lengths(self, client):
+        """POST /api/sweeps with unequal paired arrays returns 400."""
+        payload = {
+            "analysis_method": "parametric",
+            "sweep": {
+                "qf": [300, 500, 700],
+                "window_percent": [50, 80],
+            },
+        }
+        resp = client.post("/api/sweeps", json=payload)
+        assert resp.status_code == 400
+        msg = resp.json().get("error", "")
+        assert "qf" in msg
+        assert "window_percent" in msg
+
+
 class TestSweepStatus:
     def test_sweep_status_idle(self, client):
         with _sweep_lock:
@@ -719,12 +768,12 @@ class TestSweepWithArbitraryParams:
         assert all(c["span2"] == 9 for c in combinations)
 
     def test_sweep_with_fire_params(self, client):
-        """Sweep submission with fire parameters (qf, window_percent)."""
+        """Paired sweep with fire parameters (qf, window_percent) — row-aligned."""
         payload = {
             "analysis_method": "parametric",
             "sweep": {
                 "qf": [300, 500, 700],
-                "window_percent": [50, 80],
+                "window_percent": [50, 80, 95],
             },
             "fixed": {
                 "span1": 9, "span2": 9, "fck": 25, "slab_depth": 130,
@@ -748,9 +797,9 @@ class TestSweepWithArbitraryParams:
                 resp = client.post("/api/sweeps", json=payload)
                 assert resp.status_code == 200
 
-        assert len(combinations) == 6  # 3 x 2
-        qf_values = sorted(set(c["qf"] for c in combinations))
-        assert qf_values == [300, 500, 700]
+        assert len(combinations) == 3  # paired zip
+        assert [c["qf"] for c in combinations] == [300, 500, 700]
+        assert [c["window_percent"] for c in combinations] == [50, 80, 95]
 
     def test_sweep_with_combustion_factor(self, client):
         """Sweep with combustion_factor."""

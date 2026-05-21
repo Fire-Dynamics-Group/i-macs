@@ -122,4 +122,69 @@ describe("SweepConfigSection", () => {
     const lastCall = calls[calls.length - 1]?.[0];
     expect(lastCall).toEqual({ qf: { range: { min: 100, max: 500, step: 100 } } });
   });
+
+  describe("paired-mode validation UI", () => {
+    it("shows the parsed count under the comma-list input", () => {
+      render(
+        <SweepConfigSection
+          varying={{ qf: { list: [400, 500, 600] } }}
+          onChange={() => {}}
+          varyableParams={VARYABLE}
+        />,
+      );
+      // Count appears under the qf param's list input
+      expect(screen.getByText(/3 values/i)).toBeInTheDocument();
+    });
+
+    it("shows the range count under min/max/step", () => {
+      render(
+        <SweepConfigSection
+          varying={{ qf: { range: { min: 100, max: 500, step: 100 } } }}
+          onChange={() => {}}
+          varyableParams={VARYABLE}
+        />,
+      );
+      // 100, 200, 300, 400, 500 = 5 values
+      expect(screen.getByText(/5 values/i)).toBeInTheDocument();
+    });
+
+    it("shows a (needs N values) hint on a second ticked param with no values", () => {
+      render(
+        <SweepConfigSection
+          varying={{
+            qf: { list: [300, 500, 700] },
+            window_percent: {},
+          }}
+          onChange={() => {}}
+          varyableParams={VARYABLE}
+        />,
+      );
+      expect(screen.getByText(/needs 3 values/i)).toBeInTheDocument();
+    });
+
+    it("flags a length mismatch on a second ticked param", () => {
+      render(
+        <SweepConfigSection
+          varying={{
+            qf: { list: [300, 500, 700] },
+            window_percent: { list: [50, 80] },
+          }}
+          onChange={() => {}}
+          varyableParams={VARYABLE}
+        />,
+      );
+      expect(screen.getByText(/needs 3 values \(got 2\)/i)).toBeInTheDocument();
+    });
+
+    it("flags a ticked-but-empty param with no values added yet (single ticked param)", () => {
+      render(
+        <SweepConfigSection
+          varying={{ qf: {} }}
+          onChange={() => {}}
+          varyableParams={VARYABLE}
+        />,
+      );
+      expect(screen.getByText(/add values/i)).toBeInTheDocument();
+    });
+  });
 });

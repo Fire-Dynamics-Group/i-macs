@@ -707,12 +707,38 @@ def api_submit_run(request_body: dict):
     }
 
 
+MAX_SWEEP_RUNS = 30000
+
+
+def _estimate_run_count(config: dict) -> int:
+    """Cheap projected-run-count estimate without building the combinations list.
+
+    Used for the 30k hard-cap check before generate_combinations() allocates
+    anything. Paired mode: max array length (unequal-length is rejected later
+    by generate_combinations with a 400). LHS: n_samples. No sweep: 1.
+    """
+    if config.get("sampling") == "lhs":
+        return int(config.get("n_samples", 0))
+    sweep = config.get("sweep") or {}
+    if not sweep:
+        return 1
+    lengths = [len(v) if isinstance(v, list) else 1 for v in sweep.values()]
+    return max(lengths) if lengths else 1
+
+
 @app.post("/api/sweeps")
 def api_submit_sweep(request_body: dict):
     """Submit a sweep config (starts background job)."""
     with _sweep_lock:
         if _sweep_state["active"]:
             return JSONResponse({"error": "A sweep is already running"}, status_code=409)
+
+    projected = _estimate_run_count(request_body)
+    if projected > MAX_SWEEP_RUNS:
+        return JSONResponse(
+            {"error": f"Too many runs (got {projected}, max {MAX_SWEEP_RUNS})"},
+            status_code=400,
+        )
 
     all_sections = _get_all_sections()
     all_decks = _get_all_decks()
@@ -721,8 +747,12 @@ def api_submit_sweep(request_body: dict):
     # Detect mode from request
     mode = "lhs" if request_body.get("sampling") == "lhs" else "sweep"
 
-    # Dispatch to generate_combinations() which handles both grid sweep and LHS
-    combinations = generate_combinations(request_body)
+    # Dispatch to generate_combinations() which handles paired (default) and LHS.
+    # Unequal-length paired arrays surface as ValueError → 400.
+    try:
+        combinations = generate_combinations(request_body)
+    except ValueError as e:
+        return JSONResponse({"error": str(e)}, status_code=400)
 
     # Generate batch_id and record batch metadata, persisting the full
     # sweep spec so the dashboard can derive varying/fixed params and the
@@ -819,6 +849,7 @@ def api_list_batches(limit: int = 20, offset: int = 0):
             "batch_id": row["batch_id"],
             "created_at": row["created_at"],
             "mode": row["mode"],
+            "sampling": _config_sampling(row.get("config_json")),
             "total_expected": row["total_expected"],
             "run_count": row["run_count"],
             "pass_count": row["pass_count"],
@@ -828,6 +859,22 @@ def api_list_batches(limit: int = 20, offset: int = 0):
             "fixed_params": derived["fixed"],
         })
     return {"batches": batches, "total": total}
+
+
+def _config_sampling(config_json: Optional[str]) -> Optional[str]:
+    """Return the sampling mode from a stored batch's config_json.
+
+    Returns ``"paired"`` / ``"lhs"`` for new-style batches, or ``None`` for
+    historical grid batches (#36). The dashboard uses this to gate the
+    *Rerun batch* button — grid batches predate paired-mode and can't be
+    re-run without a manual reconfigure.
+    """
+    if not config_json:
+        return None
+    try:
+        return json.loads(config_json).get("sampling")
+    except (json.JSONDecodeError, AttributeError):
+        return None
 
 
 @app.get("/api/batches/{batch_id}")
@@ -849,6 +896,7 @@ def api_get_batch(batch_id: str):
         "batch_id": row["batch_id"],
         "created_at": row["created_at"],
         "mode": row["mode"],
+        "sampling": _config_sampling(row.get("config_json")),
         "total_expected": row["total_expected"],
         "run_count": row["run_count"],
         "pass_count": row["pass_count"],
