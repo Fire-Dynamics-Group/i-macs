@@ -2,7 +2,11 @@ import { useId, useState } from "react";
 
 import { CsvValuesInput } from "./CsvValuesInput";
 import { parseCsvText } from "./parseCsvText";
-import type { ValueSource } from "./buildSweepPayload";
+import {
+  pairedValidation,
+  rangeLength,
+  type ValueSource,
+} from "./buildSweepPayload";
 
 export interface VaryableParam {
   name: string;
@@ -29,6 +33,7 @@ export function SweepConfigSection({ varying, onChange, varyableParams }: Props)
   }
 
   const enabled = Object.keys(varying);
+  const { errors } = pairedValidation(varying);
 
   return (
     <section className="rounded-md border border-blue-200 bg-blue-50/40 p-4">
@@ -55,6 +60,7 @@ export function SweepConfigSection({ varying, onChange, varyableParams }: Props)
                 key={name}
                 param={param}
                 source={varying[name]}
+                error={errors[name]}
                 onChange={(src) => updateSource(name, src)}
               />
             );
@@ -68,10 +74,11 @@ export function SweepConfigSection({ varying, onChange, varyableParams }: Props)
 interface EntryProps {
   param: VaryableParam;
   source: ValueSource;
+  error?: string;
   onChange: (next: ValueSource) => void;
 }
 
-function ParamValueEntry({ param, source, onChange }: EntryProps) {
+function ParamValueEntry({ param, source, error, onChange }: EntryProps) {
   const minId = useId();
   const maxId = useId();
   const stepId = useId();
@@ -114,8 +121,22 @@ function ParamValueEntry({ param, source, onChange }: EntryProps) {
     onChange({ ...source, csv: values ?? undefined });
   }
 
+  const listCount = (() => {
+    try {
+      return parseCsvText(listText).length;
+    } catch {
+      return 0;
+    }
+  })();
+  const rangeCount = source.range ? rangeLength(source.range) : 0;
+  const csvCount = source.csv?.length ?? 0;
+
+  const cardClass = error
+    ? "rounded border border-rose-400 bg-white p-3"
+    : "rounded border border-blue-200 bg-white p-3";
+
   return (
-    <div className="rounded border border-blue-200 bg-white p-3">
+    <div className={cardClass}>
       <h4 className="mb-2 text-sm font-semibold text-slate-700">{param.label}</h4>
       <label className="block text-xs">
         <span className="text-slate-600">Comma-separated list</span>
@@ -126,6 +147,9 @@ function ParamValueEntry({ param, source, onChange }: EntryProps) {
           onChange={(e) => commitList(e.target.value)}
           className="mt-1 w-full rounded border border-slate-300 px-2 py-1 text-sm"
         />
+        {listCount > 0 && (
+          <p className="mt-0.5 text-[0.7rem] text-emerald-700">{listCount} values</p>
+        )}
       </label>
       <div className="mt-2 grid grid-cols-3 gap-2 text-xs">
         <label htmlFor={minId} className="block">
@@ -162,10 +186,19 @@ function ParamValueEntry({ param, source, onChange }: EntryProps) {
           />
         </label>
       </div>
+      {rangeCount > 0 && (
+        <p className="mt-0.5 text-[0.7rem] text-emerald-700">{rangeCount} values</p>
+      )}
       {!param.isInteger && (
         <div className="mt-2">
           <CsvValuesInput onChange={commitCsv} />
+          {csvCount > 0 && (
+            <p className="mt-0.5 text-[0.7rem] text-emerald-700">{csvCount} values</p>
+          )}
         </div>
+      )}
+      {error && (
+        <p className="mt-2 text-xs font-medium text-rose-700">{error}</p>
       )}
     </div>
   );

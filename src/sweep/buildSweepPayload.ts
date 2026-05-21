@@ -1,11 +1,12 @@
 /**
  * Translate sweep-mode form state into a /api/sweeps POST payload.
  *
- * Each varying parameter has up to three input sources — a CSV-loaded number
- * array, a parsed list (from the comma-separated text field), and a
- * min/max/step range. CSV wins, then list, then range. A varying entry whose
- * resolved value list is empty is omitted from the payload entirely (so a
- * half-filled "vary" chip doesn't accidentally pin a parameter to []).
+ * Paired mode is the default and only frontend-exposed sampling. Each varying
+ * parameter has up to three input sources — a CSV-loaded number array, a parsed
+ * list (from the comma-separated text field), and a min/max/step range. CSV
+ * wins, then list, then range. A varying entry whose resolved value list is
+ * empty is omitted from the payload entirely (so a half-filled "vary" chip
+ * doesn't accidentally pin a parameter to []).
  *
  * Pure function — no React imports, no fetch — so it can be tested in
  * isolation and reused by both the form submit handler and the e2e tests.
@@ -25,14 +26,17 @@ export interface SweepFormInput {
 
 export interface SweepRequestBody {
   analysis_method: "iso" | "parametric";
+  sampling: "paired";
   sweep: Record<string, number[]>;
   fixed: Record<string, unknown>;
 }
 
 export interface BuildSweepResult extends SweepRequestBody {
-  /** Cartesian product size — for the 10k-soft-cap dialog before submit.
-   *  Not sent to the backend; consumed by the form's submit handler. */
-  totalCombinations: number;
+  /** Paired-mode row count — the min of all resolved-value lengths (so a
+   *  length mismatch surfaces as a smaller-than-expected total; the
+   *  SweepConfigSection inline error catches the mismatch itself). Zero when
+   *  any varying entry has no usable values. Not sent to the backend. */
+  totalRuns: number;
 }
 
 export function buildSweepPayload(input: SweepFormInput): BuildSweepResult {
@@ -43,21 +47,20 @@ export function buildSweepPayload(input: SweepFormInput): BuildSweepResult {
       sweep[param] = values;
     }
   }
-  const totalCombinations = Object.values(sweep).reduce(
-    (acc, vals) => acc * vals.length,
-    Object.keys(sweep).length === 0 ? 0 : 1,
-  );
+  const lengths = Object.values(sweep).map((v) => v.length);
+  const totalRuns = lengths.length === 0 ? 0 : Math.min(...lengths);
   return {
     analysis_method: input.analysisMethod,
+    sampling: "paired",
     sweep,
     fixed: input.fixed,
-    totalCombinations,
+    totalRuns,
   };
 }
 
-/** Strip the test-only `totalCombinations` field before POST. */
+/** Strip the test-only `totalRuns` field before POST. */
 export function toRequestBody(result: BuildSweepResult): SweepRequestBody {
-  const { totalCombinations: _t, ...body } = result;
+  const { totalRuns: _t, ...body } = result;
   return body;
 }
 
@@ -66,6 +69,48 @@ function pickValues(source: ValueSource): number[] {
   if (source.list && source.list.length > 0) return source.list;
   if (source.range) return generateRange(source.range);
   return [];
+}
+
+/** Effective resolved length of a varying entry (CSV > list > range precedence). */
+export function resolvedLength(source: ValueSource): number {
+  return pickValues(source).length;
+}
+
+/** Length count from a range spec — exported so the UI can show "{N} values"
+ *  under the Min/Max/Step inputs without re-implementing the rounding logic. */
+export function rangeLength(range: { min: number; max: number; step: number }): number {
+  return generateRange(range).length;
+}
+
+/** Per-param validation for paired-mode. Anchor = first ticked param's
+ *  resolved length (insertion order). Errors map covers ticked-but-empty
+ *  and length-mismatch cases. */
+export function pairedValidation(
+  varying: Record<string, ValueSource>,
+): { errors: Record<string, string>; anchor: number | null } {
+  const lengths: Record<string, number> = {};
+  for (const [name, source] of Object.entries(varying)) {
+    lengths[name] = resolvedLength(source);
+  }
+  let anchor: number | null = null;
+  for (const n of Object.values(lengths)) {
+    if (n > 0) {
+      anchor = n;
+      break;
+    }
+  }
+  const errors: Record<string, string> = {};
+  for (const [name, n] of Object.entries(lengths)) {
+    if (n === 0) {
+      errors[name] =
+        anchor === null
+          ? "Add values (CSV, comma-list, or min/max/step)"
+          : `Needs ${anchor} values`;
+    } else if (anchor !== null && n !== anchor) {
+      errors[name] = `Needs ${anchor} values (got ${n})`;
+    }
+  }
+  return { errors, anchor };
 }
 
 function generateRange({

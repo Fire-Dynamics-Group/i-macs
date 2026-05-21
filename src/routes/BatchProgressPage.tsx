@@ -195,12 +195,21 @@ function AnalyticalView({ batch }: { batch: BatchSummary }) {
               Download report
             </span>
           )}
-          <Link
-            to={`/?from_batch=${encodeURIComponent(batch.batch_id)}`}
-            className="rounded-md bg-blue-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-blue-500"
-          >
-            Rerun batch
-          </Link>
+          {batch.sampling === "paired" || batch.sampling === "lhs" ? (
+            <Link
+              to={`/?from_batch=${encodeURIComponent(batch.batch_id)}`}
+              className="rounded-md bg-blue-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-blue-500"
+            >
+              Rerun batch
+            </Link>
+          ) : (
+            <span
+              title="Grid-mode sweep — rerun unsupported. Re-enter as paired."
+              className="cursor-not-allowed rounded-md bg-slate-200 px-3 py-1.5 text-sm font-medium text-slate-400"
+            >
+              Rerun batch
+            </span>
+          )}
         </div>
       </header>
 

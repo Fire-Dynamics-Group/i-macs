@@ -1,6 +1,18 @@
-"""Parameter sweep generator — reads YAML config and produces all combinations."""
+"""Parameter sweep generator — reads YAML config and produces all combinations.
 
-import itertools
+Two sampling modes are supported:
+
+* ``sampling: "paired"`` (default) — row-aligned zip across all sweep arrays.
+  All arrays must have equal length; unequal lengths raise ``ValueError``.
+  Used for Monte Carlo flows where the user has externally generated samples
+  (e.g. one CSV per parameter) and wants them combined row-wise.
+* ``sampling: "lhs"`` — Latin Hypercube Sampling from analytic distributions.
+  Dispatches to ``macs_automation.sampling.generate_lhs_samples``.
+
+The cartesian-product (``grid``) mode was removed in #36; see
+``docs/archive/sweep_grid_removed.md`` for the original code and rationale.
+"""
+
 from pathlib import Path
 from typing import Optional
 
@@ -162,25 +174,32 @@ def generate_combinations(config: dict) -> list[dict]:
     if "deck_id" in fixed:
         base["DeckId"] = fixed["deck_id"]
 
-    # Generate sweep combinations
+    # Generate sweep combinations (paired / row-aligned zip)
     sweep = config.get("sweep", {})
     if not sweep:
         return [base]
 
-    # Normalize keys and ensure all values are lists
     sweep_keys = []
     sweep_values = []
+    sweep_lengths: dict[str, int] = {}
     for key, values in sweep.items():
         internal_key = PARAM_ALIASES.get(key, key)
-        sweep_keys.append(internal_key)
         if not isinstance(values, list):
             values = [values]
+        sweep_keys.append(internal_key)
         sweep_values.append(values)
+        sweep_lengths[key] = len(values)
+
+    if len(set(sweep_lengths.values())) > 1:
+        details = ", ".join(f"{k}={n}" for k, n in sweep_lengths.items())
+        raise ValueError(
+            f"All paired sweep parameters must have equal length; got: {details}"
+        )
 
     combinations = []
-    for combo in itertools.product(*sweep_values):
+    for row in zip(*sweep_values):
         params = dict(base)
-        for key, val in zip(sweep_keys, combo):
+        for key, val in zip(sweep_keys, row):
             params[key] = val
         combinations.append(params)
 

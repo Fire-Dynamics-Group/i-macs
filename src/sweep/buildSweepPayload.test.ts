@@ -12,9 +12,10 @@ describe("buildSweepPayload", () => {
     });
     expect(payload).toEqual({
       analysis_method: "iso",
+      sampling: "paired",
       sweep: { qf: [400, 510, 720] },
       fixed: { span1: 9, span2: 9 },
-      totalCombinations: 3,
+      totalRuns: 3,
     });
   });
 
@@ -137,7 +138,7 @@ describe("buildSweepPayload", () => {
     ).toEqual({});
   });
 
-  it("computes the projected combination total across varying parameters", () => {
+  it("paired total is min of resolved lengths, not a cartesian product", () => {
     const payload = buildSweepPayload({
       analysisMethod: "iso",
       fixed: {},
@@ -146,10 +147,23 @@ describe("buildSweepPayload", () => {
         window_percent: { list: [50, 80] },
       },
     });
-    expect(payload.totalCombinations).toBe(6);
+    // paired iterates row-wise — min(3, 2) = 2, not 3 * 2 = 6
+    expect(payload.totalRuns).toBe(2);
   });
 
-  it("reports zero combinations when no varying entry has usable values", () => {
+  it("paired total equals N when both arrays are equal length", () => {
+    const payload = buildSweepPayload({
+      analysisMethod: "parametric",
+      fixed: {},
+      varying: {
+        qf: { list: [300, 500, 700] },
+        window_percent: { list: [50, 80, 95] },
+      },
+    });
+    expect(payload.totalRuns).toBe(3);
+  });
+
+  it("reports zero runs when no varying entry has usable values", () => {
     const payload = buildSweepPayload({
       analysisMethod: "iso",
       fixed: { span1: 9 },
@@ -157,6 +171,15 @@ describe("buildSweepPayload", () => {
         qf: { list: [] },
       },
     });
-    expect(payload.totalCombinations).toBe(0);
+    expect(payload.totalRuns).toBe(0);
+  });
+
+  it("includes sampling: 'paired' in the request body", () => {
+    const payload = buildSweepPayload({
+      analysisMethod: "iso",
+      fixed: {},
+      varying: { qf: { list: [1, 2, 3] } },
+    });
+    expect(payload.sampling).toBe("paired");
   });
 });

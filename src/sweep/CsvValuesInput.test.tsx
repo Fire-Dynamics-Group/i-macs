@@ -15,13 +15,13 @@ describe("CsvValuesInput", () => {
     expect(screen.queryByText(/values/i)).not.toBeInTheDocument();
   });
 
-  it("parses a numeric CSV and reports the count + min–max range", async () => {
+  it("parses a single-column CSV and reports the count + min–max range", async () => {
     const onChange = vi.fn();
     render(<CsvValuesInput onChange={onChange} />);
 
     const input = screen.getByLabelText(/csv/i) as HTMLInputElement;
     fireEvent.change(input, {
-      target: { files: [makeFile("10, 20, 30, 40, 95")] },
+      target: { files: [makeFile("10\n20\n30\n40\n95")] },
     });
 
     await waitFor(() => expect(onChange).toHaveBeenCalled());
@@ -37,11 +37,26 @@ describe("CsvValuesInput", () => {
 
     const input = screen.getByLabelText(/csv/i) as HTMLInputElement;
     fireEvent.change(input, {
-      target: { files: [makeFile("10, 20, oops, 40")] },
+      target: { files: [makeFile("10\n20\noops\n40")] },
     });
 
     await waitFor(() => expect(screen.getByText(/oops/)).toBeInTheDocument());
     // No values reported on parse failure.
+    expect(onChange).toHaveBeenLastCalledWith(null);
+  });
+
+  it("rejects multi-column rows (commas inside a row)", async () => {
+    const onChange = vi.fn();
+    render(<CsvValuesInput onChange={onChange} />);
+
+    const input = screen.getByLabelText(/csv/i) as HTMLInputElement;
+    fireEvent.change(input, {
+      target: { files: [makeFile("10\n20, 30\n40")] },
+    });
+
+    await waitFor(() =>
+      expect(screen.getByText(/row 2.*one numeric value/i)).toBeInTheDocument(),
+    );
     expect(onChange).toHaveBeenLastCalledWith(null);
   });
 
@@ -51,12 +66,12 @@ describe("CsvValuesInput", () => {
 
     const input = screen.getByLabelText(/csv/i) as HTMLInputElement;
     fireEvent.change(input, {
-      target: { files: [makeFile("1, 2, 3")] },
+      target: { files: [makeFile("1\n2\n3")] },
     });
     await waitFor(() => expect(screen.getByText(/3 values/i)).toBeInTheDocument());
 
     fireEvent.change(input, {
-      target: { files: [makeFile("1, oops")] },
+      target: { files: [makeFile("1\noops")] },
     });
     await waitFor(() => expect(screen.getByText(/oops/)).toBeInTheDocument());
     expect(screen.queryByText(/3 values/i)).not.toBeInTheDocument();

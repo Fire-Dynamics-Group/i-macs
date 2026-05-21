@@ -33,6 +33,7 @@ import { SweepConfigSection } from "../sweep/SweepConfigSection";
 import { VARYABLE_PARAMS } from "../sweep/varyableParams";
 import {
   buildSweepPayload,
+  pairedValidation,
   toRequestBody,
   type ValueSource,
 } from "../sweep/buildSweepPayload";
@@ -453,6 +454,12 @@ export default function ConfigPage() {
     onError: (err) => setSweepError(err.message),
   });
 
+  const pairedErrors = useMemo(() => {
+    if (mode !== "sweep") return {};
+    return pairedValidation(varying).errors;
+  }, [mode, varying]);
+  const pairedErrorCount = Object.keys(pairedErrors).length;
+
   const sweepPreview = useMemo(() => {
     if (mode !== "sweep") return null;
     return buildSweepPayload({
@@ -484,14 +491,20 @@ export default function ConfigPage() {
       varying,
     });
 
-    if (result.totalCombinations === 0) {
+    if (pairedErrorCount > 0) {
+      setSweepError(
+        `Fix ${pairedErrorCount} parameter${pairedErrorCount === 1 ? "" : "s"} with mismatched or empty values.`,
+      );
+      return;
+    }
+    if (result.totalRuns === 0) {
       setSweepError("Pick at least one parameter to vary and give it values.");
       return;
     }
     if (
-      result.totalCombinations > 10000 &&
+      result.totalRuns > 10000 &&
       !window.confirm(
-        `This sweep will run ${result.totalCombinations} calculations. Continue?`,
+        `This sweep will run ${result.totalRuns} calculations. Continue?`,
       )
     ) {
       return;
@@ -703,11 +716,10 @@ export default function ConfigPage() {
             />
             {sweepPreview && (
               <p className="text-xs text-slate-500">
-                Projected total:{" "}
+                Total runs:{" "}
                 <span className="font-semibold text-slate-700">
-                  {sweepPreview.totalCombinations}
-                </span>{" "}
-                calculation{sweepPreview.totalCombinations === 1 ? "" : "s"}
+                  {sweepPreview.totalRuns}
+                </span>
               </p>
             )}
           </>
@@ -864,7 +876,16 @@ export default function ConfigPage() {
           )}
           <button
             type="submit"
-            disabled={submit.isPending || sweepSubmit.isPending}
+            disabled={
+              submit.isPending ||
+              sweepSubmit.isPending ||
+              (mode === "sweep" && pairedErrorCount > 0)
+            }
+            title={
+              mode === "sweep" && pairedErrorCount > 0
+                ? `Fix ${pairedErrorCount} parameter${pairedErrorCount === 1 ? "" : "s"} with mismatched or empty values`
+                : undefined
+            }
             className="ml-auto rounded bg-blue-700 px-4 py-2 text-sm font-medium text-white hover:bg-blue-800 disabled:opacity-50"
           >
             {mode === "single"

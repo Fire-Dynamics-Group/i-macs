@@ -54,6 +54,7 @@ test.describe("Runs dashboard (slice 1)", () => {
       batch_id: batchId,
       created_at: "2026-04-01T12:00:00+00:00",
       mode: "sweep",
+      sampling: "paired",
       total_expected: 2,
       run_count: 2,
       pass_count: 2,

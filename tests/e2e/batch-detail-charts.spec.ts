@@ -16,6 +16,7 @@ const COMPLETE_SUMMARY = {
   batch_id: BATCH_ID,
   created_at: "2026-04-01T12:00:00+00:00",
   mode: "lhs",
+  sampling: "lhs",
   total_expected: 12,
   run_count: 12,
   pass_count: 10,
