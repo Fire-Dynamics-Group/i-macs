@@ -33,6 +33,7 @@ from macs_automation import macs_detect
 from macs_automation.blue_book_sections import get_blue_book_sections
 from macs_automation.frc_parser import parse_frc_string
 from macs_automation.status import compute_status
+from macs_automation.shear_check import flags_for_run
 from macs_automation.sse_broker import Broker
 from macs_automation.sweep import DEFAULTS, PARAM_ALIASES, BEAM_SIDE_MAP, resolve_deck, resolve_mesh, generate_combinations
 from macs_automation.sampling import FIRE_LOAD_PRESETS
@@ -905,6 +906,28 @@ def api_get_batch(batch_id: str):
         "varying_params": derived["varying"],
         "fixed_params": derived["fixed"],
     }
+
+
+@app.get("/api/batches/{batch_id}/shear-check")
+def api_batch_shear_check(batch_id: str):
+    """List runs in a batch whose degree of shear connection is below the
+    EN 1994-1-1 minimum, mirroring the MACS+ beam-check warning.
+
+    This is advisory only — like MACS+ itself, it does NOT affect the run's
+    pass/fail verdict (see status.compute_status). Inputs are read from the
+    stored run rows, so already-completed batches are covered with no re-run.
+    """
+    db = _get_db()
+    try:
+        runs = db.get_batch_runs(batch_id)
+    finally:
+        db.close()
+    sub_limit = [
+        {"run_id": r.get("id"), "flags": flags}
+        for r in runs
+        if (flags := flags_for_run(r))
+    ]
+    return {"batch_id": batch_id, "checked": len(runs), "sub_limit_runs": sub_limit}
 
 
 # ─── Distribution endpoint for batch detail page ─────────────────────────────

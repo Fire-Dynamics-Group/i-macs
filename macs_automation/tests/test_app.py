@@ -1496,3 +1496,72 @@ class TestComRunnerDispatch:
         result = json.loads(out_line)
         assert "error" in result
         assert "KeyError" in result["error"]
+
+
+def _beam_params(batch_id, ush_con=80.0):
+    """Minimal params for a run with all beams internal+composite at a given
+    unprotected shear connection. span1=9 -> EN minimum ~52%."""
+    p = {
+        "_batch_id": batch_id,
+        "span1": 9.0, "span2": 8.5,
+        "uSecSize": "IPE_500", "fy5": 355, "ush_con": ush_con,
+        "method": "iso", "time_limit": 60, "fck": 25, "slab_depth": 130,
+    }
+    for side, fy in (("A", "fy1"), ("B", "fy2"), ("C", "fy3"), ("D", "fy4")):
+        p[f"Side{side}SecSize"] = "IPE_500"
+        p[fy] = 355
+        p[f"Side{side}EdgeFlag"] = 0
+        p[f"Side{side}CompoFlag"] = 1
+        p[f"Side{side}sh_con"] = 80.0
+    return p
+
+
+def _beam_outputs(uf_max=0.5):
+    return {
+        "comp_failure": 0, "mb1_reqd": 100.0, "mb2_reqd": 200.0,
+        "factored_hot": 50.0, "uf_max": uf_max,
+        "max_temperature": 900.0, "max_deflection": 120.0,
+        "max_slab_cap": 500.0, "max_beam_cap": 300.0, "max_total_cap": 800.0,
+        "side_a_load_ratio": 0.3, "side_a_critical_temp": 650.0,
+        "side_b_load_ratio": 0.4, "side_b_critical_temp": 620.0,
+        "side_c_load_ratio": 0.35, "side_c_critical_temp": 640.0,
+        "side_d_load_ratio": 0.32, "side_d_critical_temp": 645.0,
+        "duration_ms": 150.0, "time_series": [],
+    }
+
+
+class TestShearCheckEndpoint:
+    def test_flags_sublimit_run(self, client, use_tmp_db):
+        from macs_automation.db import ResultsDB
+        db = ResultsDB(use_tmp_db)
+        db.insert_run(_beam_params("b1", ush_con=80.0), outputs=_beam_outputs())
+        db.insert_run(_beam_params("b1", ush_con=30.0), outputs=_beam_outputs())
+        db.close()
+
+        resp = client.get("/api/batches/b1/shear-check")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["batch_id"] == "b1"
+        assert data["checked"] == 2
+        assert len(data["sub_limit_runs"]) == 1
+        flag = data["sub_limit_runs"][0]["flags"][0]
+        assert flag["beam"] == "Unprotected"
+        assert flag["sh_con"] == 30.0
+        assert flag["eta_min_pct"] == pytest.approx(52.0)
+
+    def test_clean_batch_returns_empty(self, client, use_tmp_db):
+        from macs_automation.db import ResultsDB
+        db = ResultsDB(use_tmp_db)
+        db.insert_run(_beam_params("b2", ush_con=80.0), outputs=_beam_outputs())
+        db.close()
+
+        resp = client.get("/api/batches/b2/shear-check")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["checked"] == 1
+        assert data["sub_limit_runs"] == []
+
+    def test_unknown_batch_is_empty_not_error(self, client, use_tmp_db):
+        resp = client.get("/api/batches/nope/shear-check")
+        assert resp.status_code == 200
+        assert resp.json()["sub_limit_runs"] == []

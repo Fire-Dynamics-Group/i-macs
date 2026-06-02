@@ -11,8 +11,18 @@ let cachedBase: string | null = null;
 
 async function baseUrl(): Promise<string> {
   if (cachedBase !== null) return cachedBase;
-  const port = await invoke<number>("get_sidecar_port");
-  cachedBase = `http://127.0.0.1:${port}`;
+  // Browser dev (no Tauri runtime — e.g. viewing over a VS Code tunnel):
+  // talk to an explicit sidecar URL instead of the get_sidecar_port IPC.
+  // Unset in the packaged desktop app, so production still uses the IPC.
+  const envBase = (import.meta as unknown as {
+    env?: Record<string, string | undefined>;
+  }).env?.VITE_SIDECAR_URL;
+  if (envBase) {
+    cachedBase = envBase.replace(/\/+$/, "");
+  } else {
+    const port = await invoke<number>("get_sidecar_port");
+    cachedBase = `http://127.0.0.1:${port}`;
+  }
   return cachedBase;
 }
 
@@ -232,6 +242,30 @@ export function listRuns(opts: { batchId?: string } = {}): Promise<RunsListRespo
 export const getBatch = (batchId: string) =>
   getJson<BatchSummary>(`/api/batches/${encodeURIComponent(batchId)}`);
 
+/** One beam whose degree of shear connection is below the EN 1994-1-1 minimum. */
+export interface ShearFlag {
+  beam: string;
+  sh_con: number;
+  fy: number;
+  span: number;
+  eta_min_pct: number;
+}
+
+export interface ShearCheckResponse {
+  batch_id: string;
+  /** Number of runs inspected. */
+  checked: number;
+  sub_limit_runs: Array<{ run_id: number; flags: ShearFlag[] }>;
+}
+
+/** Runs in a batch whose degree of shear connection falls below the
+ *  EN 1994-1-1 minimum — mirrors the MACS+ beam-check warning. Advisory only:
+ *  it does not change the pass/fail verdict. */
+export const getShearCheck = (batchId: string) =>
+  getJson<ShearCheckResponse>(
+    `/api/batches/${encodeURIComponent(batchId)}/shear-check`,
+  );
+
 export interface DistributionResponse {
   /** [time_min, value] tuples; exact arithmetic mean across all successful runs. */
   average: Array<[number, number]>;
@@ -262,8 +296,8 @@ export function fetchDistribution(
 /** Resolved URL for the DOCX report — the dashboard's Download button
  *  navigates to this so the browser handles the file save dialog. */
 export async function getReportDocxUrl(batchId: string): Promise<string> {
-  const port = await invoke<number>("get_sidecar_port");
-  return `http://127.0.0.1:${port}/api/report/docx?batch_id=${encodeURIComponent(batchId)}`;
+  const base = await baseUrl();
+  return `${base}/api/report/docx?batch_id=${encodeURIComponent(batchId)}`;
 }
 
 /** PNG chart URL (scatter / capacity) for embedding directly via <img>. */
@@ -271,8 +305,8 @@ export async function getReportChartUrl(
   chartType: "scatter" | "capacity",
   batchId: string,
 ): Promise<string> {
-  const port = await invoke<number>("get_sidecar_port");
-  return `http://127.0.0.1:${port}/api/report/chart/${chartType}?batch_id=${encodeURIComponent(batchId)}`;
+  const base = await baseUrl();
+  return `${base}/api/report/chart/${chartType}?batch_id=${encodeURIComponent(batchId)}`;
 }
 
 export function listBatches(
