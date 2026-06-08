@@ -83,8 +83,24 @@ function mockResponses(opts: {
   batch?: typeof COMPLETE_BATCH;
   batchStatus?: number;
   runs?: Array<Record<string, unknown>>;
+  shearCheck?: {
+    batch_id: string;
+    checked: number;
+    sub_limit_runs: Array<{ run_id: number; flags: Array<Record<string, unknown>> }>;
+  };
 }) {
   fetchMock.mockImplementation((url: string) => {
+    if (url.includes("/shear-check")) {
+      return Promise.resolve(
+        jsonResponse(
+          opts.shearCheck ?? {
+            batch_id: "BATCH123",
+            checked: opts.runs?.length ?? TWO_RUNS.length,
+            sub_limit_runs: [],
+          },
+        ),
+      );
+    }
     if (url.includes("/distribution")) {
       // AnalyticalView mounts 3x DistributionChart — return a benign payload
       // so the chart wrapper renders without blowing up on undefined arrays.
@@ -144,6 +160,41 @@ describe("BatchProgressPage — analytical view", () => {
     expect(screen.getByRole("link", { name: "#1" })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "#2" })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: /rerun batch/i })).toBeInTheDocument();
+  });
+
+  it("shows the sub-limit shear-connection warning when runs breach EN 1994-1-1", async () => {
+    mockResponses({
+      batch: COMPLETE_BATCH,
+      shearCheck: {
+        batch_id: "BATCH123",
+        checked: 2,
+        sub_limit_runs: [
+          {
+            run_id: 2,
+            flags: [
+              { beam: "Unprotected", sh_con: 30, fy: 355, span: 9, eta_min_pct: 52 },
+            ],
+          },
+        ],
+      },
+    });
+    renderPage();
+    expect(
+      await screen.findByText(/degree of shear connection/i),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/EN 1994-1-1/i)).toBeInTheDocument();
+    // Names the offending beam with its value vs the EN minimum.
+    expect(
+      screen.getByText(/Unprotected 30% \(min 52%\)/),
+    ).toBeInTheDocument();
+  });
+
+  it("shows a clear pass note when no run is sub-limit", async () => {
+    mockResponses({ batch: COMPLETE_BATCH }); // default shearCheck = none
+    renderPage();
+    expect(
+      await screen.findByText(/meet the EN 1994-1-1 minimum/i),
+    ).toBeInTheDocument();
   });
 
   it("Rerun batch link points at /?from_batch=BATCH123", async () => {

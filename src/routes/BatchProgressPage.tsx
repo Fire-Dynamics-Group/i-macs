@@ -2,8 +2,8 @@ import { useEffect, useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 
-import type { BatchSummary, Run } from "../api/client";
-import { getBatch, getReportDocxUrl } from "../api/client";
+import type { BatchSummary, Run, ShearCheckResponse } from "../api/client";
+import { getBatch, getReportDocxUrl, getShearCheck } from "../api/client";
 import { detectVaryingFields } from "../sweep/buildScatterTraces";
 import { DistributionChart } from "../sweep/DistributionChart";
 import { MacsScatter } from "../sweep/MacsScatter";
@@ -213,6 +213,8 @@ function AnalyticalView({ batch }: { batch: BatchSummary }) {
         </div>
       </header>
 
+      <ShearConnectionPanel batchId={batch.batch_id} />
+
       {/* MACS+ Monte Carlo Simulation Output Summary — 4 charts. */}
       <section className="mt-6 grid gap-4 md:grid-cols-2">
         {scatterAxesVary && (
@@ -255,6 +257,59 @@ function AnalyticalView({ batch }: { batch: BatchSummary }) {
         </div>
       </section>
     </div>
+  );
+}
+
+/** Mirrors the MACS+ "Beam checks" warning: flags runs whose degree of shear
+ *  connection falls below the EN 1994-1-1 minimum. Advisory only — it does not
+ *  affect the pass/fail verdict (same as MACS+, which warns and still runs). */
+function ShearConnectionPanel({ batchId }: { batchId: string }) {
+  const { data } = useQuery<ShearCheckResponse>({
+    queryKey: ["shear-check", batchId],
+    queryFn: () => getShearCheck(batchId),
+    enabled: batchId.length > 0,
+  });
+
+  if (!data) return null;
+
+  const flaggedRuns = data.sub_limit_runs;
+  if (flaggedRuns.length === 0) {
+    return (
+      <section className="mt-4 rounded-md border border-emerald-200 bg-emerald-50 px-4 py-2 text-sm text-emerald-800">
+        Degree of shear connection: all checked beams meet the EN 1994-1-1
+        minimum.
+      </section>
+    );
+  }
+
+  const beamCount = flaggedRuns.reduce((n, r) => n + r.flags.length, 0);
+  return (
+    <section className="mt-4 rounded-md border border-amber-300 bg-amber-50 p-4 text-sm text-amber-900">
+      <h2 className="font-semibold">
+        Degree of shear connection below the EN 1994-1-1 minimum
+      </h2>
+      <p className="mt-1 text-amber-800">
+        {flaggedRuns.length} run{flaggedRuns.length === 1 ? "" : "s"} ({beamCount}{" "}
+        beam{beamCount === 1 ? "" : "s"}) fall below the minimum. MACS+ raises the
+        same warning — it is advisory and does not change the pass/fail verdict.
+      </p>
+      <ul className="mt-2 space-y-1">
+        {flaggedRuns.map((r) => (
+          <li key={r.run_id} className="tabular-nums">
+            <Link
+              to={`/runs/${r.run_id}`}
+              className="font-medium text-blue-700 hover:underline"
+            >
+              #{r.run_id}
+            </Link>
+            {": "}
+            {r.flags
+              .map((f) => `${f.beam} ${f.sh_con}% (min ${f.eta_min_pct}%)`)
+              .join(", ")}
+          </li>
+        ))}
+      </ul>
+    </section>
   );
 }
 

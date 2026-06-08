@@ -1,0 +1,99 @@
+# MACS+ sweep — Ark Royal (Winvic), Control Office A
+# Base inputs imported from "Control Office A.frc" (project 0395).
+# Two levers swept to straddle the pass/fail boundary for verdict testing:
+#   - time_limit : ISO fire resistance period (min)  -> fire severity
+#   - mesh_type  : slab reinforcement (A393 -> A142)  -> membrane capacity
+# 3 x 4 = 12 runs. (A393, 60 min) is the robust corner; (A142, 120 min) the
+# clear-fail corner. See expected results printed alongside this file.
+
+analysis_method: "iso"          # .frc Method=2
+
+sweep:
+  time_limit: [60, 90, 120]     # ISO fire rating period, minutes
+  mesh_type: ["A393", "A252", "A193", "A142"]
+
+fixed:
+  # --- Geometry (GA) ---
+  numbeam: 2
+  span1: 8.225
+  span2: 8.5
+  # --- Deck ---
+  deck_id: "T8"                 # Multideck 60
+  # --- Slab ---
+  conc_type: "NW"
+  conc_lambda: 1
+  fck: 25
+  slab_depth: 140
+  mesh_axis: 40
+  mesh_strength: 500
+  # --- Internal (unprotected) secondary beam ---
+  u_sec_size: "UB_457x152x52"
+  u_sec_fy: "355"
+  u_sec_sh_con: 80
+  # --- Loading ---
+  slab_weight: 2.59
+  cold_perm: 1.2
+  lead_var_act: 5
+  othr_var_act: 0
+  lead_var_fac: 0.5
+  othr_var_fac: 0.3
+  # --- Fire compartment (carried from .frc; inert under ISO) ---
+  Lc: 27
+  Bc: 18
+  Hc: 3.6
+  Hw: 1.8
+  Lw: 30
+
+# Perimeter (protected) beams — from .frc Beams block
+beams:
+  side_a:
+    sec_size: "UB_457x152x52"
+    fy: 355
+    edge: true
+    composite: true
+    sh_con: 80
+  side_b:
+    sec_size: "UB_533x210x82"
+    fy: 355
+    edge: false
+    composite: true
+    sh_con: 80
+  side_c:
+    sec_size: "UB_406x140x39"
+    fy: 355
+    edge: true
+    composite: true
+    sh_con: 80
+  side_d:
+    sec_size: "UB_457x152x52"
+    fy: 355
+    edge: true
+    composite: true
+    sh_con: 80
+
+# ---------------------------------------------------------------------------
+# VERIFIED RESULTS — ran 2026-05-19 through the real FRACOF engine (12/12 OK).
+# Verdict = corrected compute_status (issue #34): UF < 1.001 AND every
+# perimeter-beam load ratio <= 1.0.  Beam ratios stay 0.15-0.40 throughout,
+# so UF governs every verdict here.
+#
+#   time  mesh   UF_max  comp_failure   verdict
+#     60  A393    0.674       1         PASS   <- comp_failure=1 but PASSES
+#     90  A393    0.687       1         PASS   <- comp_failure=1 but PASSES
+#    120  A393    0.693       0         PASS
+#     60  A252    0.744       0         PASS
+#     90  A252    0.807       0         PASS
+#    120  A252    1.002       0         FAIL   <- razor-edge: 0.001 over limit
+#     60  A193    0.906       0         PASS
+#     90  A193    0.993       0         PASS   <- razor-edge pass
+#    120  A193    1.237       0         FAIL
+#     60  A142    1.119       0         FAIL
+#     90  A142    1.245       0         FAIL
+#    120  A142    1.556       0         FAIL
+#
+#   => 7 PASS / 5 FAIL
+#
+# The two A393 rows have comp_failure=1: on the OLD code they show FAIL (the
+# spurious composite gate); on the issue-34-uf-verdict branch they show PASS.
+# So this sweep also regression-tests the #34 fix directly.
+# ---------------------------------------------------------------------------
