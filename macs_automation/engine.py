@@ -9,6 +9,7 @@ in v1 — so a FRACOF crash kills only the runner, not the FastAPI sidecar.
 """
 
 import json
+import logging
 import subprocess
 import sys
 import time
@@ -17,10 +18,36 @@ from typing import Optional
 
 import pythoncom
 
+logger = logging.getLogger(__name__)
+
 # Grade string to numeric fy mapping (from Calc.js Get_fy)
 GRADE_TO_FY = {
     "235": 235, "275": 275, "355": 355, "35H": 355, "460": 460, "46H": 460,
 }
+
+# FRACOF engine version shipped with MACS+ 3.0.4 (Jan 2018), registered as
+# SCTI11.FRACOF. This is the build our reference reports were generated with
+# (the Atlantic Park Monte Carlo sweep, folder "MACS+_304").
+#
+# Older builds — notably 2.0.0.1 from the 2013 "Beta 2.06" MACS+ (registered as
+# SCTI9.FRACOF) — use an earlier perimeter-beam critical-temperature routine that
+# reads up to ~3 C HIGHER at mid utilisation (e.g. edge beam 634 vs 631 C). uf_max
+# and factored load are unaffected, but critical temps will not match references
+# generated with 3.0.4.
+#
+# Source note: the legacy EU site macsfire.eu still serves only the old Beta 2.06
+# (v2.0.0.1) — do NOT use it. MACS+ 3.0.4 with v2.0.0.2 comes via ArcelorMittal
+# Constructalia (free, registration) or the internal Monte Carlo bundle the
+# reference reports were generated with (".../08. Monte Carlo TMA/MACS+_304").
+RECOMMENDED_ENGINE_VERSION = (2, 0, 0, 2)
+
+
+def _parse_engine_version(raw) -> Optional[tuple]:
+    """Parse a dotted FRACOF version string (e.g. '2.0.0.1') into a tuple."""
+    try:
+        return tuple(int(p) for p in str(raw).strip().split("."))
+    except (ValueError, AttributeError):
+        return None
 
 
 class COMProxy:
@@ -99,6 +126,35 @@ class MACSEngine:
                 "Check: python -c \"import win32com.client; win32com.client.Dispatch('SCTI11.FRACOF')\""
             ) from last_error
         self.engine = COMProxy(raw)
+        self.prog_id = prog_id
+        self.engine_version = None
+        self._warn_if_engine_outdated()
+
+    def _warn_if_engine_outdated(self):
+        """Log a warning if the resolved FRACOF engine predates v2.0.0.2.
+
+        Older engines silently produce ~3 C-high perimeter-beam critical
+        temperatures, so reports won't match references built with MACS+ 3.0.4.
+        Non-fatal — the engine still runs.
+        """
+        try:
+            self.engine_version = str(self.engine.GetVersion)
+        except Exception:
+            return  # version unavailable on this build; skip the check
+        parsed = _parse_engine_version(self.engine_version)
+        if parsed is not None and parsed < RECOMMENDED_ENGINE_VERSION:
+            logger.warning(
+                "FRACOF engine %s (via %s) predates the recommended %s shipped "
+                "with MACS+ 3.0.4. Older builds report perimeter-beam critical "
+                "temperatures up to ~3 C high at mid utilisation and will not "
+                "reproduce reference reports generated with 3.0.4. Install MACS+ "
+                "3.0.4 (registers SCTI11.FRACOF v2.0.0.2) via ArcelorMittal "
+                "Constructalia or the internal MACS+_304 bundle - NOT macsfire.eu, "
+                "which still serves the old Beta 2.06.",
+                self.engine_version,
+                self.prog_id,
+                ".".join(map(str, RECOMMENDED_ENGINE_VERSION)),
+            )
 
     def set_inputs(self, params: dict, sections_db: dict):
         """Set all input properties on the COM engine.

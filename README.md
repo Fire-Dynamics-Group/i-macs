@@ -50,7 +50,29 @@ To stop the server: press **Ctrl+C** in the terminal. If you get “port 8000 al
      ```
      If you don’t set it, `run_dashboard.py` will try to use `py -3-32` when available.
 
-3. **MACS+** must be installed (e.g. `C:\Program Files (x86)\MACS+_304\`) for real calculations. Without it, the dashboard still runs but runs will fail with a COM error.
+3. **MACS+ 3.0.4** must be installed (e.g. `C:\Program Files (x86)\MACS+_304\`) for real calculations. Without it, the dashboard still runs but runs will fail with a COM error. **Use 3.0.4, not an older build** — see [MACS+ engine version](#macs-engine-version) below.
+
+---
+
+## MACS+ engine version
+
+i-macs calls the FRACOF COM engine that ships **inside** MACS+; it does not compute results itself. The engine version therefore determines the numbers exactly.
+
+- **Required: MACS+ 3.0.4**, which registers `SCTI11.FRACOF` **v2.0.0.2** (Jan 2018). This is the build our reference reports were generated with, so i-macs reproduces them to the degree.
+- **Older builds** — notably the 2013 "Beta 2.06" MACS+, which registers `SCTI9.FRACOF` **v2.0.0.1** — use an earlier perimeter-beam critical-temperature routine that reads up to **~3 °C high** at mid utilisation (e.g. edge beam 634 vs 631 °C). `uf_max` and factored load are unaffected, but critical temps won't match 3.0.4 references. `MACSEngine` logs a warning if it resolves an engine older than v2.0.0.2.
+
+i-macs tries `SCTI11.FRACOF` (3.0.4) first and falls back to `SCTI9.FRACOF`, so installing 3.0.4 is picked up automatically — no code change.
+
+### Download (official source)
+
+Get it from **ArcelorMittal Sections** (no registration):
+
+- Page: <https://sections.arcelormittal.com/design_aid/design_software/EN> → "Setup MACS+ version 3.0.4"
+- Direct: <https://sections.arcelormittal.com/repo/Sections/4_18_Setup_MACS_plus.zip>
+
+Extract and run `Install MACS+ v3_0_4.exe` **as administrator** (COM registration needs admin).
+
+> ⚠️ Do **not** use `macsfire.eu` — it still serves the old Beta 2.06 (v2.0.0.1). `cesdb.com` only lists the software; it is not a download source.
 
 ---
 
@@ -70,7 +92,7 @@ If you use 64-bit Python and have set **PYTHON32**, start the server in the same
 
 - **Windows** (required — the FRACOF engine is a Windows COM server)
 - **Python 3.10+** (32-bit or 64-bit)
-- **MACS+ installed** (e.g. `C:\Program Files (x86)\MACS+_304\`) for real calculations; the dashboard runs without it but runs will error until MACS+ is installed.
+- **MACS+ 3.0.4 installed** (e.g. `C:\Program Files (x86)\MACS+_304\`) for real calculations; the dashboard runs without it but runs will error until MACS+ is installed. Use 3.0.4 (FRACOF v2.0.0.2) — see [MACS+ engine version](#macs-engine-version) for why and the official download.
 
 The FRACOF COM engine is 32-bit only: use 32-bit Python, or 64-bit Python with 32-bit Python also installed and the setup above.
 
