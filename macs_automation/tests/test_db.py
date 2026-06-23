@@ -962,3 +962,36 @@ class TestSettings:
             ).fetchone() is not None
             upgraded.set_setting("k", "v")
             assert upgraded.get_setting("k") == "v"
+
+
+class TestEngineVersionProvenance:
+    """The FRACOF engine version is stamped on every successful run so a stored
+    result is unambiguous about which engine produced it (v2.0.0.1 vs v2.0.0.2
+    give different perimeter-beam critical temps)."""
+
+    _PARAMS = {"span1": 9.0, "span2": 9.0, "numbeam": 2, "method": "iso"}
+
+    def test_engine_version_recorded(self, db):
+        run_id = db.insert_run(
+            self._PARAMS,
+            outputs={"comp_failure": 0, "engine_version": "2.0.0.2", "time_series": []},
+        )
+        assert db.get_run(run_id)["engine_version"] == "2.0.0.2"
+
+    def test_engine_version_null_when_absent(self, db):
+        run_id = db.insert_run(
+            self._PARAMS, outputs={"comp_failure": 0, "time_series": []}
+        )
+        assert db.get_run(run_id)["engine_version"] is None
+
+    def test_legacy_db_gets_engine_version_column(self, tmp_path):
+        """A pre-existing runs table without the column is migrated on open."""
+        legacy = tmp_path / "legacy.db"
+        conn = sqlite3.connect(legacy)
+        conn.execute("CREATE TABLE runs (id INTEGER PRIMARY KEY)")
+        conn.commit()
+        conn.close()
+
+        with ResultsDB(legacy) as upgraded:
+            cols = {r[1] for r in upgraded.conn.execute("PRAGMA table_info(runs)")}
+            assert "engine_version" in cols

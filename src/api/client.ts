@@ -103,6 +103,12 @@ export interface Run {
   error: string | null;
   overall_pass: boolean;
   checks: Check[];
+  /** FRACOF engine version that produced this run (e.g. "2.0.0.2"); null for
+   *  runs recorded before engine-version stamping. */
+  engine_version?: string | null;
+  /** Beams whose degree of shear connection is below the EN 1994-1-1 minimum.
+   *  Advisory — does not affect the pass/fail verdict. */
+  shear_flags?: ShearFlag[];
   [field: string]: unknown;
 }
 

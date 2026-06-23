@@ -1565,3 +1565,39 @@ class TestShearCheckEndpoint:
         resp = client.get("/api/batches/nope/shear-check")
         assert resp.status_code == 200
         assert resp.json()["sub_limit_runs"] == []
+
+
+class TestRunDetailProvenance:
+    """The run-detail endpoint surfaces the engine version and per-run
+    shear-connection flags so the UI can show them on the run page."""
+
+    def test_run_detail_includes_engine_version(self, client, use_tmp_db):
+        from macs_automation.db import ResultsDB
+        db = ResultsDB(use_tmp_db)
+        outs = _beam_outputs()
+        outs["engine_version"] = "2.0.0.2"
+        run_id = db.insert_run(_beam_params("b1", ush_con=80.0), outputs=outs)
+        db.close()
+
+        data = client.get(f"/api/runs/{run_id}").json()
+        assert data["engine_version"] == "2.0.0.2"
+
+    def test_run_detail_flags_sublimit_shear(self, client, use_tmp_db):
+        from macs_automation.db import ResultsDB
+        db = ResultsDB(use_tmp_db)
+        run_id = db.insert_run(_beam_params("b1", ush_con=30.0), outputs=_beam_outputs())
+        db.close()
+
+        data = client.get(f"/api/runs/{run_id}").json()
+        assert data["shear_flags"], "expected a shear-connection flag"
+        assert data["shear_flags"][0]["beam"] == "Unprotected"
+        assert data["shear_flags"][0]["sh_con"] == 30.0
+
+    def test_run_detail_no_shear_flags_when_adequate(self, client, use_tmp_db):
+        from macs_automation.db import ResultsDB
+        db = ResultsDB(use_tmp_db)
+        run_id = db.insert_run(_beam_params("b1", ush_con=90.0), outputs=_beam_outputs())
+        db.close()
+
+        data = client.get(f"/api/runs/{run_id}").json()
+        assert data["shear_flags"] == []

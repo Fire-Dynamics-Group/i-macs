@@ -52,7 +52,9 @@ CREATE TABLE IF NOT EXISTS runs (
     -- Batch grouping
     batch_id TEXT,
     -- Metadata
-    error TEXT, duration_ms REAL
+    error TEXT, duration_ms REAL,
+    -- Provenance: FRACOF engine version that produced this run (e.g. "2.0.0.2")
+    engine_version TEXT
 );
 
 CREATE TABLE IF NOT EXISTS batches (
@@ -191,6 +193,7 @@ class ResultsDB:
             ("side_b_load_ratio", "REAL"),
             ("side_c_load_ratio", "REAL"),
             ("side_d_load_ratio", "REAL"),
+            ("engine_version", "TEXT"),
         ]:
             if col not in existing_cols:
                 self.conn.execute(f"ALTER TABLE runs ADD COLUMN {col} {col_type}")
@@ -377,6 +380,7 @@ class ResultsDB:
                 "side_d_load_ratio": outputs.get("side_d_load_ratio"),
                 "side_d_critical_temp": outputs.get("side_d_critical_temp"),
                 "duration_ms": outputs.get("duration_ms"),
+                "engine_version": outputs.get("engine_version"),
             })
 
         columns = list(row.keys())

@@ -89,7 +89,7 @@ function toNumber(v: unknown): number | null {
   return null;
 }
 
-function RunSummary({ run }: { run: Run }) {
+export function RunSummary({ run }: { run: Run }) {
   const ufMax = run.uf_max;
   const passes = run.overall_pass;
   return (
@@ -117,7 +117,24 @@ function RunSummary({ run }: { run: Run }) {
             <span className="text-sm text-slate-600">
               Duration: <strong>{run.duration_ms?.toFixed(0) ?? "—"} ms</strong>
             </span>
+            <span className="text-sm text-slate-600">
+              Engine: <strong>FRACOF {run.engine_version ?? "—"}</strong>
+            </span>
           </div>
+          {run.shear_flags && run.shear_flags.length > 0 && (
+            <div className="mt-3 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-800">
+              <span className="font-medium">
+                ⚠ Shear connection below EN 1994-1-1 minimum (advisory)
+              </span>
+              <ul className="mt-1 list-disc pl-5">
+                {run.shear_flags.map((f) => (
+                  <li key={f.beam}>
+                    {f.beam}: {f.sh_con}% (minimum {f.eta_min_pct}%)
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
         </>
       )}
     </section>

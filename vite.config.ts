@@ -11,6 +11,11 @@ export default defineConfig({
     port: 1420,
     strictPort: true,
     host: "127.0.0.1",
+    // Don't watch the Rust build tree — vite crashes with EBUSY when it tries
+    // to watch the locked i-macs.exe while `tauri dev` is running.
+    watch: {
+      ignored: ["**/src-tauri/**"],
+    },
   },
   envPrefix: ["VITE_", "TAURI_"],
   build: {

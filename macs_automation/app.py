@@ -1118,6 +1118,9 @@ def api_get_run(run_id: int):
     db.close()
     if run is None:
         return JSONResponse({"error": "Not found"}, status_code=404)
+    # Advisory shear-connection warning (EN 1994-1-1 minimum), same as the batch
+    # endpoint — does not affect the pass/fail verdict.
+    run["shear_flags"] = flags_for_run(run)
     return _attach_status(run)
 
 

@@ -300,6 +300,11 @@ class MACSEngine:
         eng = self.engine
         result = {}
 
+        # Provenance: which FRACOF engine produced this run (e.g. "2.0.0.2").
+        # The engine version determines perimeter-beam critical temps, so stamp
+        # it on every result for reproducibility. None if GetVersion is absent.
+        result["engine_version"] = self.engine_version
+
         # Summary outputs (Calc.js lines 343-349); try name variants for MACS+ version differences
         result["comp_failure"] = int(eng.COMPFAILURE)
         result["mb1_reqd"] = self._get_output("Mb1_Reqd", "Mb1Reqd", "mb1_reqd")
