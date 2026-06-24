@@ -11,7 +11,12 @@ from docx.shared import Inches, Pt
 from docx.enum.table import WD_TABLE_ALIGNMENT
 
 from macs_automation.db import ResultsDB
-from macs_automation.report import _factored_hot_range, _inputs_vary
+from macs_automation.report import (
+    _extend_flat,
+    _factored_hot_range,
+    _forward_filled_average,
+    _inputs_vary,
+)
 
 # ─── Brand styling (matches constants.py / table_constants.py) ───────────────
 
@@ -81,33 +86,31 @@ def _render_timeseries_chart(
         for run_id, time_min, value in rows:
             by_run[run_id].append((time_min, value))
 
-        # Plot individual runs (unlabelled) then one more for the legend
+        # Forward-filled average (and the common end time for the spaghetti) —
+        # shared with report.py and the in-app /distribution endpoint so all
+        # three charts match MACS+ (no spiky mean, bands run to the axis edge).
+        sorted_times, avg_values = _forward_filled_average(by_run)
+        end_t = sorted_times[-1] if sorted_times else None
+
+        # Plot individual runs, each held flat to the common end (forward-fill);
+        # re-plot the last one with a label for a single clean legend entry.
+        last_line = None
         for rid, data in by_run.items():
             data.sort()
-            times = [d[0] for d in data]
-            values = [d[1] for d in data]
+            pts = [(t, v) for t, v in data if v is not None]
+            if not pts:
+                continue
+            times = [p[0] for p in pts]
+            values = [p[1] for p in pts]
+            if end_t is not None:
+                times, values = _extend_flat(times, values, end_t)
             ax.plot(times, values, color=_MID_BLUE)
-        # Add legend entry via last run
-        if by_run:
-            last_data = list(by_run.values())[-1]
-            ax.plot(
-                [d[0] for d in last_data], [d[1] for d in last_data],
-                color=_MID_BLUE, label="Recorded Temperature",
-            )
+            last_line = (times, values)
+        if last_line is not None:
+            ax.plot(last_line[0], last_line[1], color=_MID_BLUE,
+                    label="Recorded Temperature")
 
-        # Compute and plot average
-        all_times = set()
-        for data in by_run.values():
-            for t, _ in data:
-                all_times.add(t)
-        sorted_times = sorted(all_times)
-
-        if sorted_times and by_run:
-            avg_values = []
-            for t in sorted_times:
-                vals = [dict(data).get(t) for data in by_run.values()]
-                vals = [v for v in vals if v is not None]
-                avg_values.append(sum(vals) / len(vals) if vals else 0)
+        if sorted_times:
             ax.plot(sorted_times, avg_values, color=_CORAL, linewidth=2,
                     label="Average Value")
 
