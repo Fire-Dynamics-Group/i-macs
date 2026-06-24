@@ -63,6 +63,16 @@ describe("buildDistributionTraces", () => {
     }
   });
 
+  it("renders the average in the WebGL layer (scattergl) so it's not hidden by spaghetti", () => {
+    // Plotly always draws the WebGL layer on top of the SVG layer regardless of
+    // trace order. If the average were plain `scatter` (SVG) it would sit *under*
+    // the scattergl spaghetti and be invisible. Keeping it scattergl puts it in
+    // the same layer, drawn last → on top.
+    const { traces } = buildDistributionTraces(SPAGHETTI_TWO);
+    const avg = traces.find((t) => t.name === "Average Value");
+    expect(avg!.type).toBe("scattergl");
+  });
+
   it("plots the server-computed average exactly (no client-side recompute)", () => {
     const { traces } = buildDistributionTraces(SPAGHETTI_TWO);
     const avg = traces.find((t) => t.name === "Average Value");

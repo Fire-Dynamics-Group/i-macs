@@ -85,12 +85,16 @@ export function buildDistributionTraces(
   });
 
   // ── Average — exact, computed server-side over all successful runs.
+  // Must be `scattergl` (not `scatter`): Plotly always draws the WebGL layer on
+  // top of the SVG layer regardless of trace order, so a plain `scatter` average
+  // would sit *under* the scattergl spaghetti and be invisible. Same layer +
+  // pushed after the spaghetti ⇒ drawn on top.
   if (payload.average.length > 0) {
     traces.push({
       x: payload.average.map((p) => p[0]),
       y: payload.average.map((p) => p[1]),
       mode: "lines",
-      type: "scatter",
+      type: "scattergl",
       name: "Average Value",
       line: { color: AVERAGE_COLOR, width: 2 },
     });
