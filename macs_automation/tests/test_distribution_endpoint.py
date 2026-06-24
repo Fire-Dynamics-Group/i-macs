@@ -296,6 +296,64 @@ class TestDistributionWhitelist:
         assert resp.status_code == 400
 
 
+def _seed_runs_with_series(db_path, batch_id="b1", *, series_by_run, column="lofl_temp"):
+    """Insert runs whose time series have explicit (time, value) points in
+    `column` — used to exercise differing fire durations (forward-fill)."""
+    db = ResultsDB(db_path)
+    try:
+        db.insert_batch(batch_id, mode="lhs", total_expected=len(series_by_run),
+                        config_json=json.dumps({}))
+        base = {"_batch_id": batch_id, "span1": 9.0, "method": "parametric",
+                "uSecSize": "IPE_500", "time_limit": 60}
+        for pts in series_by_run:
+            ts = []
+            for k, (t, v) in enumerate(pts):
+                row = {"time_step": k + 1, "time_min": t, "fire_temp": 0.0,
+                       "lofl_temp": 0.0, "mesh_temp": 0.0, "slabtop_temp": 0.0,
+                       "slabbot_temp": 0.0, "beam_hot_capacity": 0.0,
+                       "deflection": 0.0, "slab_yield": 0.0, "enhancement": 0.0,
+                       "slab_cap": 0.0, "total_plate_capacity": 0.0,
+                       "utilization_factor": 0.0}
+                row[column] = v
+                ts.append(row)
+            db.insert_run(base, outputs={"comp_failure": 0, "factored_hot": 5.0,
+                                         "uf_max": 0.5, "time_series": ts})
+    finally:
+        db.close()
+
+
+class TestDistributionForwardFill:
+    """A fire that ends early must be held at its last value across the rest of
+    the time axis (forward-fill) — both in the average and in each spaghetti
+    line — so the in-app charts match MACS+ (no spiky mean, bands run to the end).
+    """
+
+    def test_average_holds_short_runs_flat(self, client, use_tmp_db):
+        # run A ends at t=5 (value 10); run B spans to t=15 (value 100).
+        _seed_runs_with_series(use_tmp_db, series_by_run=[
+            [(0.0, 10.0), (5.0, 10.0)],
+            [(0.0, 100.0), (5.0, 100.0), (10.0, 100.0), (15.0, 100.0)],
+        ])
+        body = client.get("/api/batches/b1/distribution",
+                          params={"column": "lofl_temp"}).json()
+        avg = {t: v for t, v in body["average"]}
+        # at t=15, A is held at 10 -> mean (10+100)/2 = 55 (old code gave 100).
+        assert avg[15.0] == pytest.approx(55.0)
+        assert avg[10.0] == pytest.approx(55.0)
+
+    def test_spaghetti_extends_to_common_end(self, client, use_tmp_db):
+        _seed_runs_with_series(use_tmp_db, series_by_run=[
+            [(0.0, 10.0), (5.0, 10.0)],
+            [(0.0, 100.0), (5.0, 100.0), (10.0, 100.0), (15.0, 100.0)],
+        ])
+        body = client.get("/api/batches/b1/distribution",
+                          params={"column": "lofl_temp"}).json()
+        short = min(body["spaghetti"], key=lambda s: len(s["points"]))
+        last_x, last_y = short["points"][-1]
+        assert last_x == pytest.approx(15.0)   # held flat to the common end
+        assert last_y == pytest.approx(10.0)   # at its final value
+
+
 class TestDistributionEmptyState:
     def test_zero_successful_runs_returns_empty_arrays(self, client, use_tmp_db):
         # Batch with only errored runs.

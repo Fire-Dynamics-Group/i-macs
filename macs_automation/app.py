@@ -33,6 +33,7 @@ from macs_automation import macs_detect
 from macs_automation.blue_book_sections import get_blue_book_sections
 from macs_automation.frc_parser import parse_frc_string
 from macs_automation.status import compute_status
+from macs_automation.report import _extend_flat, _forward_filled_average
 from macs_automation.shear_check import flags_for_run
 from macs_automation.sse_broker import Broker
 from macs_automation.sweep import DEFAULTS, PARAM_ALIASES, BEAM_SIDE_MAP, resolve_deck, resolve_mesh, generate_combinations
@@ -988,21 +989,14 @@ def api_batch_distribution(
             "factored_hot_max": None,
         }
 
-    # ── Average: exact, computed over ALL successful runs at every timestep
-    all_times: set = set()
-    for points in by_run.values():
-        for t, _ in points:
-            all_times.add(t)
-    sorted_times = sorted(all_times)
-    average: list[list[float]] = []
-    # Index each run by time for O(1) lookup; missing timesteps drop out
-    # of the mean (same semantics as report_docx._render_timeseries_chart).
-    indexed = {rid: dict(pts) for rid, pts in by_run.items()}
-    for t in sorted_times:
-        vals = [d[t] for d in indexed.values() if t in d]
-        if not vals:
-            continue
-        average.append([t, sum(vals) / len(vals)])
+    # ── Average: forward-fill each run onto the common time grid, then mean.
+    # A fire that ends early is held at its final value, so the curve reflects
+    # all runs at every instant (dominated by the many cooled runs) instead of
+    # spiking and biasing high where exact timesteps don't coincide. Same
+    # forward-fill used by report.py / report_docx so all three charts agree.
+    avg_times, avg_vals = _forward_filled_average(by_run)
+    average: list[list[float]] = [[t, v] for t, v in zip(avg_times, avg_vals)]
+    end_t = avg_times[-1] if avg_times else None
 
     # ── Spaghetti: stride-sample down to spaghetti_n (visually identical
     # density at 10k scale, per issue rendering strategy).
@@ -1018,9 +1012,17 @@ def api_batch_distribution(
 
     spaghetti = []
     for rid in picked:
+        pts = sorted(by_run[rid])
+        times = [p[0] for p in pts]
+        values = [p[1] for p in pts]
+        if end_t is not None:
+            # Hold each run's last value flat to the common end so the bands run
+            # to the axis edge like MACS+ (forward-fill the spaghetti, not just
+            # the average).
+            times, values = _extend_flat(times, values, end_t)
         spaghetti.append({
             "run_id": rid,
-            "points": [[t, v] for t, v in by_run[rid]],
+            "points": [[t, v] for t, v in zip(times, values)],
         })
 
     # ── Factored hot range: only meaningful for the capacity chart.
