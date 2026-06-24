@@ -10,6 +10,7 @@ import pytest
 from macs_automation.db import ResultsDB
 from macs_automation.report import (
     WIDE_CSV_COLUMNS,
+    _extend_flat,
     _factored_hot_range,
     _forward_filled_average,
     _inputs_vary,
@@ -46,6 +47,21 @@ class TestForwardFilledAverage:
 
     def test_empty(self):
         assert _forward_filled_average({}) == ([], [])
+
+
+class TestExtendFlat:
+    """Each spaghetti line holds its last value flat to the common end time, so a
+    fire that finishes early still shows as a horizontal band to the axis end —
+    matching MACS+ (which forward-fills every run, not just the average)."""
+
+    def test_holds_last_value_to_end(self):
+        assert _extend_flat([0, 2], [10, 30], 5) == ([0, 2, 5], [10, 30, 30])
+
+    def test_noop_when_already_at_end(self):
+        assert _extend_flat([0, 5], [1, 2], 5) == ([0, 5], [1, 2])
+
+    def test_empty(self):
+        assert _extend_flat([], [], 5) == ([], [])
 from macs_automation.tests.conftest import _insert_populated_run
 
 

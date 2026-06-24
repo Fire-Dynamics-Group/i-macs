@@ -134,6 +134,18 @@ def _inputs_vary(runs, *fields: str) -> bool:
     return False
 
 
+def _extend_flat(times: list, values: list, end_t: float) -> tuple[list, list]:
+    """Forward-fill a single series: hold its last value flat out to ``end_t``.
+
+    MACS+ draws every run's line to the end of the time axis (a fire that ends at
+    45 min shows as a horizontal band to 300 min), not just up to its own last
+    data point. Applying this to each spaghetti line reproduces those bands.
+    """
+    if times and times[-1] < end_t:
+        return times + [end_t], values + [values[-1]]
+    return times, values
+
+
 def _forward_filled_average(by_run: dict) -> tuple[list, list]:
     """Average a per-run time series onto the common time grid, holding each run's
     last value flat past the end of its data (forward-fill).
@@ -204,10 +216,16 @@ def _plot_timeseries(
     for run_id, time_min, value in rows:
         by_run[run_id].append((time_min, value))
 
+    end_t = max((d[-1][0] for d in by_run.values() if d), default=None)
     for rid, data in by_run.items():
         data.sort()
-        times = [d[0] for d in data]
-        values = [d[1] for d in data]
+        pts = [(t, v) for t, v in data if v is not None]
+        if not pts:
+            continue
+        times = [p[0] for p in pts]
+        values = [p[1] for p in pts]
+        if end_t is not None:
+            times, values = _extend_flat(times, values, end_t)
         ax.plot(times, values, color="lightsteelblue", linewidth=0.5, alpha=0.6)
 
     sorted_times, avg_values = _forward_filled_average(by_run)
