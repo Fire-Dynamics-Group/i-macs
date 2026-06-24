@@ -192,6 +192,13 @@ class MACSEngine:
                 val = _to_numeric(params[prop])
                 if prop == "qf":
                     val = max(1.0, float(val))  # avoid FRACOF thermal instability
+                elif prop == "window_percent":
+                    # MACS+ floors the glazing breakage / opening to a 5% minimum
+                    # (opening factor 0.01). Below this the parametric fire under-
+                    # ventilates and the structure never heats, flooring uf to the
+                    # cold value — whereas MACS clamps and reports 5.0%. Mirror it so
+                    # sub-5% sampled openings reproduce MACS. See run09134 (0.216% -> 5%).
+                    val = max(5.0, float(val))
                 setattr(eng, prop, val)
 
         # If no steel deck, set deck_depth = 0 (Calc.js lines 181-184)

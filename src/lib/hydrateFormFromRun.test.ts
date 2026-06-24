@@ -26,6 +26,7 @@ function makeRun(overrides: Partial<Run> = {}): Run {
     fck: 25,
     conc_type: "NW",
     mesh_type: "ST15C",
+    mesh_axis: 52,
     deck_name: "T14",
     // Centre beam
     u_sec_size: "IPE_500",
@@ -93,6 +94,7 @@ describe("hydrateFormFromRun", () => {
     expect(result.conc_type).toBe("NW");
     // Mesh + deck
     expect(result.mesh_type).toBe("ST15C");
+    expect(result.mesh_axis).toBe(52);
     expect(result.deck_id).toBe("T14");
     // Loading
     expect(result.slab_weight).toBe(2.47);

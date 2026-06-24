@@ -34,6 +34,7 @@ export function hydrateFormFromRun(run: Run, refData?: RefData): FormValues {
     conc_type: (r.conc_type as "NW" | "LW") ?? "NW",
     // Mesh + deck
     mesh_type: asString(r.mesh_type),
+    mesh_axis: asNumber(r.mesh_axis),
     deck_id: resolveDeckId(asString(r.deck_name), refData),
     // Centre / unprotected
     u_sec_size: asString(r.u_sec_size),

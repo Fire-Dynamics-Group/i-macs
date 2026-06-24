@@ -15,6 +15,10 @@ export interface FormValues {
   conc_type: "NW" | "LW";
   // Mesh + deck
   mesh_type: string;
+  /** Average mesh axis distance (mm) — cover of the reinforcement mesh from the
+   *  slab top. An independent MACS+ input (not derivable from mesh_type); drives
+   *  tensile-membrane slab capacity, hence the unity factor. */
+  mesh_axis: number;
   deck_id: string;
   // Beams — centre / unprotected
   u_sec_size: string;

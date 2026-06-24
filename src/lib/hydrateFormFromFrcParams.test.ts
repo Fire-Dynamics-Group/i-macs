@@ -34,6 +34,7 @@ const SAMPLE_PARAMS: Record<string, unknown> = {
   fck: 30,
   slab_depth: 150,
   mesh_type: "A193",
+  mesh_axis: 52,
   uSecSize: "UB_457x152x60",
   fy5: "355",
   ush_con: 80,
@@ -90,6 +91,7 @@ describe("hydrateFormFromFrcParams", () => {
     expect(values.conc_type).toBe("NW");
     expect(values.deck_id).toBe("T10");
     expect(values.mesh_type).toBe("A193");
+    expect(values.mesh_axis).toBe(52);
     expect(unknownFields).toEqual({});
   });
 

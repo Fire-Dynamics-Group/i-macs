@@ -226,6 +226,7 @@ export default function ConfigPage() {
       fck: Number(d.fck ?? 25),
       conc_type: (d.conc_type as "NW" | "LW") ?? "NW",
       mesh_type: String(d.mesh_type ?? "ST15C"),
+      mesh_axis: Number(d.mesh_axis ?? 40),
       deck_id: String(d.DeckId ?? "T14"),
       u_sec_size: String(d.uSecSize ?? "IPE_500"),
       u_sec_fy: String(d.fy5 ?? "355"),
@@ -771,6 +772,13 @@ export default function ConfigPage() {
                   : undefined
               }
             />
+            {numberField(
+              "Mesh axis distance (mm)",
+              "mesh_axis",
+              register,
+              errors,
+              isImported("mesh_axis"),
+            )}
           </Grid>
         </Section>
 
