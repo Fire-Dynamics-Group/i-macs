@@ -11,6 +11,7 @@ from macs_automation.db import ResultsDB
 from macs_automation.report import (
     WIDE_CSV_COLUMNS,
     _factored_hot_range,
+    _forward_filled_average,
     _inputs_vary,
     _plot_timeseries,
     generate_prot_beam_csv,
@@ -19,6 +20,32 @@ from macs_automation.report import (
     generate_summary_csv,
     generate_wide_timeseries_csv,
 )
+
+
+class TestForwardFilledAverage:
+    """The spaghetti-chart average must hold each run's last value flat past the
+    end of its data (forward-fill onto the common time grid), matching MACS+ — so
+    a fire that ends early still counts (at its final temperature) at later times,
+    rather than dropping out of the mean and letting the few long runs dominate."""
+
+    def test_holds_last_value_after_run_ends(self):
+        by_run = {
+            "short": [(0, 0.0), (1, 10.0), (2, 10.0)],            # ends at t=2
+            "long": [(0, 0.0), (1, 50.0), (2, 80.0), (3, 90.0), (4, 100.0)],
+        }
+        times, avg = _forward_filled_average(by_run)
+        assert times == [0, 1, 2, 3, 4]
+        # at t=3 'short' is held at 10, 'long' is 90 -> mean 50 (old code gave 90)
+        assert avg[3] == pytest.approx(50.0)
+        assert avg[4] == pytest.approx(55.0)
+
+    def test_single_run_is_itself(self):
+        times, avg = _forward_filled_average({"a": [(0, 1.0), (2, 3.0)]})
+        assert times == [0, 2]
+        assert avg == pytest.approx([1.0, 3.0])
+
+    def test_empty(self):
+        assert _forward_filled_average({}) == ([], [])
 from macs_automation.tests.conftest import _insert_populated_run
 
 

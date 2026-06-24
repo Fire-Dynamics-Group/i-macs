@@ -134,6 +134,42 @@ def _inputs_vary(runs, *fields: str) -> bool:
     return False
 
 
+def _forward_filled_average(by_run: dict) -> tuple[list, list]:
+    """Average a per-run time series onto the common time grid, holding each run's
+    last value flat past the end of its data (forward-fill).
+
+    MACS+ plots it this way: a fire that ends early is held at its final value, so
+    the mean reflects all runs at every instant — dominated by the many cooled
+    runs rather than the few still-hot ones. Averaging only runs with an *exact*
+    data point at each time (the prior behaviour) made the line spiky and biased
+    high at late times, where only long fires still had points.
+
+    Returns ``(sorted_times, avg_values)``.
+    """
+    import bisect
+
+    series = []
+    all_times: set = set()
+    for data in by_run.values():
+        pts = sorted((t, v) for t, v in data if v is not None)
+        if not pts:
+            continue
+        series.append(([p[0] for p in pts], [p[1] for p in pts]))
+        all_times.update(p[0] for p in pts)
+
+    sorted_times = sorted(all_times)
+    avg_values = []
+    for t in sorted_times:
+        total, n = 0.0, 0
+        for times, values in series:
+            if t < times[0]:
+                continue  # run hasn't started yet
+            total += values[bisect.bisect_right(times, t) - 1]  # last value <= t
+            n += 1
+        avg_values.append(total / n if n else 0.0)
+    return sorted_times, avg_values
+
+
 def _plot_timeseries(
     db: ResultsDB,
     column: str,
@@ -174,18 +210,8 @@ def _plot_timeseries(
         values = [d[1] for d in data]
         ax.plot(times, values, color="lightsteelblue", linewidth=0.5, alpha=0.6)
 
-    all_times = set()
-    for data in by_run.values():
-        for t, _ in data:
-            all_times.add(t)
-    sorted_times = sorted(all_times)
-
-    if sorted_times and by_run:
-        avg_values = []
-        for t in sorted_times:
-            vals = [dict(data).get(t) for data in by_run.values()]
-            vals = [v for v in vals if v is not None]
-            avg_values.append(sum(vals) / len(vals) if vals else 0)
+    sorted_times, avg_values = _forward_filled_average(by_run)
+    if sorted_times:
         ax.plot(sorted_times, avg_values, color="coral", linewidth=2,
                 label="Average")
 
