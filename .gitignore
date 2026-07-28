@@ -60,6 +60,7 @@ test-results/
 playwright-report/
 playwright/.cache/
 
-# Claude Code runtime artefacts (agent worktrees, scheduler lock)
+# Claude Code runtime artefacts (agent worktrees, scheduler lock, agent memory)
 .claude/worktrees/
 .claude/scheduled_tasks.lock
+memory/

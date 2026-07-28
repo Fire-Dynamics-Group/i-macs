@@ -76,6 +76,38 @@ class TestUBSectionsData:
         assert sec["tf"] == pytest.approx(13.6, abs=0.05)
         assert sec["mass_per_m"] == pytest.approx(74.7, abs=0.05)
 
+    @pytest.mark.parametrize("serial,wrong,h,b,tw,tf,mass", [
+        # Verified against the British Steel "Advance UK Beams" datasheet.
+        # Each was stored under a serial derived by rounding mass_per_m; the
+        # official designation is conventional and can't be computed from mass.
+        ("914x305x239", "914x305x238", 915.0, 305.0, 16.5, 25.9, 238.3),
+        ("533x312x272", "533x312x273", 577.1, 320.2, 21.1, 37.6, 273.2),
+        ("533x312x150", "533x312x151", 542.5, 312.0, 12.7, 20.3, 150.6),
+        ("1016x305x437", "1016x305x438", 1026.1, 305.4, 26.9, 49.0, 437.0),
+    ])
+    def test_official_serial_sizes(self, serial, wrong, h, b, tw, tf, mass):
+        assert wrong not in UB_SECTIONS, f"{wrong} is not a Blue Book serial size"
+        sec = UB_SECTIONS[serial]
+        assert sec["h"] == pytest.approx(h, abs=0.05)
+        assert sec["b"] == pytest.approx(b, abs=0.05)
+        assert sec["tw"] == pytest.approx(tw, abs=0.05)
+        assert sec["tf"] == pytest.approx(tf, abs=0.05)
+        assert sec["mass_per_m"] == pytest.approx(mass, abs=0.05)
+
+    @pytest.mark.parametrize("serial,h,b", [
+        ("914x305x576", 993.0, 322.0),
+        ("914x305x521", 981.0, 319.0),
+        ("914x305x474", 971.0, 316.0),
+        ("914x305x425", 961.0, 313.0),
+    ])
+    def test_extended_914x305_range_retained(self, serial, h, b):
+        """The heavy 914x305 sections aren't in British Steel's rolled range or
+        the classic BS 4-1 tables, but they are real EN 10365 / ArcelorMittal
+        sections. Pinned so a future catalogue audit doesn't delete them."""
+        sec = UB_SECTIONS[serial]
+        assert sec["h"] == pytest.approx(h, abs=0.05)
+        assert sec["b"] == pytest.approx(b, abs=0.05)
+
     def test_serial_sizes_cover_all_families(self):
         """Check that major serial size groups are present."""
         serials = set(UB_SECTIONS.keys())
