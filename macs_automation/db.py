@@ -1,5 +1,7 @@
 """SQLite database schema and helpers for storing MACS+ batch results."""
 
+import hashlib
+import json
 import os
 import socket
 import sqlite3
@@ -51,6 +53,11 @@ CREATE TABLE IF NOT EXISTS runs (
     sample_index INTEGER, seed INTEGER,
     -- Batch grouping
     batch_id TEXT,
+    -- Naming + provenance. Populated for *ungrouped* single runs, which have
+    -- no batch to hang a name off; runs inside a batch leave these NULL and
+    -- inherit from batches (one mutable source of truth, so a rename can't
+    -- leave 30k rows disagreeing with their parent).
+    name TEXT, project_name TEXT, frc_import_id TEXT,
     -- Metadata
     error TEXT, duration_ms REAL,
     -- Provenance: FRACOF engine version that produced this run (e.g. "2.0.0.2")
@@ -63,6 +70,27 @@ CREATE TABLE IF NOT EXISTS batches (
     mode TEXT,
     total_expected INTEGER,
     config_json TEXT,
+    -- Human-friendly labels so the dashboard shows something better than a
+    -- 32-char hex id, plus a pointer to the .frc this batch was seeded from.
+    name TEXT,
+    project_name TEXT,
+    frc_import_id TEXT,
+    device_name TEXT,
+    app_version TEXT,
+    synced_at TEXT
+);
+
+-- Imported .frc files, stored verbatim so a batch is traceable back to the
+-- exact file that seeded it (and can be re-opened or diffed later). The
+-- primary key is the sha256 of the XML: repeat imports of the same file
+-- collapse to one row, and the identity stays stable across devices — an
+-- autoincrement id would collide once cloud sync (#11) merges two machines.
+CREATE TABLE IF NOT EXISTS frc_imports (
+    id TEXT PRIMARY KEY,
+    filename TEXT,
+    xml TEXT,
+    project_json TEXT,
+    imported_at TEXT,
     device_name TEXT,
     app_version TEXT,
     synced_at TEXT
@@ -139,7 +167,9 @@ CREATE TABLE IF NOT EXISTS settings (
 # multi-desktop cloud sync (#11). batches already has a TEXT primary key, so
 # it doesn't need its own uuid — only the provenance columns.
 _SYNC_PROVENANCE_TABLES_WITH_UUID = ("runs", "custom_sections", "custom_decks", "custom_meshes")
-_SYNC_PROVENANCE_TABLES_NO_UUID = ("batches",)
+# frc_imports keys on a content hash, which is already device-stable, so like
+# batches it needs the provenance stamps but not a synthetic uuid.
+_SYNC_PROVENANCE_TABLES_NO_UUID = ("batches", "frc_imports")
 
 # Combined pass predicate — must mirror compute_status() in status.py.
 # A run passes only when the slab UF stays strictly below MACS+'s 1.001
@@ -148,6 +178,15 @@ _SYNC_PROVENANCE_TABLES_NO_UUID = ("batches",)
 # (sides that weren't analyzed) are treated as 0 so they don't block.
 # COMPFAILURE is a MACS+ failure-mode *label*, not a pass/fail gate, so it is
 # deliberately not part of this predicate.
+def _blank_to_none(value: Optional[str]) -> Optional[str]:
+    """Normalise user-typed labels: whitespace-only means "no name", so the
+    UI falls back to the short batch id instead of rendering an empty cell."""
+    if value is None:
+        return None
+    stripped = value.strip()
+    return stripped or None
+
+
 def _pass_where(table: str = "") -> str:
     p = f"{table}." if table else ""
     return (
@@ -194,6 +233,9 @@ class ResultsDB:
             ("side_c_load_ratio", "REAL"),
             ("side_d_load_ratio", "REAL"),
             ("engine_version", "TEXT"),
+            ("name", "TEXT"),
+            ("project_name", "TEXT"),
+            ("frc_import_id", "TEXT"),
         ]:
             if col not in existing_cols:
                 self.conn.execute(f"ALTER TABLE runs ADD COLUMN {col} {col_type}")
@@ -207,6 +249,11 @@ class ResultsDB:
         }
         if "config_json" not in batches_cols:
             self.conn.execute("ALTER TABLE batches ADD COLUMN config_json TEXT")
+        # Naming + .frc provenance. Legacy batches keep NULLs; the API falls
+        # back to the short batch_id for display.
+        for col in ("name", "project_name", "frc_import_id"):
+            if col not in batches_cols:
+                self.conn.execute(f"ALTER TABLE batches ADD COLUMN {col} TEXT")
         # Sync-provenance columns (#11). Order matters: add uuid as plain TEXT,
         # backfill, then create the unique index — SQLite's ALTER TABLE can't
         # carry UNIQUE inline, and a unique index over NULLs collides.
@@ -355,6 +402,10 @@ class ResultsDB:
             "seed": params.get("_seed"),
             # Batch grouping
             "batch_id": params.get("_batch_id"),
+            # Naming + .frc provenance (single runs only — see schema comment)
+            "name": params.get("_name"),
+            "project_name": params.get("_project_name"),
+            "frc_import_id": params.get("_frc_import_id"),
             # Error
             "error": error,
         }
@@ -532,19 +583,121 @@ class ResultsDB:
     # ─── Batch query methods ─────────────────────────────────────────────
 
     def insert_batch(self, batch_id: str, mode: str, total_expected: int,
-                     config_json: Optional[str] = None):
+                     config_json: Optional[str] = None,
+                     name: Optional[str] = None,
+                     project_name: Optional[str] = None,
+                     frc_import_id: Optional[str] = None):
         """Record batch metadata. config_json holds the full sweep spec JSON
         used by the dashboard to (a) derive varying/fixed params for display
-        and (b) hydrate the form for *Rerun batch* (slice 2)."""
+        and (b) hydrate the form for *Rerun batch* (slice 2).
+
+        name/project_name are the human-friendly labels; frc_import_id points
+        at the frc_imports row this batch was seeded from, if any."""
         now = datetime.now(timezone.utc).isoformat()
         self.conn.execute(
             "INSERT INTO batches (batch_id, created_at, mode, total_expected, "
-            "config_json, device_name, app_version, synced_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            "config_json, name, project_name, frc_import_id, "
+            "device_name, app_version, synced_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (batch_id, now, mode, total_expected, config_json,
+             _blank_to_none(name), _blank_to_none(project_name), frc_import_id,
              self._device_name, self._app_version, None),
         )
         self.conn.commit()
+
+    def rename_batch(self, batch_id: str, name: Optional[str] = None,
+                     project_name: Optional[str] = None) -> bool:
+        """Update a batch's human-friendly labels. Omitted arguments are left
+        untouched; an empty string clears the field back to NULL so the UI can
+        fall back to the short batch id. Returns False if no such batch."""
+        set_parts = []
+        values: list = []
+        if name is not None:
+            set_parts.append("name = ?")
+            values.append(_blank_to_none(name))
+        if project_name is not None:
+            set_parts.append("project_name = ?")
+            values.append(_blank_to_none(project_name))
+        if not set_parts:
+            # Nothing to change — still report whether the batch exists.
+            return self.conn.execute(
+                "SELECT 1 FROM batches WHERE batch_id = ?", (batch_id,)
+            ).fetchone() is not None
+        values.append(batch_id)
+        cursor = self.conn.execute(
+            f"UPDATE batches SET {', '.join(set_parts)} WHERE batch_id = ?",
+            values,
+        )
+        self.conn.commit()
+        return cursor.rowcount > 0
+
+    def get_project_names(self) -> list[str]:
+        """Distinct project names across batches and ungrouped runs, sorted.
+
+        Feeds the config-page autocomplete and the dashboard filter, so both
+        sources matter — a project may so far only have single runs."""
+        cursor = self.conn.execute(
+            "SELECT project_name FROM batches "
+            "WHERE project_name IS NOT NULL AND project_name != '' "
+            "UNION "
+            "SELECT project_name FROM runs "
+            "WHERE project_name IS NOT NULL AND project_name != '' "
+            "ORDER BY project_name"
+        )
+        return [row[0] for row in cursor.fetchall()]
+
+    # ─── Imported .frc files ─────────────────────────────────────────────
+
+    def record_frc_import(self, filename: str, xml: str,
+                          project: Optional[dict] = None) -> str:
+        """Store an imported .frc verbatim; return its content-hash id.
+
+        Re-importing identical bytes is a no-op that returns the existing id —
+        including its original filename, so batches already pointing at the row
+        don't have their recorded history rewritten by a later copy.
+        """
+        frc_id = hashlib.sha256(xml.encode("utf-8")).hexdigest()
+        now = datetime.now(timezone.utc).isoformat()
+        self.conn.execute(
+            "INSERT OR IGNORE INTO frc_imports "
+            "(id, filename, xml, project_json, imported_at, "
+            "device_name, app_version, synced_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (frc_id, filename, xml, json.dumps(project or {}), now,
+             self._device_name, self._app_version, None),
+        )
+        self.conn.commit()
+        return frc_id
+
+    def get_frc_import(self, frc_id: Optional[str]) -> Optional[dict]:
+        """Return a stored .frc as `{id, filename, xml, project, imported_at}`,
+        or None if `frc_id` is NULL/unknown. A malformed project_json degrades
+        to `{}` rather than raising — a half-written row must not take down the
+        batch list."""
+        if not frc_id:
+            return None
+        self.conn.row_factory = sqlite3.Row
+        cursor = self.conn.execute(
+            "SELECT * FROM frc_imports WHERE id = ?", (frc_id,)
+        )
+        row = cursor.fetchone()
+        self.conn.row_factory = None
+        if row is None:
+            return None
+        row = dict(row)
+        try:
+            project = json.loads(row.get("project_json") or "{}")
+        except (ValueError, TypeError):
+            project = {}
+        if not isinstance(project, dict):
+            project = {}
+        return {
+            "id": row["id"],
+            "filename": row["filename"],
+            "xml": row["xml"],
+            "project": project,
+            "imported_at": row["imported_at"],
+        }
 
     def get_batches(self, limit: Optional[int] = None,
                     offset: int = 0) -> list[dict]:
@@ -561,6 +714,7 @@ class ResultsDB:
         """
         query = f"""
             SELECT b.batch_id, b.created_at, b.mode, b.total_expected, b.config_json,
+                   b.name, b.project_name, b.frc_import_id,
                    COUNT(r.id) AS run_count,
                    SUM(CASE WHEN {_pass_where('r')} THEN 1 ELSE 0 END) AS pass_count,
                    SUM(CASE WHEN r.error IS NOT NULL THEN 1 ELSE 0 END) AS error_count
@@ -581,9 +735,12 @@ class ResultsDB:
                 "mode": row[2],
                 "total_expected": row[3],
                 "config_json": row[4],
-                "run_count": row[5] or 0,
-                "pass_count": row[6] or 0,
-                "error_count": row[7] or 0,
+                "name": row[5],
+                "project_name": row[6],
+                "frc_import_id": row[7],
+                "run_count": row[8] or 0,
+                "pass_count": row[9] or 0,
+                "error_count": row[10] or 0,
             }
             for row in cursor.fetchall()
         ]
@@ -941,6 +1098,11 @@ class ResultsDB:
         "sample_index": "_sample_index",
         "seed": "_seed",
         "batch_id": "_batch_id",
+        # Underscore-prefixed so a retry carries provenance forward without
+        # the engine ever seeing these as input parameters.
+        "name": "_name",
+        "project_name": "_project_name",
+        "frc_import_id": "_frc_import_id",
     }
 
     def run_row_to_params(self, run_row: dict) -> dict:

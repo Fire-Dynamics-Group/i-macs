@@ -36,7 +36,7 @@ vi.stubGlobal("EventSource", MockEventSource);
 const fetchMock = vi.fn();
 vi.stubGlobal("fetch", fetchMock);
 
-import { _resetBaseUrl } from "../api/client";
+import { _resetBaseUrl, type BatchSummary } from "../api/client";
 import BatchProgressPage from "./BatchProgressPage";
 
 function jsonResponse(body: unknown, status = 200): Response {
@@ -46,19 +46,7 @@ function jsonResponse(body: unknown, status = 200): Response {
   });
 }
 
-const COMPLETE_BATCH: {
-  batch_id: string;
-  created_at: string;
-  mode: string;
-  sampling: string | null;
-  total_expected: number;
-  run_count: number;
-  pass_count: number;
-  fail_count: number;
-  error_count: number;
-  varying_params: Record<string, unknown>;
-  fixed_params: Record<string, unknown>;
-} = {
+const COMPLETE_BATCH: BatchSummary = {
   batch_id: "BATCH123",
   created_at: "2026-04-01T12:00:00+00:00",
   mode: "sweep",
@@ -156,10 +144,30 @@ describe("BatchProgressPage — analytical view", () => {
     // Wait for the analytical view's Download-report link — its presence
     // implies the batch metadata loaded and the async URL state settled.
     expect(await screen.findByRole("link", { name: /download report/i })).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: /batch BATCH123/i })).toBeInTheDocument();
+    // Unnamed batch — the heading falls back to the short id, and the full id
+    // stays visible on the line beneath it.
+    expect(screen.getByRole("heading", { name: "BATCH123" })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "#1" })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "#2" })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: /rerun batch/i })).toBeInTheDocument();
+  });
+
+  it("shows the batch name and project when the batch is named", async () => {
+    mockResponses({
+      batch: {
+        ...COMPLETE_BATCH,
+        name: "Span sweep 9-12m",
+        project_name: "Atlantic Park Unit 7",
+        frc: { id: "abc123", filename: "unit7.frc", project: {} },
+      },
+      runs: TWO_RUNS,
+    });
+    renderPage();
+    expect(
+      await screen.findByRole("heading", { name: "Span sweep 9-12m" }),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Atlantic Park Unit 7")).toBeInTheDocument();
+    expect(screen.getByTestId("frc-source")).toHaveTextContent("unit7.frc");
   });
 
   it("shows the sub-limit shear-connection warning when runs breach EN 1994-1-1", async () => {

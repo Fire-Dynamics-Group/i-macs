@@ -668,6 +668,42 @@ def api_ref_data():
     }
 
 
+# ─── Naming + .frc provenance ────────────────────────────────────────────────
+
+# Keys the config page may send inside the `meta` block. They are labels and
+# provenance, never engine inputs, so they travel underscore-prefixed once
+# inside a params dict — the same convention as _batch_id / _sample_index.
+_META_KEYS = ("name", "project_name", "frc_import_id")
+
+
+def _pop_meta(request_body: dict) -> dict:
+    """Remove and return the `meta` block from a submit payload.
+
+    Mutates `request_body` so the remainder is a clean spec — `meta` must
+    never survive into the sweep config or an engine params dict.
+    """
+    meta = request_body.pop("meta", None)
+    if not isinstance(meta, dict):
+        return {}
+    return {k: meta[k] for k in _META_KEYS if meta.get(k) not in (None, "")}
+
+
+def _frc_summary(db, frc_id: Optional[str]) -> Optional[dict]:
+    """Resolve a stored .frc to `{id, filename, project}` for API responses.
+
+    The XML is deliberately excluded — a batches list would otherwise carry a
+    ~6 KB blob per row. Callers that want the file fetch /api/frc-imports/{id}.
+    """
+    stored = db.get_frc_import(frc_id)
+    if stored is None:
+        return None
+    return {
+        "id": stored["id"],
+        "filename": stored["filename"],
+        "project": stored["project"],
+    }
+
+
 # ─── API: Run endpoints ──────────────────────────────────────────────────────
 
 @app.post("/api/runs")
@@ -678,10 +714,17 @@ def api_submit_run(request_body: dict):
     all_meshes = _get_all_meshes()
     params = dict(DEFAULTS)
 
+    # A single run has no batch to hang labels off, so its name / project /
+    # .frc pointer ride on the run row itself.
+    meta = _pop_meta(request_body)
+
     # Apply user-provided values
     for key, value in request_body.items():
         internal_key = PARAM_ALIASES.get(key, key)
         params[internal_key] = value
+
+    for key, value in meta.items():
+        params[f"_{key}"] = value
 
     # Resolve deck and mesh
     resolve_deck(params, all_decks)
@@ -735,6 +778,21 @@ def api_submit_sweep(request_body: dict):
         if _sweep_state["active"]:
             return JSONResponse({"error": "A sweep is already running"}, status_code=409)
 
+    # Strip the labels/provenance block before anything reads the spec — they
+    # belong on the batch row, not in config_json and not in the params dicts.
+    meta = _pop_meta(request_body)
+    if meta.get("frc_import_id"):
+        db = _get_db()
+        try:
+            known = db.get_frc_import(meta["frc_import_id"]) is not None
+        finally:
+            db.close()
+        if not known:
+            return JSONResponse(
+                {"error": f"Unknown frc_import_id {meta['frc_import_id']!r}"},
+                status_code=400,
+            )
+
     projected = _estimate_run_count(request_body)
     if projected > MAX_SWEEP_RUNS:
         return JSONResponse(
@@ -763,7 +821,10 @@ def api_submit_sweep(request_body: dict):
     config_json = json.dumps(request_body)
     db = _get_db()
     db.insert_batch(batch_id, mode=mode, total_expected=len(combinations),
-                    config_json=config_json)
+                    config_json=config_json,
+                    name=meta.get("name"),
+                    project_name=meta.get("project_name"),
+                    frc_import_id=meta.get("frc_import_id"))
     db.close()
 
     # Inject batch_id into each combination
@@ -841,26 +902,81 @@ def api_list_batches(limit: int = 20, offset: int = 0):
     try:
         rows = db.get_batches(limit=limit, offset=offset)
         total = db.get_batches_count()
+        batches = [_batch_response(db, row) for row in rows]
     finally:
         db.close()
-    batches = []
-    for row in rows:
-        derived = varying_params_from_config(row.get("config_json"))
-        successful = row["run_count"] - row["error_count"]
-        batches.append({
-            "batch_id": row["batch_id"],
-            "created_at": row["created_at"],
-            "mode": row["mode"],
-            "sampling": _config_sampling(row.get("config_json")),
-            "total_expected": row["total_expected"],
-            "run_count": row["run_count"],
-            "pass_count": row["pass_count"],
-            "fail_count": max(successful - row["pass_count"], 0),
-            "error_count": row["error_count"],
-            "varying_params": derived["varying"],
-            "fixed_params": derived["fixed"],
-        })
     return {"batches": batches, "total": total}
+
+
+def _batch_response(db, row: dict) -> dict:
+    """Shape one batches row for the API — shared by the list and detail
+    endpoints so they can't drift apart."""
+    derived = varying_params_from_config(row.get("config_json"))
+    successful = row["run_count"] - row["error_count"]
+    return {
+        "batch_id": row["batch_id"],
+        "created_at": row["created_at"],
+        "mode": row["mode"],
+        "sampling": _config_sampling(row.get("config_json")),
+        "name": row.get("name"),
+        "project_name": row.get("project_name"),
+        "frc": _frc_summary(db, row.get("frc_import_id")),
+        "total_expected": row["total_expected"],
+        "run_count": row["run_count"],
+        "pass_count": row["pass_count"],
+        "fail_count": max(successful - row["pass_count"], 0),
+        "error_count": row["error_count"],
+        "varying_params": derived["varying"],
+        "fixed_params": derived["fixed"],
+    }
+
+
+@app.patch("/api/batches/{batch_id}")
+def api_rename_batch(batch_id: str, request_body: dict):
+    """Relabel a batch. Accepts `name` and/or `project_name`; an omitted field
+    is left untouched and a blank one clears back to the short-id fallback.
+    Renaming after the fact matters — you rarely know the right name until
+    you've seen the results."""
+    updates = {
+        k: request_body[k]
+        for k in ("name", "project_name")
+        if k in request_body and isinstance(request_body[k], str)
+    }
+    db = _get_db()
+    try:
+        if not db.rename_batch(batch_id, **updates):
+            return JSONResponse({"error": "Not found"}, status_code=404)
+        row = next(
+            (r for r in db.get_batches() if r["batch_id"] == batch_id), None
+        )
+        return _batch_response(db, row)
+    finally:
+        db.close()
+
+
+@app.get("/api/projects")
+def api_list_projects():
+    """Distinct project names across batches and ungrouped runs — feeds the
+    config-page autocomplete and the dashboard filter."""
+    db = _get_db()
+    try:
+        return {"projects": db.get_project_names()}
+    finally:
+        db.close()
+
+
+@app.get("/api/frc-imports/{frc_id}")
+def api_get_frc_import(frc_id: str):
+    """Return a stored .frc, XML included, so the UI can offer *view original*
+    / *save a copy* from a batch that was seeded from one."""
+    db = _get_db()
+    try:
+        stored = db.get_frc_import(frc_id)
+    finally:
+        db.close()
+    if stored is None:
+        return JSONResponse({"error": "Not found"}, status_code=404)
+    return stored
 
 
 def _config_sampling(config_json: Optional[str]) -> Optional[str]:
@@ -886,27 +1002,14 @@ def api_get_batch(batch_id: str):
     views without re-paging the full list."""
     db = _get_db()
     try:
-        rows = db.get_batches()
+        row = next(
+            (r for r in db.get_batches() if r["batch_id"] == batch_id), None
+        )
+        if row is None:
+            return JSONResponse({"error": "Not found"}, status_code=404)
+        return _batch_response(db, row)
     finally:
         db.close()
-    row = next((r for r in rows if r["batch_id"] == batch_id), None)
-    if row is None:
-        return JSONResponse({"error": "Not found"}, status_code=404)
-    derived = varying_params_from_config(row.get("config_json"))
-    successful = row["run_count"] - row["error_count"]
-    return {
-        "batch_id": row["batch_id"],
-        "created_at": row["created_at"],
-        "mode": row["mode"],
-        "sampling": _config_sampling(row.get("config_json")),
-        "total_expected": row["total_expected"],
-        "run_count": row["run_count"],
-        "pass_count": row["pass_count"],
-        "fail_count": max(successful - row["pass_count"], 0),
-        "error_count": row["error_count"],
-        "varying_params": derived["varying"],
-        "fixed_params": derived["fixed"],
-    }
 
 
 @app.get("/api/batches/{batch_id}/shear-check")
@@ -1054,6 +1157,10 @@ def api_list_ungrouped_runs(limit: int = 50, offset: int = 0):
     try:
         runs = db.get_ungrouped_runs(limit=limit, offset=offset)
         total = db.get_ungrouped_runs_count()
+        for r in runs:
+            # Ungrouped by definition — no batch to inherit from, so this only
+            # resolves the run's own .frc pointer.
+            r["frc"] = _frc_summary(db, r.get("frc_import_id"))
     finally:
         db.close()
     for r in runs:
@@ -1116,14 +1223,37 @@ async def api_sweep_events():
 def api_get_run(run_id: int):
     """Get single run detail."""
     db = _get_db()
-    run = db.get_run(run_id)
-    db.close()
-    if run is None:
-        return JSONResponse({"error": "Not found"}, status_code=404)
+    try:
+        run = db.get_run(run_id)
+        if run is None:
+            return JSONResponse({"error": "Not found"}, status_code=404)
+        _attach_provenance(db, run)
+    finally:
+        db.close()
     # Advisory shear-connection warning (EN 1994-1-1 minimum), same as the batch
     # endpoint — does not affect the pass/fail verdict.
     run["shear_flags"] = flags_for_run(run)
     return _attach_status(run)
+
+
+def _attach_provenance(db, run: dict) -> dict:
+    """Resolve a run's effective name / project / .frc for display.
+
+    A run inside a batch stores NULLs and inherits the batch's labels, so a
+    rename can't leave the batch and its runs disagreeing. An ungrouped single
+    run carries its own. Mutates and returns `run`.
+    """
+    frc_id = run.get("frc_import_id")
+    if run.get("batch_id"):
+        batch = next(
+            (b for b in db.get_batches() if b["batch_id"] == run["batch_id"]), None
+        )
+        if batch is not None:
+            run["name"] = run.get("name") or batch.get("name")
+            run["project_name"] = run.get("project_name") or batch.get("project_name")
+            frc_id = frc_id or batch.get("frc_import_id")
+    run["frc"] = _frc_summary(db, frc_id)
+    return run
 
 
 @app.get("/api/runs/{run_id}/timeseries")
@@ -1153,7 +1283,18 @@ async def api_import_frc(file: UploadFile):
     except Exception as e:
         return JSONResponse({"error": f"Failed to parse .frc file: {e}"}, status_code=400)
 
-    return result
+    # Store the file verbatim (only once it has parsed — a rejected upload
+    # leaves no row). The returned id is what the config page sends back in
+    # its `meta` block, tying the resulting batch to this exact file.
+    db = _get_db()
+    try:
+        frc_id = db.record_frc_import(
+            file.filename or "imported.frc", xml_string, result.get("project")
+        )
+    finally:
+        db.close()
+
+    return {**result, "frc_import_id": frc_id, "frc_filename": file.filename}
 
 
 # ─── Report download ─────────────────────────────────────────────────────────

@@ -555,6 +555,230 @@ class TestFrcImport:
         assert resp.status_code == 400
         assert "signature" in resp.json()["error"].lower()
 
+
+def _sweep_inline(client, payload):
+    """POST a sweep with the background thread run inline, so the batch row
+    exists by the time the call returns."""
+    with patch("macs_automation.app._run_sweep_background"):
+        with patch("threading.Thread") as mock_thread:
+            def start_side_effect():
+                args = mock_thread.call_args
+                target = args[1]["target"] if "target" in args[1] else args[0][0]
+                target(*args[1].get("args", ()))
+            mock_instance = MagicMock()
+            mock_instance.start = start_side_effect
+            mock_thread.return_value = mock_instance
+            return client.post("/api/sweeps", json=payload)
+
+
+class TestFrcImportPersistence:
+    """A .frc used to vanish the moment the form was hydrated from it. It is
+    now stored verbatim and referenced by id, so a batch stays traceable back
+    to the file it came from."""
+
+    FRC = TestFrcImport.MINIMAL_FRC
+
+    def _import(self, client, filename="job.frc", xml=None):
+        return client.post(
+            "/api/import-frc",
+            files={"file": (filename, xml or self.FRC, "text/xml")},
+        )
+
+    def test_import_returns_id_and_filename(self, client):
+        data = self._import(client).json()
+        assert data["frc_import_id"]
+        assert data["frc_filename"] == "job.frc"
+
+    def test_import_is_retrievable_verbatim(self, client):
+        frc_id = self._import(client).json()["frc_import_id"]
+        resp = client.get(f"/api/frc-imports/{frc_id}")
+        assert resp.status_code == 200
+        stored = resp.json()
+        assert stored["filename"] == "job.frc"
+        assert stored["xml"] == self.FRC
+        assert stored["project"]["ProjectName"] == "Test Project"
+
+    def test_reimporting_same_bytes_reuses_the_id(self, client):
+        first = self._import(client, "job.frc").json()["frc_import_id"]
+        second = self._import(client, "job-copy.frc").json()["frc_import_id"]
+        assert first == second
+
+    def test_unknown_id_is_404(self, client):
+        assert client.get("/api/frc-imports/deadbeef").status_code == 404
+
+    def test_invalid_frc_is_not_stored(self, client):
+        resp = self._import(client, "bad.frc", xml="not xml at all")
+        assert resp.status_code == 400
+        from macs_automation.db import ResultsDB
+        import macs_automation.app as app_module
+        with ResultsDB(app_module.DB_PATH) as db:
+            assert db.conn.execute("SELECT COUNT(*) FROM frc_imports").fetchone()[0] == 0
+
+
+class TestSweepMeta:
+    """The config page sends a `meta` block alongside the sweep spec; it lands
+    on the batch row and comes back out on the batch endpoints."""
+
+    BASE = {"analysis_method": "iso", "sweep": {"qf": [300, 500]},
+            "fixed": {"span1": 9, "span2": 9}}
+
+    def test_meta_persists_onto_the_batch(self, client):
+        payload = dict(self.BASE, meta={
+            "name": "Span sweep 9-12m",
+            "project_name": "Atlantic Park Unit 7",
+        })
+        batch_id = _sweep_inline(client, payload).json()["batch_id"]
+        b = client.get(f"/api/batches/{batch_id}").json()
+        assert b["name"] == "Span sweep 9-12m"
+        assert b["project_name"] == "Atlantic Park Unit 7"
+
+    def test_batches_list_exposes_meta(self, client):
+        payload = dict(self.BASE, meta={"name": "N", "project_name": "P"})
+        _sweep_inline(client, payload)
+        row = client.get("/api/batches").json()["batches"][0]
+        assert row["name"] == "N"
+        assert row["project_name"] == "P"
+
+    def test_frc_provenance_resolves_to_filename_and_project(self, client):
+        frc = client.post(
+            "/api/import-frc",
+            files={"file": ("job.frc", TestFrcImport.MINIMAL_FRC, "text/xml")},
+        ).json()
+        payload = dict(self.BASE, meta={"frc_import_id": frc["frc_import_id"]})
+        batch_id = _sweep_inline(client, payload).json()["batch_id"]
+        b = client.get(f"/api/batches/{batch_id}").json()
+        assert b["frc"]["filename"] == "job.frc"
+        assert b["frc"]["project"]["ProjectName"] == "Test Project"
+        assert b["frc"]["id"] == frc["frc_import_id"]
+        # The XML itself is deliberately not inlined — the list endpoint would
+        # carry a 6 KB blob per row. Fetch it from /api/frc-imports/{id}.
+        assert "xml" not in b["frc"]
+
+    def test_absent_meta_leaves_nulls(self, client):
+        batch_id = _sweep_inline(client, dict(self.BASE)).json()["batch_id"]
+        b = client.get(f"/api/batches/{batch_id}").json()
+        assert b["name"] is None
+        assert b["project_name"] is None
+        assert b["frc"] is None
+
+    def test_meta_is_not_treated_as_a_sweep_parameter(self, client):
+        """`meta` rides on the same JSON body as the spec — it must never
+        reach the engine as an input."""
+        payload = dict(self.BASE, meta={"name": "N"})
+        with patch("macs_automation.app._run_sweep_background") as mock_run:
+            with patch("threading.Thread") as mock_thread:
+                mock_instance = MagicMock()
+                mock_instance.start = lambda: mock_thread.call_args[1]["target"](
+                    *mock_thread.call_args[1]["args"]
+                )
+                mock_thread.return_value = mock_instance
+                client.post("/api/sweeps", json=payload)
+        combinations = mock_run.call_args[0][0]
+        assert combinations
+        for params in combinations:
+            assert "meta" not in params
+
+    def test_unknown_frc_id_is_rejected(self, client):
+        payload = dict(self.BASE, meta={"frc_import_id": "deadbeef"})
+        resp = _sweep_inline(client, payload)
+        assert resp.status_code == 400
+        assert "frc" in resp.json()["error"].lower()
+
+
+class TestSingleRunMeta:
+    """Single runs have no batch, so they carry their own labels + .frc link."""
+
+    def test_run_records_name_project_and_frc(self, client):
+        frc = client.post(
+            "/api/import-frc",
+            files={"file": ("job.frc", TestFrcImport.MINIMAL_FRC, "text/xml")},
+        ).json()
+        body = {
+            "span1": 9, "span2": 9, "numbeam": 2, "method": "iso",
+            "meta": {
+                "name": "Plant deck check",
+                "project_name": "Atlantic Park Unit 7",
+                "frc_import_id": frc["frc_import_id"],
+            },
+        }
+        with patch("macs_automation.app._run_single_com") as mock_com:
+            mock_com.return_value = {
+                "uf_max": 0.5, "duration_ms": 10, "comp_failure": 0,
+                "time_series": [],
+            }
+            resp = client.post("/api/runs", json=body)
+        assert resp.status_code == 200
+        run = client.get(f"/api/runs/{resp.json()['id']}").json()
+        assert run["name"] == "Plant deck check"
+        assert run["project_name"] == "Atlantic Park Unit 7"
+        assert run["frc"]["filename"] == "job.frc"
+
+    def test_meta_does_not_reach_the_engine(self, client):
+        body = {
+            "span1": 9, "method": "iso",
+            "meta": {"name": "X", "project_name": "P"},
+        }
+        with patch("macs_automation.app._run_single_com") as mock_com:
+            mock_com.return_value = {
+                "uf_max": 0.5, "duration_ms": 10, "comp_failure": 0,
+                "time_series": [],
+            }
+            client.post("/api/runs", json=body)
+        params = mock_com.call_args[0][0]
+        assert "meta" not in params
+        assert params["_name"] == "X"
+
+
+class TestBatchRename:
+    """Batches can be relabelled after the fact — you rarely know the right
+    name until you've seen the results."""
+
+    def _make_batch(self, client):
+        payload = {"analysis_method": "iso", "sweep": {"qf": [300, 500]},
+                   "fixed": {"span1": 9}, "meta": {"name": "old", "project_name": "p"}}
+        return _sweep_inline(client, payload).json()["batch_id"]
+
+    def test_rename(self, client):
+        batch_id = self._make_batch(client)
+        resp = client.patch(
+            f"/api/batches/{batch_id}",
+            json={"name": "new", "project_name": "Q"},
+        )
+        assert resp.status_code == 200
+        b = client.get(f"/api/batches/{batch_id}").json()
+        assert b["name"] == "new"
+        assert b["project_name"] == "Q"
+
+    def test_partial_rename_leaves_the_other_field(self, client):
+        batch_id = self._make_batch(client)
+        client.patch(f"/api/batches/{batch_id}", json={"name": "new"})
+        b = client.get(f"/api/batches/{batch_id}").json()
+        assert b["name"] == "new"
+        assert b["project_name"] == "p"
+
+    def test_blank_name_clears_it(self, client):
+        batch_id = self._make_batch(client)
+        client.patch(f"/api/batches/{batch_id}", json={"name": "   "})
+        assert client.get(f"/api/batches/{batch_id}").json()["name"] is None
+
+    def test_unknown_batch_is_404(self, client):
+        resp = client.patch("/api/batches/nope", json={"name": "x"})
+        assert resp.status_code == 404
+
+
+class TestProjectsEndpoint:
+    def test_lists_distinct_project_names(self, client):
+        for name in ("Zeta", "Alpha", "Zeta"):
+            _sweep_inline(client, {
+                "analysis_method": "iso", "sweep": {"qf": [300]},
+                "fixed": {"span1": 9}, "meta": {"project_name": name},
+            })
+        assert client.get("/api/projects").json()["projects"] == ["Alpha", "Zeta"]
+
+    def test_empty_when_nothing_named(self, client):
+        assert client.get("/api/projects").json()["projects"] == []
+
+
 class TestHealthz:
     @pytest.fixture(autouse=True)
     def _reset_detect_cache(self):
