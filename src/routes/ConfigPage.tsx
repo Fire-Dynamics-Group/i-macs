@@ -30,6 +30,7 @@ import {
   type SearchableSelectOption,
 } from "../components/SearchableSelect";
 import { CustomSectionsPanel } from "../components/CustomSectionsPanel";
+import { InfoTip } from "../components/InfoTip";
 import { SweepConfigSection } from "../sweep/SweepConfigSection";
 import { VARYABLE_PARAMS } from "../sweep/varyableParams";
 import {
@@ -41,6 +42,31 @@ import {
 import type { FormValues } from "../types/formValues";
 
 const FY_OPTIONS = ["235", "275", "355", "460"];
+
+/** Background for the shear-connection inputs. The engine takes a percentage
+ * and divides by 100 (engine.py:169); the minimum mirrors shear_check.py:52. */
+const SH_CON_INFO = (
+  <>
+    <strong>Degree of shear connection (η)</strong> — how much of the shear
+    connection needed for <em>full composite action</em> is actually provided.
+    100% means enough studs for the slab and beam to act as one section; lower
+    values mean they act together only partially, so the beam carries more load
+    on its own and heats to failure sooner.
+    <br />
+    <br />
+    EN 1994-1-1 sets a minimum for internal beams:
+    <br />
+    <span className="mt-1 mb-1 block rounded bg-slate-100 px-2 py-1 font-mono text-[11px]">
+      η_min = 1 − (355 / f_y) × (0.75 − 0.03 L)
+    </span>
+    with <em>f_y</em> the steel grade (N/mm²) and <em>L</em> the span (m).
+    <br />
+    <br />
+    Below that, MACS+ raises an advisory warning but still runs the analysis. It
+    uses the bare formula — no 0.40 floor and no 25 m cap — so i-macs matches
+    that.
+  </>
+);
 
 /** Label text with an optional "● Imported from .frc" blue dot. */
 function FieldLabel({
@@ -72,20 +98,44 @@ const numberField = (
   register: ReturnType<typeof useForm<FormValues>>["register"],
   errors: ReturnType<typeof useForm<FormValues>>["formState"]["errors"],
   imported?: boolean,
-) => (
-  <label className="block">
-    <FieldLabel imported={imported}>{label}</FieldLabel>
-    <input
-      type="number"
-      step="any"
-      {...register(name as never, { required: true, valueAsNumber: true })}
-      className="mt-1 w-full rounded border border-slate-300 px-3 py-1.5 text-sm focus:border-blue-500 focus:outline-none"
-    />
-    {errors[name] && (
-      <span className="mt-1 block text-xs text-rose-600">Required</span>
-    )}
-  </label>
-);
+  opts?: { min?: number; max?: number; info?: React.ReactNode },
+) => {
+  const { min, max, info } = opts ?? {};
+  const id = `field-${String(name)}`;
+  const error = errors[name];
+  const outOfRange = error?.type === "min" || error?.type === "max";
+  return (
+    <div className="block">
+      {/* The info icon sits outside <label> — a button inside one would
+          forward its click to the input. */}
+      <span className="flex items-center">
+        <label htmlFor={id}>
+          <FieldLabel imported={imported}>{label}</FieldLabel>
+        </label>
+        {info && <InfoTip label={label}>{info}</InfoTip>}
+      </span>
+      <input
+        id={id}
+        type="number"
+        step="any"
+        min={min}
+        max={max}
+        {...register(name as never, {
+          required: true,
+          valueAsNumber: true,
+          ...(min !== undefined && { min }),
+          ...(max !== undefined && { max }),
+        })}
+        className="mt-1 w-full rounded border border-slate-300 px-3 py-1.5 text-sm focus:border-blue-500 focus:outline-none"
+      />
+      {error && (
+        <span className="mt-1 block text-xs text-rose-600">
+          {outOfRange ? `Must be between ${min} and ${max}` : "Required"}
+        </span>
+      )}
+    </div>
+  );
+};
 
 export function flattenSections(refData: RefData): SearchableSelectOption[] {
   const out: SearchableSelectOption[] = [];
@@ -710,6 +760,10 @@ export default function ConfigPage() {
 
       <form
         onSubmit={handleSubmit(onSubmit)}
+        // Let react-hook-form own validation: without this the browser blocks
+        // submit on an out-of-range number with a native bubble, and our inline
+        // messages never render.
+        noValidate
         className="space-y-6 rounded-md border border-slate-200 bg-white p-6 shadow-sm"
       >
         {mode === "sweep" && (
@@ -809,11 +863,12 @@ export default function ConfigPage() {
               imported={isImported("u_sec_fy")}
             />
             {numberField(
-              "Shear conn. spacing (mm)",
+              "Shear connection (%)",
               "u_sec_sh_con",
               register,
               errors,
               isImported("u_sec_sh_con"),
+              { min: 0, max: 100, info: SH_CON_INFO },
             )}
           </Grid>
           {(["a", "b", "c", "d"] as const).map((side) => {
@@ -1084,11 +1139,12 @@ function BeamSideRow({
           imported={isImported(compoKey)}
         />
         {numberField(
-          "Shear conn. spacing (mm)",
+          "Shear connection (%)",
           shConKey,
           register,
           errors,
           isImported(shConKey),
+          { min: 0, max: 100, info: SH_CON_INFO },
         )}
       </Grid>
     </>

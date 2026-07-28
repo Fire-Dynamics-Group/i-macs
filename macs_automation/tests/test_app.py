@@ -333,6 +333,20 @@ class TestSweepRunCap:
         assert "qf" in msg
         assert "window_percent" in msg
 
+    def test_rejects_fraction_window_percent(self, client):
+        """POST /api/sweeps with window_percent as fractions (all <= 1)
+        returns 400 — the unit trap from the legacy opening_perc files."""
+        payload = {
+            "analysis_method": "parametric",
+            "sweep": {
+                "qf": [249.3, 502.0],
+                "window_percent": [0.8764, 0.9060],
+            },
+        }
+        resp = client.post("/api/sweeps", json=payload)
+        assert resp.status_code == 400
+        assert "fraction" in resp.json().get("error", "")
+
 
 class TestSweepStatus:
     def test_sweep_status_idle(self, client):

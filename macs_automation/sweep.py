@@ -120,6 +120,34 @@ def resolve_mesh(params: dict, meshes_db: dict):
         params["mesh_area_min"] = mesh["transArea"]
 
 
+def _check_window_percent_units(config: dict) -> None:
+    """Reject window_percent supplied as fractions instead of percent.
+
+    The legacy sampler's opening_perc files store fractions in [0, 1]; the old
+    GUI clicker converted at type-in with max(g, 0.05) * 100. MACS+ takes
+    percent (0-100), so an all-<=1 batch simulates near-sealed compartments and
+    every run comes out ambient. Genuine percent arrays may contain the odd
+    sub-1% row (the opening-factor transform can emit them) but never consist
+    of them entirely, so only reject when ALL values are <= 1.
+    """
+    sweep = config.get("sweep", {})
+    if "window_percent" in sweep:
+        values = sweep["window_percent"]
+        candidates = values if isinstance(values, list) else [values]
+    elif "window_percent" in config.get("fixed", {}):
+        candidates = [config["fixed"]["window_percent"]]
+    else:
+        return
+    numeric = [v for v in candidates if isinstance(v, (int, float))]
+    if numeric and all(v <= 1 for v in numeric):
+        raise ValueError(
+            "window_percent values look like fractions (all <= 1), but MACS+ "
+            "takes a percentage (0-100). If these came from a legacy "
+            "opening_perc file, multiply by 100 first (the old GUI clicker "
+            "applied max(value, 0.05) * 100 at type-in)."
+        )
+
+
 def generate_combinations(config: dict) -> list[dict]:
     """Generate all parameter combinations from a sweep config.
 
@@ -135,6 +163,8 @@ def generate_combinations(config: dict) -> list[dict]:
 
     Returns a list of param dicts, one per combination.
     """
+    _check_window_percent_units(config)
+
     if config.get("sampling") == "lhs":
         from macs_automation.sampling import generate_lhs_samples
         return generate_lhs_samples(config)

@@ -121,7 +121,7 @@ test.describe("ConfigPage smoke", () => {
       expect(body[`side_${side}_composite`]).toEqual(expect.any(Number));
       expect(body[`side_${side}_sh_con`]).toEqual(expect.any(Number));
     }
-    // Centre beam shear connector spacing.
+    // Centre beam degree of shear connection (%).
     expect(body.u_sec_sh_con).toEqual(expect.any(Number));
   });
 

@@ -1,6 +1,7 @@
 /** @jsxImportSource react */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
@@ -125,5 +126,60 @@ describe("ConfigPage", () => {
     expect(
       await screen.findByRole("button", { name: /add section/i }),
     ).toBeInTheDocument();
+  });
+
+  // sh_con is a percentage (engine.py divides by 100), not a length — the old
+  // label said "spacing (mm)" and the field accepted any number.
+  it("constrains every shear-connection input to 0-100%", async () => {
+    renderPage();
+    const inputs = await screen.findAllByRole("spinbutton", {
+      name: /shear connection \(%\)/i,
+    });
+    // Centre (unprotected) beam plus perimeter sides A-D.
+    expect(inputs).toHaveLength(5);
+    for (const input of inputs) {
+      expect(input).toHaveAttribute("min", "0");
+      expect(input).toHaveAttribute("max", "100");
+    }
+  });
+
+  // The HTML min/max attributes alone don't block submission — the resolver has
+  // to reject it, or a 150% run reaches the engine as eta = 1.5.
+  it("blocks submission when shear connection is outside 0-100%", async () => {
+    const user = userEvent.setup();
+    renderPage();
+    const [centre] = await screen.findAllByRole("spinbutton", {
+      name: /shear connection \(%\)/i,
+    });
+    // The ref-data effect reset()s the form; type after it lands or the
+    // seeded 80 overwrites what we type.
+    await waitFor(() => expect(centre).toHaveValue(80));
+
+    await user.clear(centre);
+    await user.type(centre, "150");
+    await user.click(screen.getByRole("button", { name: /submit calculation/i }));
+
+    expect(
+      await screen.findByText(/must be between 0 and 100/i),
+    ).toBeInTheDocument();
+    expect(
+      fetchMock.mock.calls.some((c) => String(c[0]).includes("/api/run")),
+    ).toBe(false);
+  });
+
+  it("explains the degree of shear connection behind an info icon", async () => {
+    const user = userEvent.setup();
+    renderPage();
+    const icons = await screen.findAllByRole("button", {
+      name: /about shear connection/i,
+    });
+    expect(icons).toHaveLength(5);
+
+    await user.click(icons[0]);
+    const tip = await screen.findByRole("tooltip");
+    expect(tip).toHaveTextContent(/full composite action/i);
+    expect(tip).toHaveTextContent(/EN 1994-1-1/i);
+    // The minimum MACS+ checks against (shear_check.py:52).
+    expect(tip).toHaveTextContent(/1 − \(355 \/ f/i);
   });
 });

@@ -12,6 +12,82 @@ from macs_automation.sweep import (
 )
 
 
+class TestWindowPercentFractionGuard:
+    """window_percent supplied as fractions (all <= 1) is a unit error.
+
+    The legacy sampler's opening_perc files store fractions in [0, 1]; the old
+    GUI clicker converted at type-in with max(g, 0.05) * 100. Feeding the raw
+    fractions into a batch gives ~1% openings and near-ambient fires, so the
+    config must be rejected at submission."""
+
+    def test_paired_all_fraction_values_rejected(self):
+        config = {
+            "analysis_method": "parametric",
+            "sampling": "paired",
+            "sweep": {
+                "qf": [249.3, 502.0, 359.6],
+                "window_percent": [0.8764, 0.9060, 0.8833],
+            },
+        }
+        with pytest.raises(ValueError, match="fraction"):
+            generate_combinations(config)
+
+    def test_error_message_says_multiply_by_100(self):
+        config = {
+            "analysis_method": "parametric",
+            "sweep": {"window_percent": [0.5, 0.9]},
+        }
+        with pytest.raises(ValueError, match="multiply by 100"):
+            generate_combinations(config)
+
+    def test_paired_percent_values_accepted(self):
+        config = {
+            "analysis_method": "parametric",
+            "sweep": {"qf": [300, 500], "window_percent": [50.0, 87.6]},
+        }
+        combos = generate_combinations(config)
+        assert [c["window_percent"] for c in combos] == [50.0, 87.6]
+
+    def test_mixed_array_with_occasional_sub1_values_accepted(self):
+        """The opening-factor transform can legitimately emit the odd sub-1%
+        row; only an array consisting entirely of values <= 1 is fraction-like."""
+        config = {
+            "analysis_method": "parametric",
+            "sweep": {"window_percent": [0.23, 55.0, 95.0]},
+        }
+        combos = generate_combinations(config)
+        assert len(combos) == 3
+
+    def test_fixed_fraction_scalar_rejected(self):
+        config = {
+            "analysis_method": "parametric",
+            "fixed": {"window_percent": 0.9},
+        }
+        with pytest.raises(ValueError, match="fraction"):
+            generate_combinations(config)
+
+    def test_fixed_percent_scalar_accepted(self):
+        config = {
+            "analysis_method": "parametric",
+            "fixed": {"window_percent": 90},
+        }
+        combos = generate_combinations(config)
+        assert combos[0]["window_percent"] == 90
+
+    def test_lhs_config_with_fixed_fraction_rejected(self):
+        """The guard must fire before the LHS dispatch too."""
+        config = {
+            "analysis_method": "parametric",
+            "sampling": "lhs",
+            "n_samples": 5,
+            "seed": 1,
+            "distributions": {"qf": {"preset": "Office"}},
+            "fixed": {"window_percent": 0.9},
+        }
+        with pytest.raises(ValueError, match="fraction"):
+            generate_combinations(config)
+
+
 class TestDefaults:
     def test_default_method_is_parametric(self):
         """The fire analysis method defaults to parametric."""
