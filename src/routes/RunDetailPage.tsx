@@ -3,6 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 
 import { getRun, getRunTimeseries, type Run, type TimeSeriesRow } from "../api/client";
 import { CheckBreakdown } from "../components/CheckBreakdown";
+import { frcLabel } from "../lib/batchLabel";
 import { RunTemperatureChart } from "../sweep/RunTemperatureChart";
 import { RunCapacityDeflectionChart } from "../sweep/RunCapacityDeflectionChart";
 
@@ -31,7 +32,12 @@ export default function RunDetailPage() {
         ← Back to config
       </Link>
       <div className="mt-2 flex items-start justify-between gap-4">
-        <h1 className="text-2xl font-semibold tracking-tight">Run #{runId}</h1>
+        <div>
+          <h1 className="text-2xl font-semibold tracking-tight">
+            {runQuery.data?.name?.trim() || `Run #${runId}`}
+          </h1>
+          <RunProvenance run={runQuery.data} runId={runId} />
+        </div>
         {Number.isFinite(runId) && (
           <Link
             to={`/?from_run=${runId}`}
@@ -77,6 +83,25 @@ export default function RunDetailPage() {
       )}
       {tsQuery.data && <TimeSeriesTable rows={tsQuery.data} />}
     </div>
+  );
+}
+
+/** Project / .frc line under the run heading. A run in a batch inherits both
+ *  from its batch (resolved server-side), so this reads the same either way. */
+function RunProvenance({ run, runId }: { run?: Run; runId: number }) {
+  if (!run) return null;
+  const project = run.project_name?.trim();
+  const named = !!run.name?.trim();
+  if (!project && !run.frc && !named) return null;
+  return (
+    <p
+      className="mt-0.5 flex flex-wrap items-center gap-x-2 text-xs text-slate-500"
+      data-testid="run-provenance"
+    >
+      {named && <span className="font-mono">Run #{runId}</span>}
+      {project && <span className="font-medium text-slate-700">{project}</span>}
+      {run.frc && <span>seeded from {frcLabel(run.frc)}</span>}
+    </p>
   );
 }
 

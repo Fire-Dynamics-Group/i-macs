@@ -1,5 +1,6 @@
 """Tests for db.py — SQLite database layer."""
 
+import hashlib
 import socket
 import sqlite3
 
@@ -995,3 +996,234 @@ class TestEngineVersionProvenance:
         with ResultsDB(legacy) as upgraded:
             cols = {r[1] for r in upgraded.conn.execute("PRAGMA table_info(runs)")}
             assert "engine_version" in cols
+
+
+_FRC_XML = (
+    '<?xml version="1.0" encoding="utf-8"?><Root>'
+    "<Signature>FRACOFJobFile</Signature><Input><Project>"
+    '<Property Name="ProjectName" Value="Atlantic%20Park%20Unit%207" />'
+    '<Property Name="JobNumber" Value="0563" />'
+    "</Project></Input></Root>"
+)
+_FRC_PROJECT = {"ProjectName": "Atlantic Park Unit 7", "JobNumber": "0563"}
+
+
+class TestFrcImports:
+    """The imported .frc is stored verbatim so a batch can be traced back to
+    the exact file it came from — and re-opened or diffed later. Identity is
+    the sha256 of the XML, which dedupes repeat imports of the same file and
+    stays stable across devices (an autoincrement id would collide on sync)."""
+
+    def test_record_returns_content_hash(self, db):
+        frc_id = db.record_frc_import("job.frc", _FRC_XML, _FRC_PROJECT)
+        assert frc_id == hashlib.sha256(_FRC_XML.encode("utf-8")).hexdigest()
+
+    def test_round_trips_xml_and_project(self, db):
+        frc_id = db.record_frc_import("job.frc", _FRC_XML, _FRC_PROJECT)
+        stored = db.get_frc_import(frc_id)
+        assert stored["filename"] == "job.frc"
+        assert stored["xml"] == _FRC_XML
+        assert stored["project"] == _FRC_PROJECT
+
+    def test_same_content_dedupes_to_one_row(self, db):
+        first = db.record_frc_import("job.frc", _FRC_XML, _FRC_PROJECT)
+        second = db.record_frc_import("job-copy.frc", _FRC_XML, _FRC_PROJECT)
+        assert first == second
+        count = db.conn.execute("SELECT COUNT(*) FROM frc_imports").fetchone()[0]
+        assert count == 1
+
+    def test_dedupe_keeps_the_original_filename(self, db):
+        """Re-importing the same bytes under a new name must not rewrite the
+        history of batches already pointing at this row."""
+        db.record_frc_import("job.frc", _FRC_XML, _FRC_PROJECT)
+        frc_id = db.record_frc_import("job-copy.frc", _FRC_XML, _FRC_PROJECT)
+        assert db.get_frc_import(frc_id)["filename"] == "job.frc"
+
+    def test_different_content_gets_different_ids(self, db):
+        a = db.record_frc_import("a.frc", _FRC_XML, _FRC_PROJECT)
+        b = db.record_frc_import("b.frc", _FRC_XML.replace("0563", "0564"), {})
+        assert a != b
+
+    def test_get_missing_returns_none(self, db):
+        assert db.get_frc_import("nope") is None
+
+    def test_get_none_returns_none(self, db):
+        assert db.get_frc_import(None) is None
+
+    def test_malformed_project_json_degrades_to_empty(self, db):
+        """A hand-edited / partially-written row must not blow up the batch list."""
+        frc_id = db.record_frc_import("job.frc", _FRC_XML, _FRC_PROJECT)
+        db.conn.execute(
+            "UPDATE frc_imports SET project_json = ? WHERE id = ?", ("{oops", frc_id)
+        )
+        assert db.get_frc_import(frc_id)["project"] == {}
+
+
+class TestBatchNaming:
+    """Batches carry a human-friendly name + project name so the dashboard
+    shows something better than a 32-char hex id."""
+
+    def test_insert_batch_stores_name_project_and_frc(self, db):
+        frc_id = db.record_frc_import("job.frc", _FRC_XML, _FRC_PROJECT)
+        db.insert_batch(
+            "b1", mode="sweep", total_expected=2,
+            name="Span sweep 9-12m",
+            project_name="Atlantic Park Unit 7",
+            frc_import_id=frc_id,
+        )
+        b = db.get_batches()[0]
+        assert b["name"] == "Span sweep 9-12m"
+        assert b["project_name"] == "Atlantic Park Unit 7"
+        assert b["frc_import_id"] == frc_id
+
+    def test_names_default_to_none(self, db):
+        db.insert_batch("b1", mode="sweep", total_expected=1)
+        b = db.get_batches()[0]
+        assert b["name"] is None
+        assert b["project_name"] is None
+        assert b["frc_import_id"] is None
+
+    def test_rename_batch(self, db):
+        db.insert_batch("b1", mode="sweep", total_expected=1, name="old", project_name="p")
+        db.rename_batch("b1", name="new", project_name="Q")
+        b = db.get_batches()[0]
+        assert b["name"] == "new"
+        assert b["project_name"] == "Q"
+
+    def test_rename_batch_leaves_omitted_fields_alone(self, db):
+        db.insert_batch("b1", mode="sweep", total_expected=1, name="old", project_name="p")
+        db.rename_batch("b1", name="new")
+        b = db.get_batches()[0]
+        assert b["name"] == "new"
+        assert b["project_name"] == "p"
+
+    def test_rename_batch_can_clear_a_name(self, db):
+        db.insert_batch("b1", mode="sweep", total_expected=1, name="old")
+        db.rename_batch("b1", name="")
+        assert db.get_batches()[0]["name"] is None
+
+    def test_rename_unknown_batch_returns_false(self, db):
+        assert db.rename_batch("nope", name="x") is False
+
+    def test_rename_known_batch_returns_true(self, db):
+        db.insert_batch("b1", mode="sweep", total_expected=1)
+        assert db.rename_batch("b1", name="x") is True
+
+
+class TestProjectNames:
+    """Distinct project names drive the config-page autocomplete and the
+    dashboard filter."""
+
+    def test_returns_distinct_names_alphabetically(self, db):
+        db.insert_batch("b1", mode="sweep", total_expected=1, project_name="Zeta")
+        db.insert_batch("b2", mode="sweep", total_expected=1, project_name="Alpha")
+        db.insert_batch("b3", mode="sweep", total_expected=1, project_name="Zeta")
+        assert db.get_project_names() == ["Alpha", "Zeta"]
+
+    def test_skips_null_and_blank(self, db):
+        db.insert_batch("b1", mode="sweep", total_expected=1, project_name="Alpha")
+        db.insert_batch("b2", mode="sweep", total_expected=1)
+        db.insert_batch("b3", mode="sweep", total_expected=1, project_name="")
+        assert db.get_project_names() == ["Alpha"]
+
+    def test_includes_names_from_ungrouped_single_runs(self, db):
+        db.insert_run(
+            {"span1": 9.0, "method": "iso", "_project_name": "Solo Job"},
+            outputs={"comp_failure": 0, "time_series": []},
+        )
+        assert db.get_project_names() == ["Solo Job"]
+
+
+class TestRunProvenance:
+    """Single runs have no batch to hang a name off, so they carry their own
+    name / project / .frc pointer. Runs inside a batch leave these NULL and
+    inherit from the batch."""
+
+    def test_stores_name_project_and_frc(self, db):
+        frc_id = db.record_frc_import("job.frc", _FRC_XML, _FRC_PROJECT)
+        run_id = db.insert_run(
+            {
+                "span1": 9.0, "method": "iso",
+                "_name": "Plant deck check",
+                "_project_name": "Atlantic Park Unit 7",
+                "_frc_import_id": frc_id,
+            },
+            outputs={"comp_failure": 0, "time_series": []},
+        )
+        row = db.get_run(run_id)
+        assert row["name"] == "Plant deck check"
+        assert row["project_name"] == "Atlantic Park Unit 7"
+        assert row["frc_import_id"] == frc_id
+
+    def test_defaults_to_none(self, db):
+        run_id = db.insert_run(
+            {"span1": 9.0, "method": "iso"},
+            outputs={"comp_failure": 0, "time_series": []},
+        )
+        row = db.get_run(run_id)
+        assert row["name"] is None
+        assert row["project_name"] is None
+        assert row["frc_import_id"] is None
+
+    def test_run_row_to_params_round_trips_provenance(self, db):
+        """Retrying a failed run must not silently drop its provenance."""
+        frc_id = db.record_frc_import("job.frc", _FRC_XML, _FRC_PROJECT)
+        run_id = db.insert_run(
+            {
+                "span1": 9.0, "method": "iso",
+                "_name": "Plant deck check",
+                "_project_name": "Atlantic Park Unit 7",
+                "_frc_import_id": frc_id,
+            },
+            error="COM error",
+        )
+        params = db.run_row_to_params(db.get_run(run_id))
+        assert params["_name"] == "Plant deck check"
+        assert params["_project_name"] == "Atlantic Park Unit 7"
+        assert params["_frc_import_id"] == frc_id
+        # ...and must not leak the DB column names into the engine params.
+        assert "project_name" not in params
+        assert "frc_import_id" not in params
+
+
+class TestNamingMigrationLegacy:
+    """A DB written before this feature must gain the columns on open."""
+
+    def test_legacy_batches_gets_naming_columns(self, tmp_path):
+        legacy = tmp_path / "legacy.db"
+        conn = sqlite3.connect(legacy)
+        conn.execute(
+            "CREATE TABLE batches (batch_id TEXT PRIMARY KEY, created_at TEXT, "
+            "mode TEXT, total_expected INTEGER)"
+        )
+        conn.execute(
+            "INSERT INTO batches (batch_id, created_at, mode, total_expected) "
+            "VALUES ('old', '2026-01-01', 'sweep', 5)"
+        )
+        conn.commit()
+        conn.close()
+        with ResultsDB(legacy) as upgraded:
+            cols = {r[1] for r in upgraded.conn.execute("PRAGMA table_info(batches)")}
+            assert {"name", "project_name", "frc_import_id"} <= cols
+            assert upgraded.get_batches()[0]["name"] is None
+
+    def test_legacy_runs_gets_naming_columns(self, tmp_path):
+        legacy = tmp_path / "legacy.db"
+        conn = sqlite3.connect(legacy)
+        conn.execute("CREATE TABLE runs (id INTEGER PRIMARY KEY)")
+        conn.commit()
+        conn.close()
+        with ResultsDB(legacy) as upgraded:
+            cols = {r[1] for r in upgraded.conn.execute("PRAGMA table_info(runs)")}
+            assert {"name", "project_name", "frc_import_id"} <= cols
+
+    def test_frc_imports_table_created_on_legacy_db(self, tmp_path):
+        legacy = tmp_path / "legacy.db"
+        conn = sqlite3.connect(legacy)
+        conn.execute("CREATE TABLE runs (id INTEGER PRIMARY KEY)")
+        conn.commit()
+        conn.close()
+        with ResultsDB(legacy) as upgraded:
+            assert upgraded.conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='frc_imports'"
+            ).fetchone() is not None

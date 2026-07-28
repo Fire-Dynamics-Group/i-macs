@@ -60,6 +60,26 @@ async function postJson<T>(path: string, body: unknown): Promise<T> {
   return (await resp.json()) as T;
 }
 
+async function patchJson<T>(path: string, body: unknown): Promise<T> {
+  const base = await baseUrl();
+  const resp = await fetch(`${base}${path}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!resp.ok) {
+    let detail = "";
+    try {
+      const err = await resp.json();
+      detail = err.error ?? err.detail ?? JSON.stringify(err);
+    } catch {
+      detail = resp.statusText;
+    }
+    throw new Error(`PATCH ${path} failed: ${resp.status} ${detail}`);
+  }
+  return (await resp.json()) as T;
+}
+
 async function deleteJson<T>(path: string): Promise<T> {
   const base = await baseUrl();
   const resp = await fetch(`${base}${path}`, { method: "DELETE" });
@@ -105,6 +125,23 @@ export interface SubmitRunResponse {
   checks: Check[];
 }
 
+/** The .frc a batch or run was seeded from, as returned inline on batch and
+ *  run responses. The XML itself is fetched separately via `getFrcImport` —
+ *  inlining a ~6 KB blob per row would bloat the batches list. */
+export interface FrcRef {
+  id: string;
+  filename: string | null;
+  /** Raw <Project> properties: ProjectName, JobNumber, ClientCompany, … */
+  project: Record<string, string>;
+}
+
+/** Human-friendly labels + .frc provenance sent alongside a run/sweep submit. */
+export interface SubmitMeta {
+  name?: string;
+  project_name?: string;
+  frc_import_id?: string;
+}
+
 export interface Run {
   id: number;
   uf_max: number | null;
@@ -112,6 +149,11 @@ export interface Run {
   error: string | null;
   overall_pass: boolean;
   checks: Check[];
+  /** Labels. On a run inside a batch these are resolved from its batch; an
+   *  ungrouped single run carries its own. */
+  name?: string | null;
+  project_name?: string | null;
+  frc?: FrcRef | null;
   /** FRACOF engine version that produced this run (e.g. "2.0.0.2"); null for
    *  runs recorded before engine-version stamping. */
   engine_version?: string | null;
@@ -172,6 +214,11 @@ export interface BatchSummary {
   /** Sampling mode from the stored config: "paired" | "lhs" | null.
    *  null = historical grid sweep (predates paired-mode); Rerun is disabled. */
   sampling?: string | null;
+  /** User-supplied batch label; null falls back to the short batch id. */
+  name?: string | null;
+  project_name?: string | null;
+  /** The .frc this batch was seeded from, or null if configured by hand. */
+  frc?: FrcRef | null;
   total_expected: number;
   run_count: number;
   pass_count: number;
@@ -221,10 +268,15 @@ export const getRunTimeseries = (id: number) =>
 export interface ImportFrcResponse {
   params: Record<string, unknown>;
   project: Record<string, string>;
+  /** Content-hash id of the stored file — send it back in `meta` on submit so
+   *  the resulting batch stays traceable to this exact .frc. */
+  frc_import_id: string;
+  frc_filename: string | null;
 }
 
 /** Upload a .frc file to the sidecar for parsing. Returns engine-keyed
- *  params + project metadata. The frontend then runs these through
+ *  params + project metadata, and persists the file so the run or batch it
+ *  seeds can point back at it. The frontend then runs the params through
  *  hydrateFormFromFrcParams to map them to FormValues. */
 export async function importFrc(file: File): Promise<ImportFrcResponse> {
   const base = await baseUrl();
@@ -256,6 +308,32 @@ export function listRuns(opts: { batchId?: string } = {}): Promise<RunsListRespo
 
 export const getBatch = (batchId: string) =>
   getJson<BatchSummary>(`/api/batches/${encodeURIComponent(batchId)}`);
+
+/** Relabel a batch. Omitted fields are left untouched; an empty string clears
+ *  one back to the short-id fallback. */
+export const renameBatch = (
+  batchId: string,
+  patch: { name?: string; project_name?: string },
+) =>
+  patchJson<BatchSummary>(
+    `/api/batches/${encodeURIComponent(batchId)}`,
+    patch,
+  );
+
+/** Distinct project names across batches and ungrouped runs — powers the
+ *  config-page autocomplete and the dashboard filter. */
+export const listProjects = () =>
+  getJson<{ projects: string[] }>("/api/projects");
+
+export interface StoredFrc extends FrcRef {
+  /** The original file, byte-for-byte. */
+  xml: string;
+  imported_at: string | null;
+}
+
+/** Fetch a stored .frc including its XML, for *view original* / *save a copy*. */
+export const getFrcImport = (frcId: string) =>
+  getJson<StoredFrc>(`/api/frc-imports/${encodeURIComponent(frcId)}`);
 
 /** One beam whose degree of shear connection is below the EN 1994-1-1 minimum. */
 export interface ShearFlag {

@@ -8,6 +8,7 @@ import {
   listBatches,
   listUngroupedRuns,
 } from "../api/client";
+import { batchLabel, frcLabel } from "../lib/batchLabel";
 
 type RunStatus = "pass" | "fail" | "error";
 
@@ -277,22 +278,64 @@ function BatchesSection({
   batches: BatchSummary[];
   isError: boolean;
 }) {
+  // Project filter. Batches predating the naming feature have no project, so
+  // "All projects" must stay the default or existing history disappears.
+  const [projectFilter, setProjectFilter] = useState("");
+  const projects = useMemo(() => {
+    const seen = new Set<string>();
+    for (const b of batches) {
+      const p = b.project_name?.trim();
+      if (p) seen.add(p);
+    }
+    return [...seen].sort();
+  }, [batches]);
+  const shown = useMemo(
+    () =>
+      projectFilter
+        ? batches.filter((b) => b.project_name?.trim() === projectFilter)
+        : batches,
+    [batches, projectFilter],
+  );
+
   return (
     <section className="mb-8 overflow-hidden rounded-md border border-slate-200 bg-white shadow-sm">
-      <h2 className="border-b border-slate-100 px-4 py-2 text-sm font-semibold uppercase tracking-wide text-slate-500">
-        Batches
-      </h2>
+      <div className="flex items-center justify-between border-b border-slate-100 px-4 py-2">
+        <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-500">
+          Batches
+        </h2>
+        {projects.length > 0 && (
+          <select
+            value={projectFilter}
+            onChange={(e) => setProjectFilter(e.target.value)}
+            data-testid="project-filter"
+            aria-label="Filter batches by project"
+            className="rounded border border-slate-300 px-2 py-0.5 text-xs text-slate-700"
+          >
+            <option value="">All projects</option>
+            {projects.map((p) => (
+              <option key={p} value={p}>
+                {p}
+              </option>
+            ))}
+          </select>
+        )}
+      </div>
       {isError ? (
         <p className="px-4 py-3 text-sm text-rose-700">
           Couldn't load batches.
         </p>
       ) : batches.length === 0 ? (
         <p className="px-4 py-3 text-sm text-slate-500">No batches.</p>
+      ) : shown.length === 0 ? (
+        <p className="px-4 py-3 text-sm text-slate-500">
+          No batches in {projectFilter}.
+        </p>
       ) : (
         <table className="w-full text-sm">
           <thead className="bg-slate-50">
             <tr>
               <th className="px-4 py-2 text-left font-medium text-slate-700">Batch</th>
+              <th className="px-4 py-2 text-left font-medium text-slate-700">Project</th>
               <th className="px-4 py-2 text-left font-medium text-slate-700">When</th>
               <th className="px-4 py-2 text-left font-medium text-slate-700">Mode</th>
               <th className="px-4 py-2 text-left font-medium text-slate-700">Varying</th>
@@ -301,15 +344,32 @@ function BatchesSection({
             </tr>
           </thead>
           <tbody>
-            {batches.map((b) => (
+            {shown.map((b) => (
               <tr key={b.batch_id} className="border-t border-slate-100">
                 <td className="px-4 py-1.5">
                   <Link
                     to={`/batches/${b.batch_id}`}
-                    className="font-mono text-xs text-blue-700 hover:underline"
+                    className={
+                      "text-blue-700 hover:underline " +
+                      (b.name?.trim() ? "" : "font-mono text-xs")
+                    }
                   >
-                    {b.batch_id.slice(0, 8)}
+                    {batchLabel(b)}
                   </Link>
+                  {b.frc && (
+                    <span
+                      className="ml-1.5 text-xs text-slate-400"
+                      title={`Seeded from ${frcLabel(b.frc)}`}
+                      data-testid="batch-frc-marker"
+                    >
+                      .frc
+                    </span>
+                  )}
+                </td>
+                <td className="px-4 py-1.5 text-slate-600">
+                  {b.project_name?.trim() || (
+                    <span className="text-slate-400">—</span>
+                  )}
                 </td>
                 <td className="px-4 py-1.5 text-slate-600">
                   {formatTimestamp(b.created_at)}

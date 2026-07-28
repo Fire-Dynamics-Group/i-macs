@@ -9,6 +9,7 @@ import {
   getBatch,
   getRun,
   importFrc,
+  listProjects,
   setInstallLocation,
   submitRun,
   submitSweep,
@@ -17,12 +18,14 @@ import {
   type ImportFrcResponse,
   type RefData,
   type Run,
+  type SubmitMeta,
   type SubmitRunResponse,
   type SubmitSweepResponse,
 } from "../api/client";
 import { open as openDialog, message as showMessage } from "@tauri-apps/plugin-dialog";
 import { checkForUpdates } from "../lib/updater";
 import { hydrateFormFromRun } from "../lib/hydrateFormFromRun";
+import { batchLabel, suggestBatchName } from "../lib/batchLabel";
 import { hydrateFormFromFrcParams } from "../lib/hydrateFormFromFrcParams";
 import type { FrcHydrationResult } from "../lib/hydrateFormFromFrcParams";
 import {
@@ -358,7 +361,11 @@ export default function ConfigPage() {
       setVarying,
       setMode,
     });
-    setHydrationSource(`batch ${fromBatchId}`);
+    // Carry the source batch's labels + .frc link forward — a rerun belongs to
+    // the same project and the same original file.
+    setProjectName(fromBatchQuery.data.project_name ?? "");
+    setFrcImportId(fromBatchQuery.data.frc?.id ?? null);
+    setHydrationSource(`batch ${batchLabel(fromBatchQuery.data)}`);
   }, [fromBatchId, fromBatchQuery.data, refDataQuery.data, reset]);
 
   // FRC import state. `frcImportSource` drives the post-import banner;
@@ -384,6 +391,20 @@ export default function ConfigPage() {
   const [frcError, setFrcError] = useState<string | null>(null);
   const [isDragOver, setIsDragOver] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Human-friendly labels + .frc provenance. These are not FormValues — they
+  // never reach the engine — so they live outside react-hook-form and ride
+  // along in the submit payload's `meta` block.
+  const [projectName, setProjectName] = useState("");
+  const [batchName, setBatchName] = useState("");
+  const [frcImportId, setFrcImportId] = useState<string | null>(null);
+
+  // Previously-used project names, for the datalist autocomplete. Stale after
+  // a submit, but the config page remounts on navigate-back so it refetches.
+  const projectsQuery = useQuery({
+    queryKey: ["projects"],
+    queryFn: listProjects,
+  });
 
   const dismissBanner = () => {
     setHydrationSource(null);
@@ -412,6 +433,11 @@ export default function ConfigPage() {
       projectName: data.project?.ProjectName ?? "",
       clientName: data.project?.ClientName ?? "",
     });
+    // Link the resulting run/batch back to the stored file, and adopt the
+    // .frc's own project name so the batch inherits MACS+'s naming rather
+    // than making the user retype it.
+    setFrcImportId(data.frc_import_id ?? null);
+    if (data.project?.ProjectName) setProjectName(data.project.ProjectName);
     setFrcUnknownFields(result.unknownFields);
     setImportedFields(result.importedKeys);
     setFrcError(null);
@@ -498,7 +524,11 @@ export default function ConfigPage() {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, []);
 
-  const submit = useMutation<SubmitRunResponse, Error, FormValues>({
+  const submit = useMutation<
+    SubmitRunResponse,
+    Error,
+    FormValues & { meta?: SubmitMeta }
+  >({
     mutationFn: (values) => submitRun(values as unknown as Record<string, unknown>),
     onSuccess: (data) => navigate(`/runs/${data.id}`),
   });
@@ -524,10 +554,22 @@ export default function ConfigPage() {
     });
   }, [mode, varying]);
 
+  // Labels + provenance for the submit payload. Omitted entirely when nothing
+  // has been named and no .frc was imported, so an unnamed run posts exactly
+  // the body it always did.
+  const buildMeta = (): SubmitMeta | undefined => {
+    const meta: SubmitMeta = {};
+    if (batchName.trim()) meta.name = batchName.trim();
+    if (projectName.trim()) meta.project_name = projectName.trim();
+    if (frcImportId) meta.frc_import_id = frcImportId;
+    return Object.keys(meta).length > 0 ? meta : undefined;
+  };
+
   const onSubmit: SubmitHandler<FormValues> = (values) => {
     setSweepError(null);
+    const meta = buildMeta();
     if (mode === "single") {
-      submit.mutate(values);
+      submit.mutate(meta ? { ...values, meta } : values);
       return;
     }
 
@@ -565,7 +607,8 @@ export default function ConfigPage() {
       return;
     }
 
-    sweepSubmit.mutate(toRequestBody(result) as unknown as Record<string, unknown>);
+    const body = toRequestBody(result) as unknown as Record<string, unknown>;
+    sweepSubmit.mutate(meta ? { ...body, meta } : body);
   };
 
   const method = watch("method");
@@ -766,6 +809,66 @@ export default function ConfigPage() {
         noValidate
         className="space-y-6 rounded-md border border-slate-200 bg-white p-6 shadow-sm"
       >
+        <fieldset data-testid="naming-section">
+          <legend className="mb-2 text-sm font-semibold uppercase tracking-wide text-slate-500">
+            Project
+          </legend>
+          <div className="grid grid-cols-2 gap-4">
+            <label className="block">
+              <span className="text-sm font-medium text-slate-700">
+                Project name
+              </span>
+              <input
+                type="text"
+                list="project-name-options"
+                value={projectName}
+                onChange={(e) => setProjectName(e.target.value)}
+                placeholder="e.g. Atlantic Park Phase 2 Unit 7"
+                data-testid="project-name-input"
+                className="mt-1 w-full rounded border border-slate-300 px-2 py-1 text-sm"
+              />
+              <datalist id="project-name-options">
+                {(projectsQuery.data?.projects ?? []).map((p) => (
+                  <option key={p} value={p} />
+                ))}
+              </datalist>
+            </label>
+            <label className="block">
+              <span className="text-sm font-medium text-slate-700">
+                {mode === "sweep" ? "Batch name" : "Run name"}
+              </span>
+              <input
+                type="text"
+                value={batchName}
+                onChange={(e) => setBatchName(e.target.value)}
+                placeholder={
+                  (mode === "sweep" &&
+                    suggestBatchName(
+                      Object.keys(varying),
+                      sweepPreview?.totalRuns ?? 0,
+                    )) ||
+                  "Optional — shown instead of the id"
+                }
+                data-testid="batch-name-input"
+                className="mt-1 w-full rounded border border-slate-300 px-2 py-1 text-sm"
+              />
+            </label>
+          </div>
+          {frcImportId && (
+            <p
+              className="mt-2 text-xs text-slate-500"
+              data-testid="frc-provenance-note"
+            >
+              Seeded from{" "}
+              <code className="font-mono">
+                {frcImportSource?.filename ?? "an imported .frc"}
+              </code>
+              . The file is stored with this{" "}
+              {mode === "sweep" ? "batch" : "run"} so the setup stays traceable.
+            </p>
+          )}
+        </fieldset>
+
         {mode === "sweep" && (
           <>
             <SweepConfigSection

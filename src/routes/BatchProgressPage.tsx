@@ -4,6 +4,8 @@ import { useQuery } from "@tanstack/react-query";
 
 import type { BatchSummary, Run, ShearCheckResponse } from "../api/client";
 import { getBatch, getReportDocxUrl, getShearCheck } from "../api/client";
+import { BatchHeading } from "../components/BatchHeading";
+import { batchLabel } from "../lib/batchLabel";
 import { detectVaryingFields } from "../sweep/buildScatterTraces";
 import { DistributionChart } from "../sweep/DistributionChart";
 import { MacsScatter } from "../sweep/MacsScatter";
@@ -39,10 +41,18 @@ export default function BatchProgressPage() {
   if (isAnalytical && batch) {
     return <AnalyticalView batch={batch} />;
   }
-  return <LiveProgressView batchId={id} />;
+  // `batch` is null for a still-unknown / legacy id — the live view degrades
+  // to the raw id in that case.
+  return <LiveProgressView batchId={id} batch={batch ?? null} />;
 }
 
-function LiveProgressView({ batchId }: { batchId: string }) {
+function LiveProgressView({
+  batchId,
+  batch,
+}: {
+  batchId: string;
+  batch: BatchSummary | null;
+}) {
   const { runs, status, error, total, completed, errors } =
     useSweepEvents(batchId);
 
@@ -72,9 +82,21 @@ function LiveProgressView({ batchId }: { batchId: string }) {
         ← Back to history
       </Link>
       <h1 className="mt-2 text-2xl font-semibold tracking-tight">
-        Batch {batchId}
+        {batch ? batchLabel(batch) : `Batch ${batchId}`}
       </h1>
-      <p className="text-xs text-slate-500">{headerStatus}</p>
+      <p className="text-xs text-slate-500">
+        {batch?.project_name?.trim() && (
+          <>
+            <span className="font-medium text-slate-700">
+              {batch.project_name}
+            </span>
+            {" · "}
+          </>
+        )}
+        <span className="font-mono">{batchId}</span>
+        {" · "}
+        {headerStatus}
+      </p>
 
       <section className="mt-4 rounded-md border border-slate-200 bg-white p-4 shadow-sm">
         <div className="flex items-baseline justify-between text-sm">
@@ -171,17 +193,7 @@ function AnalyticalView({ batch }: { batch: BatchSummary }) {
         ← Back to history
       </Link>
       <header className="mt-2 flex flex-wrap items-baseline justify-between gap-3">
-        <div>
-          <h1 className="text-2xl font-semibold tracking-tight">
-            Batch {batch.batch_id}
-          </h1>
-          <p className="text-xs text-slate-500">
-            {batch.run_count} runs ·{" "}
-            <span className="text-emerald-700">{batch.pass_count} pass</span> ·{" "}
-            <span className="text-amber-700">{batch.fail_count} fail</span> ·{" "}
-            <span className="text-rose-700">{batch.error_count} error</span>
-          </p>
-        </div>
+        <BatchHeading batch={batch} />
         <div className="flex items-center gap-2">
           {docxUrl ? (
             <a
