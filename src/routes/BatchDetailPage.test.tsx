@@ -36,7 +36,7 @@ vi.stubGlobal("EventSource", MockEventSource);
 const fetchMock = vi.fn();
 vi.stubGlobal("fetch", fetchMock);
 
-import { _resetBaseUrl, type BatchSummary } from "../api/client";
+import { _resetBaseUrl, type BatchSetup, type BatchSummary } from "../api/client";
 import BatchProgressPage from "./BatchProgressPage";
 
 function jsonResponse(body: unknown, status = 200): Response {
@@ -70,6 +70,7 @@ const TWO_RUNS = [
 function mockResponses(opts: {
   batch?: typeof COMPLETE_BATCH;
   batchStatus?: number;
+  setup?: BatchSetup;
   runs?: Array<Record<string, unknown>>;
   shearCheck?: {
     batch_id: string;
@@ -99,6 +100,14 @@ function mockResponses(opts: {
           factored_hot_min: null,
           factored_hot_max: null,
         }),
+      );
+    }
+    // Must precede the bare /api/batches/BATCH123 match below — that prefix
+    // also matches this URL, and returning a BatchSummary here would feed the
+    // setup panel a payload with no `groups`.
+    if (url.includes("/setup")) {
+      return Promise.resolve(
+        jsonResponse(opts.setup ?? { run_count: 2, groups: [] }),
       );
     }
     if (url.includes("/api/batches/BATCH123")) {
@@ -150,6 +159,26 @@ describe("BatchProgressPage — analytical view", () => {
     expect(screen.getByRole("link", { name: "#1" })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "#2" })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: /rerun batch/i })).toBeInTheDocument();
+  });
+
+  it("shows the shared setup for a batch that was never seeded from a .frc", async () => {
+    mockResponses({
+      batch: COMPLETE_BATCH,
+      runs: TWO_RUNS,
+      setup: {
+        run_count: 2,
+        groups: [
+          {
+            title: "Geometry",
+            fields: [
+              { key: "span2", label: "Span 2", unit: "m", varies: false, value: 9 },
+            ],
+          },
+        ],
+      },
+    });
+    renderPage();
+    expect(await screen.findByTestId("setup-span2")).toHaveTextContent("9 m");
   });
 
   it("shows the batch name and project when the batch is named", async () => {

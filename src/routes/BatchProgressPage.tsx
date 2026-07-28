@@ -5,6 +5,7 @@ import { useQuery } from "@tanstack/react-query";
 import type { BatchSummary, Run, ShearCheckResponse } from "../api/client";
 import { getBatch, getReportDocxUrl, getShearCheck } from "../api/client";
 import { BatchHeading } from "../components/BatchHeading";
+import { BatchSetupPanel } from "../components/BatchSetupPanel";
 import { batchLabel } from "../lib/batchLabel";
 import { detectVaryingFields } from "../sweep/buildScatterTraces";
 import { DistributionChart } from "../sweep/DistributionChart";
@@ -118,6 +119,11 @@ function LiveProgressView({
         {error && <p className="mt-2 text-xs text-rose-700">{error}</p>}
       </section>
 
+      {/* Gated on the first run landing — the setup is derived from stored
+          runs, so before then there is nothing to derive it from. The
+          "shared across N runs" caption keeps a mid-sweep range honest. */}
+      {runs.length > 0 && <BatchSetupPanel batchId={batchId} />}
+
       <section className="mt-6 rounded-md border border-slate-200 bg-white p-4 shadow-sm">
         <h2 className="mb-2 text-sm font-semibold uppercase tracking-wide text-slate-500">
           Trend
@@ -224,6 +230,8 @@ function AnalyticalView({ batch }: { batch: BatchSummary }) {
           )}
         </div>
       </header>
+
+      <BatchSetupPanel batchId={batch.batch_id} />
 
       <ShearConnectionPanel batchId={batch.batch_id} />
 

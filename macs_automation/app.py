@@ -30,6 +30,7 @@ from pydantic import BaseModel
 from macs_automation.db import ResultsDB
 from macs_automation.data_loader import load_data, DEFAULT_DATA_PATH, _find_macs_data_xml
 from macs_automation import macs_detect
+from macs_automation.batch_setup import derive_setup
 from macs_automation.blue_book_sections import get_blue_book_sections
 from macs_automation.frc_parser import parse_frc_string
 from macs_automation.status import compute_status
@@ -950,6 +951,25 @@ def api_rename_batch(batch_id: str, request_body: dict):
             (r for r in db.get_batches() if r["batch_id"] == batch_id), None
         )
         return _batch_response(db, row)
+    finally:
+        db.close()
+
+
+@app.get("/api/batches/{batch_id}/setup")
+def api_batch_setup(batch_id: str):
+    """The configuration shared by every run in a batch.
+
+    Derived from the stored run rows rather than the submitted spec, so it
+    covers hand-configured batches, .frc-seeded ones, and legacy batches that
+    predate config_json alike — and reflects what the engine actually received.
+    See batch_setup.derive_setup for why that distinction matters.
+    """
+    db = _get_db()
+    try:
+        known = any(b["batch_id"] == batch_id for b in db.get_batches())
+        if not known:
+            return JSONResponse({"error": "Not found"}, status_code=404)
+        return derive_setup(db.get_batch_runs(batch_id))
     finally:
         db.close()
 

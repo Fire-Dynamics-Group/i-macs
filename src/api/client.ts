@@ -320,6 +320,32 @@ export const renameBatch = (
     patch,
   );
 
+/** One input of a batch's shared setup. `varies: false` carries a single
+ *  `value`; `varies: true` carries a numeric `min`/`max` range, or a sampled
+ *  `values` list when the field isn't numeric. */
+export interface SetupField {
+  key: string;
+  label: string;
+  /** "mm", "MPa", … or "" for dimensionless fields. */
+  unit: string;
+  varies: boolean;
+  value?: string | number | null;
+  distinct?: number;
+  min?: number;
+  max?: number;
+  values?: Array<string | number | null>;
+}
+
+export interface BatchSetup {
+  run_count: number;
+  groups: Array<{ title: string; fields: SetupField[] }>;
+}
+
+/** The configuration shared by every run in a batch, derived from the stored
+ *  runs — so it works for hand-configured batches, not just .frc-seeded ones. */
+export const getBatchSetup = (batchId: string) =>
+  getJson<BatchSetup>(`/api/batches/${encodeURIComponent(batchId)}/setup`);
+
 /** Distinct project names across batches and ungrouped runs — powers the
  *  config-page autocomplete and the dashboard filter. */
 export const listProjects = () =>

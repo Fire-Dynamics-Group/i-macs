@@ -780,6 +780,61 @@ class TestBatchRename:
         assert resp.status_code == 404
 
 
+class TestBatchSetupEndpoint:
+    """The shared setup is derived from the runs, so it works for batches that
+    were configured by hand as well as ones seeded from a .frc — and for
+    legacy batches that predate config_json entirely."""
+
+    def _seed(self, db_path, batch_id="b1", spans=(9.0, 12.0), config_json=None):
+        from macs_automation.db import ResultsDB
+        db = ResultsDB(db_path)
+        db.insert_batch(batch_id, mode="sweep", total_expected=len(spans),
+                        config_json=config_json)
+        for i, span in enumerate(spans):
+            db.insert_run(
+                {"span1": span, "span2": 9.0, "numbeam": 2, "fck": 25.0,
+                 "method": "iso", "time_limit": 60, "_batch_id": batch_id},
+                outputs={"comp_failure": 0, "uf_max": 0.5, "time_series": []},
+            )
+        db.close()
+
+    def _fields(self, body):
+        return {f["key"]: f for g in body["groups"] for f in g["fields"]}
+
+    def test_reports_shared_and_varying_inputs(self, client, use_tmp_db):
+        self._seed(use_tmp_db)
+        body = client.get("/api/batches/b1/setup").json()
+        assert body["run_count"] == 2
+        fields = self._fields(body)
+        assert fields["span2"]["varies"] is False
+        assert fields["span2"]["value"] == 9.0
+        assert fields["span1"]["varies"] is True
+        assert (fields["span1"]["min"], fields["span1"]["max"]) == (9.0, 12.0)
+
+    def test_works_without_config_json(self, client, use_tmp_db):
+        """A batch predating config_json still has runs, so it still has a
+        setup — this is the case fixed_params could never cover."""
+        self._seed(use_tmp_db, config_json=None)
+        body = client.get("/api/batches/b1/setup").json()
+        assert self._fields(body)["fck"]["value"] == 25.0
+
+    def test_excludes_outputs(self, client, use_tmp_db):
+        self._seed(use_tmp_db)
+        assert "uf_max" not in self._fields(client.get("/api/batches/b1/setup").json())
+
+    def test_unknown_batch_is_404(self, client, use_tmp_db):
+        self._seed(use_tmp_db)
+        assert client.get("/api/batches/nope/setup").status_code == 404
+
+    def test_batch_with_no_runs_yet_is_empty_not_an_error(self, client, use_tmp_db):
+        from macs_automation.db import ResultsDB
+        db = ResultsDB(use_tmp_db)
+        db.insert_batch("empty", mode="sweep", total_expected=5)
+        db.close()
+        body = client.get("/api/batches/empty/setup").json()
+        assert body == {"run_count": 0, "groups": []}
+
+
 class TestProjectsEndpoint:
     def test_lists_distinct_project_names(self, client):
         for name in ("Zeta", "Alpha", "Zeta"):
