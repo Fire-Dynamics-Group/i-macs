@@ -1276,6 +1276,25 @@ def _attach_provenance(db, run: dict) -> dict:
     return run
 
 
+@app.get("/api/runs/{run_id}/setup")
+def api_run_setup(run_id: int):
+    """The inputs a single run was calculated with.
+
+    Same shape as the batch endpoint (a one-run batch varies in nothing), so
+    the UI renders both with one component. Works for errored runs too — the
+    inputs are recorded before the engine is invoked, which is precisely when
+    you want to see them.
+    """
+    db = _get_db()
+    try:
+        run = db.get_run(run_id)
+        if run is None:
+            return JSONResponse({"error": "Not found"}, status_code=404)
+        return derive_setup([run])
+    finally:
+        db.close()
+
+
 @app.get("/api/runs/{run_id}/timeseries")
 def api_get_timeseries(run_id: int):
     """Get time series data for a run (for plots)."""

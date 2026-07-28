@@ -346,6 +346,11 @@ export interface BatchSetup {
 export const getBatchSetup = (batchId: string) =>
   getJson<BatchSetup>(`/api/batches/${encodeURIComponent(batchId)}/setup`);
 
+/** The inputs a single run was calculated with — same shape as the batch
+ *  setup (a one-run batch varies in nothing). Works for errored runs. */
+export const getRunSetup = (runId: number) =>
+  getJson<BatchSetup>(`/api/runs/${runId}/setup`);
+
 /** Distinct project names across batches and ungrouped runs — powers the
  *  config-page autocomplete and the dashboard filter. */
 export const listProjects = () =>

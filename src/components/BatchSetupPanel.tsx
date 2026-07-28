@@ -15,8 +15,8 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 
-import type { SetupField } from "../api/client";
-import { getBatchSetup } from "../api/client";
+import type { BatchSetup, SetupField } from "../api/client";
+import { getBatchSetup, getRunSetup } from "../api/client";
 
 /** Trim float noise without hiding genuine precision (9.0 → "9", 0.85 → "0.85"). */
 function formatValue(v: string | number | null | undefined): string {
@@ -69,16 +69,46 @@ function FieldRow({ field }: { field: SetupField }) {
   );
 }
 
+/** The configuration shared by every run in a batch. */
 export function BatchSetupPanel({ batchId }: { batchId: string }) {
-  const [open, setOpen] = useState(true);
-  const setupQuery = useQuery({
+  const query = useQuery({
     queryKey: ["batch-setup", batchId],
     queryFn: () => getBatchSetup(batchId),
     enabled: batchId.length > 0,
   });
+  return <SetupPanel query={query} />;
+}
+
+/** The inputs a single run was calculated with. Collapsed by default — on the
+ *  run page the charts are the headline, and 60 fields would bury them. */
+export function RunSetupPanel({ runId }: { runId: number }) {
+  const query = useQuery({
+    queryKey: ["run-setup", runId],
+    queryFn: () => getRunSetup(runId),
+    enabled: Number.isFinite(runId),
+  });
+  return <SetupPanel query={query} defaultOpen={false} countsAsRuns={false} />;
+}
+
+function SetupPanel({
+  query: setupQuery,
+  defaultOpen = true,
+  countsAsRuns = true,
+}: {
+  query: {
+    data?: BatchSetup;
+    isLoading: boolean;
+    isError: boolean;
+    error: unknown;
+  };
+  defaultOpen?: boolean;
+  /** A single run has nothing to be "shared across", so suppress the caption. */
+  countsAsRuns?: boolean;
+}) {
+  const [open, setOpen] = useState(defaultOpen);
 
   // Tolerate a payload without `groups` rather than letting one unexpected
-  // response take down the whole batch page with it.
+  // response take down the whole page with it.
   const setup = setupQuery.data;
   const groups = setup?.groups ?? [];
 
@@ -92,7 +122,7 @@ export function BatchSetupPanel({ batchId }: { batchId: string }) {
       >
         <span className="text-sm font-semibold uppercase tracking-wide text-slate-500">
           Setup
-          {setup && (setup.run_count ?? 0) > 0 && (
+          {countsAsRuns && setup && (setup.run_count ?? 0) > 0 && (
             <span className="ml-2 font-normal normal-case tracking-normal text-slate-400">
               shared across {setup.run_count} run
               {setup.run_count === 1 ? "" : "s"}
@@ -116,7 +146,9 @@ export function BatchSetupPanel({ batchId }: { batchId: string }) {
           )}
           {setup && groups.length === 0 && (
             <p className="text-slate-500">
-              No runs recorded yet — the setup appears once the first run lands.
+              {countsAsRuns
+                ? "No runs recorded yet — the setup appears once the first run lands."
+                : "No inputs recorded for this run."}
             </p>
           )}
           {setup && groups.length > 0 && (

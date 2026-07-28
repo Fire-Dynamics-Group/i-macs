@@ -4,14 +4,16 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { BatchSetupPanel } from "./BatchSetupPanel";
+import { BatchSetupPanel, RunSetupPanel } from "./BatchSetupPanel";
 import type { BatchSetup } from "../api/client";
 
 const getBatchSetup = vi.fn();
+const getRunSetup = vi.fn();
 
 vi.mock("../api/client", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../api/client")>()),
   getBatchSetup: (...args: unknown[]) => getBatchSetup(...args),
+  getRunSetup: (...args: unknown[]) => getRunSetup(...args),
 }));
 
 const SETUP: BatchSetup = {
@@ -58,9 +60,32 @@ function renderPanel() {
   );
 }
 
+function renderRunPanel() {
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  });
+  return render(
+    <QueryClientProvider client={client}>
+      <RunSetupPanel runId={7} />
+    </QueryClientProvider>,
+  );
+}
+
 beforeEach(() => {
   getBatchSetup.mockReset();
+  getRunSetup.mockReset();
   getBatchSetup.mockResolvedValue(SETUP);
+  getRunSetup.mockResolvedValue({
+    run_count: 1,
+    groups: [
+      {
+        title: "Geometry",
+        fields: [
+          { key: "span1", label: "Span 1", unit: "m", varies: false, value: 9 },
+        ],
+      },
+    ],
+  } satisfies BatchSetup);
 });
 
 describe("BatchSetupPanel", () => {
@@ -144,5 +169,36 @@ describe("BatchSetupPanel", () => {
     expect(await screen.findByText("Span 2")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: /setup/i }));
     expect(screen.queryByText("Span 2")).not.toBeInTheDocument();
+  });
+
+  it("captions a batch with the number of runs the setup is shared across", async () => {
+    renderPanel();
+    expect(await screen.findByText(/shared across 250 runs/i)).toBeInTheDocument();
+  });
+});
+
+describe("RunSetupPanel", () => {
+  it("shows a single run's inputs once expanded", async () => {
+    const user = userEvent.setup();
+    renderRunPanel();
+    // Collapsed by default so the charts stay above the fold.
+    expect(screen.queryByText("Span 1")).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /setup/i }));
+    expect(await screen.findByTestId("setup-span1")).toHaveTextContent("9 m");
+  });
+
+  it("omits the shared-across caption — a single run shares with nothing", async () => {
+    const user = userEvent.setup();
+    renderRunPanel();
+    await user.click(screen.getByRole("button", { name: /setup/i }));
+    await screen.findByTestId("setup-span1");
+    expect(screen.queryByText(/shared across/i)).not.toBeInTheDocument();
+  });
+
+  it("fetches the run's setup, not a batch's", async () => {
+    renderRunPanel();
+    await screen.findByRole("button", { name: /setup/i });
+    expect(getRunSetup).toHaveBeenCalledWith(7);
+    expect(getBatchSetup).not.toHaveBeenCalled();
   });
 });

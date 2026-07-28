@@ -3,6 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 
 import { getRun, getRunTimeseries, type Run, type TimeSeriesRow } from "../api/client";
 import { CheckBreakdown } from "../components/CheckBreakdown";
+import { RunSetupPanel } from "../components/BatchSetupPanel";
 import { frcLabel } from "../lib/batchLabel";
 import { RunTemperatureChart } from "../sweep/RunTemperatureChart";
 import { RunCapacityDeflectionChart } from "../sweep/RunCapacityDeflectionChart";
@@ -58,6 +59,7 @@ export default function RunDetailPage() {
       {runQuery.data && !runQuery.data.error && (
         <CheckBreakdown checks={runQuery.data.checks ?? []} />
       )}
+      {Number.isFinite(runId) && <RunSetupPanel runId={runId} />}
       {tsQuery.data && tsQuery.data.length > 0 && (
         <>
           <section className="mt-6 rounded-md border border-slate-200 bg-white p-4 shadow-sm">

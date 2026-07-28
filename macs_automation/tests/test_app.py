@@ -835,6 +835,58 @@ class TestBatchSetupEndpoint:
         assert body == {"run_count": 0, "groups": []}
 
 
+class TestRunSetupEndpoint:
+    """An individual run showed outputs and charts but never what it was run
+    with. Its inputs have always been on the row — they just weren't exposed."""
+
+    def _seed_run(self, db_path, **extra):
+        from macs_automation.db import ResultsDB
+        db = ResultsDB(db_path)
+        params = {"span1": 9.0, "span2": 9.0, "numbeam": 2, "fck": 25.0,
+                  "method": "iso", "time_limit": 60}
+        params.update(extra)
+        run_id = db.insert_run(
+            params, outputs={"comp_failure": 0, "uf_max": 0.5, "time_series": []}
+        )
+        db.close()
+        return run_id
+
+    def _fields(self, body):
+        return {f["key"]: f for g in body["groups"] for f in g["fields"]}
+
+    def test_reports_the_runs_inputs(self, client, use_tmp_db):
+        run_id = self._seed_run(use_tmp_db)
+        body = client.get(f"/api/runs/{run_id}/setup").json()
+        assert body["run_count"] == 1
+        fields = self._fields(body)
+        assert fields["span1"]["value"] == 9.0
+        assert fields["fck"]["value"] == 25.0
+
+    def test_nothing_varies_within_a_single_run(self, client, use_tmp_db):
+        run_id = self._seed_run(use_tmp_db)
+        body = client.get(f"/api/runs/{run_id}/setup").json()
+        assert all(not f["varies"] for f in self._fields(body).values())
+
+    def test_works_for_a_run_inside_a_batch(self, client, use_tmp_db):
+        run_id = self._seed_run(use_tmp_db, _batch_id="b1")
+        assert client.get(f"/api/runs/{run_id}/setup").status_code == 200
+
+    def test_covers_a_failed_run(self, client, use_tmp_db):
+        """Inputs are recorded even when the calc errored — that's exactly when
+        you want to see what was fed in."""
+        from macs_automation.db import ResultsDB
+        db = ResultsDB(use_tmp_db)
+        run_id = db.insert_run(
+            {"span1": 9.0, "method": "iso"}, error="COM error"
+        )
+        db.close()
+        body = client.get(f"/api/runs/{run_id}/setup").json()
+        assert self._fields(body)["span1"]["value"] == 9.0
+
+    def test_unknown_run_is_404(self, client, use_tmp_db):
+        assert client.get("/api/runs/99999/setup").status_code == 404
+
+
 class TestProjectsEndpoint:
     def test_lists_distinct_project_names(self, client):
         for name in ("Zeta", "Alpha", "Zeta"):
