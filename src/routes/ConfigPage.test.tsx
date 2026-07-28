@@ -23,8 +23,8 @@ vi.mock("../lib/updater", () => ({
 const fetchMock = vi.fn();
 vi.stubGlobal("fetch", fetchMock);
 
-import { _resetBaseUrl } from "../api/client";
-import ConfigPage from "./ConfigPage";
+import { _resetBaseUrl, type RefData } from "../api/client";
+import ConfigPage, { flattenSections } from "./ConfigPage";
 
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -39,6 +39,9 @@ function installFetchMock() {
       return Promise.resolve(
         jsonResponse({ ok: true, macs_installed: true, com: true }),
       );
+    }
+    if (url.includes("/api/custom-sections")) {
+      return Promise.resolve(jsonResponse([]));
     }
     if (url.includes("/api/ref-data")) {
       return Promise.resolve(
@@ -90,5 +93,37 @@ describe("ConfigPage", () => {
     await waitFor(() => {
       expect(methodSelect).toHaveValue("parametric");
     });
+  });
+
+  it("labels catalogue sections with their family", () => {
+    const refData = {
+      sections: {
+        IPE: [{ id: "IPE_500", name: "IPE 500", h: 500, b: 200 }],
+      },
+    } as unknown as RefData;
+
+    expect(flattenSections(refData)[0].label).toBe("IPE 500 (IPE)");
+  });
+
+  it("does not repeat a suffix the section name already carries", () => {
+    // The sidecar labels custom rows "<name> (Custom)" (app.py:167) — appending
+    // the family again would render "My Beam (Custom) (Custom)".
+    const refData = {
+      sections: {
+        Custom: [{ id: "CUSTOM_1", name: "My Beam (Custom)", h: 529.1, b: 165.9 }],
+      },
+    } as unknown as RefData;
+
+    const [option] = flattenSections(refData);
+    expect(option.label).toBe("My Beam (Custom)");
+    expect(option.id).toBe("CUSTOM_1");
+    expect(option.secondary).toBe("529.1 × 165.9");
+  });
+
+  it("offers a custom-sections panel for beams outside the catalogue", async () => {
+    renderPage();
+    expect(
+      await screen.findByRole("button", { name: /add section/i }),
+    ).toBeInTheDocument();
   });
 });

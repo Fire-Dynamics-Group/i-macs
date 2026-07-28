@@ -60,6 +60,15 @@ async function postJson<T>(path: string, body: unknown): Promise<T> {
   return (await resp.json()) as T;
 }
 
+async function deleteJson<T>(path: string): Promise<T> {
+  const base = await baseUrl();
+  const resp = await fetch(`${base}${path}`, { method: "DELETE" });
+  if (!resp.ok) {
+    throw new Error(`DELETE ${path} failed: ${resp.status} ${resp.statusText}`);
+  }
+  return (await resp.json()) as T;
+}
+
 // ─── Types ──────────────────────────────────────────────────────────────
 
 export interface SectionsByFamily {
@@ -340,6 +349,32 @@ export function listUngroupedRuns(
 }
 
 export const fetchStats = () => getJson<StatsResponse>("/api/stats");
+
+/** A user-defined beam section, stored in the per-device SQLite DB. The
+ *  sidecar merges these ahead of the Blue Book / Data.xml catalogue, so they
+ *  sort to the top of the section dropdown as "<name> (Custom)". */
+export interface CustomSection {
+  id: string;
+  name: string;
+  h: number;
+  b: number;
+  tw: number;
+  tf: number;
+  created_at?: string | null;
+}
+
+export type CustomSectionInput = Omit<CustomSection, "id" | "created_at">;
+
+export const listCustomSections = () =>
+  getJson<CustomSection[]>("/api/custom-sections");
+
+export const createCustomSection = (section: CustomSectionInput) =>
+  postJson<CustomSection>("/api/custom-sections", section);
+
+export const deleteCustomSection = (id: string) =>
+  deleteJson<{ ok?: boolean }>(
+    `/api/custom-sections/${encodeURIComponent(id)}`,
+  );
 
 /** Resolved URL for the SSE endpoint. The dashboard's hook opens an
  *  EventSource against this URL. */

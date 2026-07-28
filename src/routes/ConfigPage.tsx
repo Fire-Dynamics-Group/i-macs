@@ -29,6 +29,7 @@ import {
   SearchableSelect,
   type SearchableSelectOption,
 } from "../components/SearchableSelect";
+import { CustomSectionsPanel } from "../components/CustomSectionsPanel";
 import { SweepConfigSection } from "../sweep/SweepConfigSection";
 import { VARYABLE_PARAMS } from "../sweep/varyableParams";
 import {
@@ -86,15 +87,18 @@ const numberField = (
   </label>
 );
 
-function flattenSections(refData: RefData): SearchableSelectOption[] {
+export function flattenSections(refData: RefData): SearchableSelectOption[] {
   const out: SearchableSelectOption[] = [];
   for (const family of Object.keys(refData.sections)) {
+    const suffix = ` (${family})`;
     for (const sec of refData.sections[family]) {
       const depthStr = String(sec.h);
       const widthStr = String(sec.b);
       out.push({
         id: sec.id,
-        label: `${sec.name} (${family})`,
+        // Custom rows already arrive as "<name> (Custom)" from the sidecar,
+        // so only add the family when the name isn't carrying it already.
+        label: sec.name.endsWith(suffix) ? sec.name : `${sec.name}${suffix}`,
         secondary: `${depthStr} × ${widthStr}`,
         searchTerms: [family, depthStr, widthStr],
       });
@@ -832,6 +836,9 @@ export default function ConfigPage() {
               />
             );
           })}
+          <div className="mt-4">
+            <CustomSectionsPanel />
+          </div>
         </Section>
 
         <Section title="Loading">

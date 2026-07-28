@@ -13,7 +13,15 @@ vi.mock("@tauri-apps/api/core", () => ({
 const fetchMock = vi.fn();
 vi.stubGlobal("fetch", fetchMock);
 
-import { _resetBaseUrl, fetchHealth, fetchRefData, submitRun } from "./client";
+import {
+  _resetBaseUrl,
+  createCustomSection,
+  deleteCustomSection,
+  fetchHealth,
+  fetchRefData,
+  listCustomSections,
+  submitRun,
+} from "./client";
 
 afterEach(() => {
   fetchMock.mockReset();
@@ -90,5 +98,84 @@ describe("api/client", () => {
     );
 
     await expect(submitRun({})).rejects.toThrow(/engine timeout/);
+  });
+});
+
+describe("api/client — custom sections", () => {
+  it("GETs /api/custom-sections and returns the stored rows", async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify([
+          { id: "CUSTOM_1", name: "Plate girder", h: 900, b: 300, tw: 12, tf: 25 },
+        ]),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+
+    const sections = await listCustomSections();
+
+    expect(sections).toHaveLength(1);
+    expect(sections[0].id).toBe("CUSTOM_1");
+    expect(sections[0].name).toBe("Plate girder");
+    expect(fetchMock).toHaveBeenCalledWith(
+      "http://127.0.0.1:8765/api/custom-sections",
+    );
+  });
+
+  it("POSTs the five dimension fields to /api/custom-sections", async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({ id: "CUSTOM_2", name: "UB 533x165x74", h: 529.1, b: 165.9, tw: 9.7, tf: 13.6 }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+
+    const created = await createCustomSection({
+      name: "UB 533x165x74",
+      h: 529.1,
+      b: 165.9,
+      tw: 9.7,
+      tf: 13.6,
+    });
+
+    expect(created.id).toBe("CUSTOM_2");
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe("http://127.0.0.1:8765/api/custom-sections");
+    expect(init.method).toBe("POST");
+    expect(JSON.parse(init.body)).toEqual({
+      name: "UB 533x165x74",
+      h: 529.1,
+      b: 165.9,
+      tw: 9.7,
+      tf: 13.6,
+    });
+  });
+
+  it("DELETEs /api/custom-sections/{id} with the id URL-encoded", async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+
+    await deleteCustomSection("CUSTOM 1/x");
+
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe("http://127.0.0.1:8765/api/custom-sections/CUSTOM%201%2Fx");
+    expect(init.method).toBe("DELETE");
+  });
+
+  it("surfaces the sidecar's error detail when a create fails", async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ detail: "name already used" }), {
+        status: 422,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+
+    await expect(
+      createCustomSection({ name: "dupe", h: 1, b: 1, tw: 1, tf: 1 }),
+    ).rejects.toThrow(/name already used/);
   });
 });

@@ -65,6 +65,17 @@ class TestUBSectionsData:
         assert sec["h"] == pytest.approx(607.6, abs=0.5)
         assert sec["b"] == pytest.approx(228.2, abs=0.5)
 
+    def test_533x165x74_serial_size(self):
+        """533x165 UB 74 — the Blue Book serial is x74 even though the actual
+        mass is 74.7 kg/m, so it can't be derived by rounding the mass."""
+        assert "533x165x75" not in UB_SECTIONS, "x75 is not a Blue Book serial size"
+        sec = UB_SECTIONS["533x165x74"]
+        assert sec["h"] == pytest.approx(529.1, abs=0.05)
+        assert sec["b"] == pytest.approx(165.9, abs=0.05)
+        assert sec["tw"] == pytest.approx(9.7, abs=0.05)
+        assert sec["tf"] == pytest.approx(13.6, abs=0.05)
+        assert sec["mass_per_m"] == pytest.approx(74.7, abs=0.05)
+
     def test_serial_sizes_cover_all_families(self):
         """Check that major serial size groups are present."""
         serials = set(UB_SECTIONS.keys())
