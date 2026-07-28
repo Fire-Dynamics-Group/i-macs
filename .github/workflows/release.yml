@@ -12,12 +12,12 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Set up 32-bit Python 3.10
         # x86 architecture is mandatory: FRACOF COM is 32-bit only, so the
         # PyInstaller bundle must be built with a 32-bit interpreter.
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: "3.10"
           architecture: "x86"
@@ -44,10 +44,10 @@ jobs:
         shell: pwsh
         run: ./scripts/build-sidecar.ps1
 
-      - name: Set up Node 20
-        uses: actions/setup-node@v4
+      - name: Set up Node 24
+        uses: actions/setup-node@v7
         with:
-          node-version: "20"
+          node-version: "24"
 
       - name: Install npm deps
         run: npm install
