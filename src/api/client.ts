@@ -424,6 +424,73 @@ export async function getReportDocxUrl(batchId: string): Promise<string> {
   return `${base}/api/report/docx?batch_id=${encodeURIComponent(batchId)}`;
 }
 
+/** What a results download contains. */
+export type ExportMode = "data" | "charts" | "both";
+
+/** ZIP of the batch's results — CSVs for re-plotting, rendered charts, or both. */
+export async function getDataExportZipUrl(
+  batchId: string,
+  include: ExportMode = "data",
+): Promise<string> {
+  const base = await baseUrl();
+  return (
+    `${base}/api/report/zip?batch_id=${encodeURIComponent(batchId)}` +
+    `&include=${include}`
+  );
+}
+
+export interface DownloadedFile {
+  blob: Blob;
+  filename: string;
+}
+
+/**
+ * Fetch the export ZIP, so the caller can show progress while the sidecar
+ * builds it.
+ *
+ * A plain <a href> hands the request to the browser and tells us nothing: a
+ * 10,000-run chart export takes ~25s of server-side rendering with no
+ * feedback, and a failure renders the JSON error as a page instead of
+ * surfacing it in the UI.
+ */
+export async function fetchDataExportZip(
+  batchId: string,
+  include: ExportMode = "data",
+): Promise<DownloadedFile> {
+  const url = await getDataExportZipUrl(batchId, include);
+  const resp = await fetch(url);
+
+  if (!resp.ok) {
+    let detail = `${resp.status} ${resp.statusText}`;
+    try {
+      const body = (await resp.json()) as { detail?: string; error?: string };
+      detail = body.detail ?? body.error ?? detail;
+    } catch {
+      // Non-JSON error body — the status line is the best we have.
+    }
+    throw new Error(detail);
+  }
+
+  const disposition = resp.headers.get("content-disposition") ?? "";
+  const match = /filename="?([^";]+)"?/.exec(disposition);
+  return {
+    blob: await resp.blob(),
+    filename: match?.[1] ?? `macs_${include}_${batchId}.zip`,
+  };
+}
+
+/** Prompt the browser to save an already-fetched file. */
+export function saveBlob(file: DownloadedFile): void {
+  const href = URL.createObjectURL(file.blob);
+  const a = document.createElement("a");
+  a.href = href;
+  a.download = file.filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(href);
+}
+
 /** PNG chart URL (scatter / capacity) for embedding directly via <img>. */
 export async function getReportChartUrl(
   chartType: "scatter" | "capacity",

@@ -1,6 +1,6 @@
 /** @jsxImportSource react */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
@@ -46,6 +46,26 @@ function jsonResponse(body: unknown, status = 200): Response {
   });
 }
 
+function zipResponse(filename = "macs_data_BATCH123.zip"): Response {
+  return new Response("PKstub", {
+    status: 200,
+    headers: {
+      "Content-Type": "application/zip",
+      "Content-Disposition": `attachment; filename="${filename}"`,
+    },
+  });
+}
+
+/** Overridable so a test can defer or fail the export request. */
+let zipHandler: () => Promise<Response> = () => Promise.resolve(zipResponse());
+
+// jsdom has no object-URL plumbing; saveBlob() only needs these to not throw.
+vi.stubGlobal("URL", {
+  ...URL,
+  createObjectURL: vi.fn(() => "blob:stub"),
+  revokeObjectURL: vi.fn(),
+});
+
 const COMPLETE_BATCH: BatchSummary = {
   batch_id: "BATCH123",
   created_at: "2026-04-01T12:00:00+00:00",
@@ -79,6 +99,9 @@ function mockResponses(opts: {
   };
 }) {
   fetchMock.mockImplementation((url: string) => {
+    if (url.includes("/api/report/zip")) {
+      return zipHandler();
+    }
     if (url.includes("/shear-check")) {
       return Promise.resolve(
         jsonResponse(
@@ -140,6 +163,7 @@ function renderPage() {
 beforeEach(() => {
   fetchMock.mockReset();
   _resetBaseUrl();
+  zipHandler = () => Promise.resolve(zipResponse());
 });
 
 afterEach(() => {
@@ -275,5 +299,152 @@ describe("BatchProgressPage — analytical view", () => {
     const rerun = screen.getByText(/rerun batch/i);
     expect(rerun.tagName).toBe("SPAN");
     expect(rerun).toHaveAttribute("title", expect.stringMatching(/grid-mode/i));
+  });
+});
+
+describe("BatchProgressPage — results download", () => {
+  const downloadButton = () =>
+    screen.findByRole("button", { name: /download|preparing/i });
+
+  /** Resolve the export request by hand, so the pending state is observable. */
+  function deferExport() {
+    let settle!: (r: Response) => void;
+    let fail!: (e: Error) => void;
+    const pending = new Promise<Response>((res, rej) => {
+      settle = res;
+      fail = rej;
+    });
+    zipHandler = () => pending;
+    return { settle, fail };
+  }
+
+  it("asks the sidecar for the data by default", async () => {
+    mockResponses({});
+    renderPage();
+    fireEvent.click(await downloadButton());
+
+    await waitFor(() =>
+      expect(
+        fetchMock.mock.calls.some(
+          (call) =>
+            String(call[0]).includes("/api/report/zip") &&
+            String(call[0]).includes("include=data"),
+        ),
+      ).toBe(true),
+    );
+  });
+
+  it.each([
+    ["charts", "include=charts"],
+    ["both", "include=both"],
+  ])("requests %s when chosen", async (mode, expected) => {
+    mockResponses({});
+    renderPage();
+    await downloadButton();
+
+    fireEvent.change(screen.getByLabelText(/what to download/i), {
+      target: { value: mode },
+    });
+    fireEvent.click(await downloadButton());
+
+    await waitFor(() =>
+      expect(
+        fetchMock.mock.calls.some(
+          (call) =>
+            String(call[0]).includes("/api/report/zip") &&
+            String(call[0]).includes(expected),
+        ),
+      ).toBe(true),
+    );
+  });
+
+  it("shows progress while the sidecar builds the export", async () => {
+    mockResponses({});
+    const { settle } = deferExport();
+    renderPage();
+    fireEvent.click(await downloadButton());
+
+    // A 10k chart export takes ~25s server-side — the user must see something.
+    const busy = await screen.findByRole("button", { name: /preparing/i });
+    expect(busy).toBeDisabled();
+    expect(screen.getByRole("status")).toBeInTheDocument();
+
+    settle(zipResponse());
+    await waitFor(() =>
+      expect(screen.queryByRole("status")).not.toBeInTheDocument(),
+    );
+  });
+
+  it("re-enables the button once the export finishes", async () => {
+    mockResponses({});
+    renderPage();
+    fireEvent.click(await downloadButton());
+
+    await waitFor(async () => expect(await downloadButton()).toBeEnabled());
+  });
+
+  it("confirms the save, naming the file", async () => {
+    // The Tauri webview has no download bar, so without this the spinner just
+    // vanishes and the user cannot tell whether anything was saved.
+    mockResponses({});
+    renderPage();
+    fireEvent.click(await downloadButton());
+
+    expect(await screen.findByTestId("download-saved")).toHaveTextContent(
+      "macs_data_BATCH123.zip",
+    );
+  });
+
+  it("clears the previous confirmation when a new export starts", async () => {
+    mockResponses({});
+    renderPage();
+    fireEvent.click(await downloadButton());
+    await screen.findByTestId("download-saved");
+
+    const { settle } = deferExport();
+    fireEvent.click(await downloadButton());
+    await waitFor(() =>
+      expect(screen.queryByTestId("download-saved")).not.toBeInTheDocument(),
+    );
+    settle(zipResponse());
+  });
+
+  it("surfaces a sidecar failure instead of dumping JSON at the user", async () => {
+    mockResponses({});
+    zipHandler = () =>
+      Promise.resolve(
+        jsonResponse({ detail: "No module named 'matplotlib'" }, 500),
+      );
+    renderPage();
+    fireEvent.click(await downloadButton());
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      /No module named 'matplotlib'/,
+    );
+  });
+
+  it("clears a previous error when the next attempt starts", async () => {
+    mockResponses({});
+    zipHandler = () => Promise.resolve(jsonResponse({ detail: "boom" }, 500));
+    renderPage();
+    fireEvent.click(await downloadButton());
+    await screen.findByRole("alert");
+
+    const { settle } = deferExport();
+    fireEvent.click(await downloadButton());
+    await waitFor(() =>
+      expect(screen.queryByRole("alert")).not.toBeInTheDocument(),
+    );
+    settle(zipResponse());
+  });
+
+  it("keeps the results download separate from the report download", async () => {
+    mockResponses({});
+    renderPage();
+
+    expect(await downloadButton()).toBeInTheDocument();
+    expect(
+      await screen.findByRole("link", { name: /download report/i }),
+    ).toBeInTheDocument();
   });
 });

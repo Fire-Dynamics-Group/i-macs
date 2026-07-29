@@ -2,8 +2,25 @@ import { useEffect, useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 
-import type { BatchSummary, Run, ShearCheckResponse } from "../api/client";
-import { getBatch, getReportDocxUrl, getShearCheck } from "../api/client";
+import type {
+  BatchSummary,
+  ExportMode,
+  Run,
+  ShearCheckResponse,
+} from "../api/client";
+import {
+  fetchDataExportZip,
+  getBatch,
+  getReportDocxUrl,
+  getShearCheck,
+  saveBlob,
+} from "../api/client";
+
+const EXPORT_HINTS: Record<ExportMode, string> = {
+  data: "Every run as CSVs, plus a script that plots them",
+  charts: "The four standard charts as PNGs",
+  both: "The CSVs and the rendered charts",
+};
 import { BatchHeading } from "../components/BatchHeading";
 import { BatchSetupPanel } from "../components/BatchSetupPanel";
 import { batchLabel } from "../lib/batchLabel";
@@ -179,19 +196,54 @@ function AnalyticalView({ batch }: { batch: BatchSummary }) {
   );
 
   const [docxUrl, setDocxUrl] = useState<string | null>(null);
+  const [exportMode, setExportMode] = useState<ExportMode>("data");
+  const [exporting, setExporting] = useState(false);
+  const [exportError, setExportError] = useState<string | null>(null);
+  const [savedName, setSavedName] = useState<string | null>(null);
+  const [elapsed, setElapsed] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
     getReportDocxUrl(batch.batch_id)
-      .then((d) => {
-        if (cancelled) return;
-        setDocxUrl(d);
+      .then((docx) => {
+        if (!cancelled) setDocxUrl(docx);
       })
       .catch(() => {});
     return () => {
       cancelled = true;
     };
   }, [batch.batch_id]);
+
+  // Tick a visible counter while the sidecar builds the ZIP. There is no
+  // server-side progress to report — the work is one long matplotlib render —
+  // so elapsed time is the honest signal that something is still happening.
+  useEffect(() => {
+    if (!exporting) return;
+    setElapsed(0);
+    const started = Date.now();
+    const id = setInterval(
+      () => setElapsed(Math.round((Date.now() - started) / 1000)),
+      1000,
+    );
+    return () => clearInterval(id);
+  }, [exporting]);
+
+  async function runExport() {
+    setExporting(true);
+    setExportError(null);
+    setSavedName(null);
+    try {
+      const file = await fetchDataExportZip(batch.batch_id, exportMode);
+      saveBlob(file);
+      // The webview saves silently — no download bar, no dialog — so say so
+      // explicitly or the spinner just disappears and nothing seems to happen.
+      setSavedName(file.filename);
+    } catch (e) {
+      setExportError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setExporting(false);
+    }
+  }
 
   return (
     <div className="mx-auto max-w-6xl p-8">
@@ -201,6 +253,43 @@ function AnalyticalView({ batch }: { batch: BatchSummary }) {
       <header className="mt-2 flex flex-wrap items-baseline justify-between gap-3">
         <BatchHeading batch={batch} />
         <div className="flex items-center gap-2">
+          <div className="flex items-stretch overflow-hidden rounded-md bg-slate-200">
+            <label className="sr-only" htmlFor="export-mode">
+              What to download
+            </label>
+            <select
+              id="export-mode"
+              value={exportMode}
+              disabled={exporting}
+              onChange={(e) => setExportMode(e.target.value as ExportMode)}
+              className="border-r border-slate-300 bg-slate-200 px-2 py-1.5 text-sm font-medium text-slate-800 hover:bg-slate-300 disabled:text-slate-400"
+            >
+              <option value="data">Data (CSV)</option>
+              <option value="charts">Charts (PNG)</option>
+              <option value="both">Data + charts</option>
+            </select>
+            <button
+              type="button"
+              onClick={runExport}
+              disabled={exporting}
+              aria-busy={exporting}
+              title={EXPORT_HINTS[exportMode]}
+              className="flex items-center gap-2 px-3 py-1.5 text-sm font-medium text-slate-800 hover:bg-slate-300 disabled:text-slate-500"
+            >
+              {exporting ? (
+                <>
+                  <span
+                    role="status"
+                    aria-label="Preparing download"
+                    className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-slate-400 border-t-transparent"
+                  />
+                  Preparing… {elapsed}s
+                </>
+              ) : (
+                "Download"
+              )}
+            </button>
+          </div>
           {docxUrl ? (
             <a
               href={docxUrl}
@@ -230,6 +319,26 @@ function AnalyticalView({ batch }: { batch: BatchSummary }) {
           )}
         </div>
       </header>
+
+      {exportError ? (
+        <p
+          role="alert"
+          className="mt-3 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800"
+        >
+          Download failed: {exportError}
+        </p>
+      ) : null}
+
+      {savedName ? (
+        <p
+          aria-live="polite"
+          data-testid="download-saved"
+          className="mt-3 rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-900"
+        >
+          Saved <span className="font-medium">{savedName}</span> to your
+          Downloads folder.
+        </p>
+      ) : null}
 
       <BatchSetupPanel batchId={batch.batch_id} />
 
