@@ -34,7 +34,11 @@ from macs_automation.batch_setup import derive_setup
 from macs_automation.blue_book_sections import get_blue_book_sections
 from macs_automation.frc_parser import parse_frc_string
 from macs_automation.status import compute_status
-from macs_automation.report import _extend_flat, _forward_filled_average
+from macs_automation.report import (
+    _extend_flat,
+    _forward_filled_average,
+    _sanitise_label,
+)
 from macs_automation.shear_check import flags_for_run
 from macs_automation.sse_broker import Broker
 from macs_automation.sweep import DEFAULTS, PARAM_ALIASES, BEAM_SIDE_MAP, resolve_deck, resolve_mesh, generate_combinations
@@ -102,6 +106,10 @@ app.add_middleware(
     allow_origins=["*"],
     allow_methods=["*"],
     allow_headers=["*"],
+    # Content-Disposition is not a CORS-safelisted response header, so without
+    # this the webview cannot read it and a downloaded export lands as
+    # "macs_both_<32-char-hex>.zip" instead of "macs_data_charts_Batch_1.zip".
+    expose_headers=["Content-Disposition"],
 )
 
 # ─── Reference data (loaded once at startup) ─────────────────────────────────
@@ -1360,6 +1368,62 @@ def api_report_docx(batch_id: str | None = None):
         str(docx_path),
         media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         filename=filename,
+    )
+
+
+# What a download can contain: the CSVs, the rendered charts, or both.
+_EXPORT_MODES = {
+    "data": (True, False),
+    "charts": (False, True),
+    "both": (True, True),
+}
+
+
+@app.get("/api/report/zip")
+def api_report_zip(batch_id: str | None = None, include: str = "data"):
+    """Download a batch's results as a ZIP — data, charts, or both.
+
+    ``include=data`` gives the CSV set plus a runnable plotting script; the CSV
+    headers reproduce the old pdfplumber pipeline's exactly, so the matplotlib
+    scripts engineers already have keep working on it. ``include=charts`` gives
+    the four rendered PNGs for anyone who just wants the pictures, styled
+    identically to what the bundled script produces.
+    """
+    from macs_automation.report import generate_report_zip
+
+    if include not in _EXPORT_MODES:
+        return JSONResponse(
+            {"error": f"Unknown include={include!r}; "
+                      f"expected one of {', '.join(_EXPORT_MODES)}"},
+            status_code=400,
+        )
+    include_data, include_plots = _EXPORT_MODES[include]
+
+    db = _get_db()
+    try:
+        label = "all_runs"
+        if batch_id is not None:
+            row = next(
+                (r for r in db.get_batches() if r["batch_id"] == batch_id), None
+            )
+            if row is None:
+                return JSONResponse({"error": "Not found"}, status_code=404)
+            label = row.get("name") or batch_id[:8]
+        zip_path = generate_report_zip(
+            db, batch_id=batch_id, label=label,
+            include_data=include_data, include_plots=include_plots,
+        )
+    except Exception as e:
+        logging.getLogger(__name__).exception("Data export failed")
+        return JSONResponse({"detail": str(e)}, status_code=500)
+    finally:
+        db.close()
+
+    kind = {"data": "data", "charts": "charts", "both": "data_charts"}[include]
+    return FileResponse(
+        str(zip_path),
+        media_type="application/zip",
+        filename=f"macs_{kind}_{_sanitise_label(label)}.zip",
     )
 
 

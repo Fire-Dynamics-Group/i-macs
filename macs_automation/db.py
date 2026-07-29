@@ -843,6 +843,43 @@ class ResultsDB:
         row = cursor.fetchone()
         return row[0] if row else None
 
+    def get_uf_times(self, batch_id: Optional[str] = None) -> dict:
+        """Return ``{run_id: (time_of_max_uf, time_first_uf_ge_1)}`` in two queries.
+
+        The per-run equivalents (get_time_of_max_uf / get_time_exceed_one) are
+        fine for a handful of runs but cost two round trips each — 20,000 of them
+        for a 10,000-run export. Scoped to one batch when ``batch_id`` is given.
+        """
+        where = "r.error IS NULL" + (" AND r.batch_id = ?" if batch_id else "")
+        args = (batch_id,) if batch_id else ()
+
+        # Time at which each run's utilization_factor peaks. Ties resolve to the
+        # earliest time, matching get_time_of_max_uf's ORDER BY.
+        peak = {}
+        for run_id, time_min in self.conn.execute(
+            f"""SELECT ts.run_id, ts.time_min
+                FROM time_series ts
+                JOIN runs r ON r.id = ts.run_id
+                WHERE {where} AND ts.utilization_factor IS NOT NULL
+                ORDER BY ts.run_id, ts.utilization_factor DESC, ts.time_min ASC""",
+            args,
+        ):
+            peak.setdefault(run_id, time_min)
+
+        # First time each run crosses UF >= 1.0, if it ever does.
+        exceed = {}
+        for run_id, time_min in self.conn.execute(
+            f"""SELECT ts.run_id, MIN(ts.time_min)
+                FROM time_series ts
+                JOIN runs r ON r.id = ts.run_id
+                WHERE {where} AND ts.utilization_factor >= 1.0
+                GROUP BY ts.run_id""",
+            args,
+        ):
+            exceed[run_id] = time_min
+
+        return {rid: (t, exceed.get(rid)) for rid, t in peak.items()}
+
     def get_successful_runs(self) -> list[dict]:
         """Return all successful runs as list of dicts."""
         self.conn.row_factory = sqlite3.Row

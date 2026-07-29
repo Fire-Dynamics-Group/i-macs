@@ -11,6 +11,7 @@ from docx.shared import Inches, Pt
 from docx.enum.table import WD_TABLE_ALIGNMENT
 
 from macs_automation.db import ResultsDB
+from macs_automation.report import MPL_LOCK
 from macs_automation.report import (
     _extend_flat,
     _factored_hot_range,
@@ -57,6 +58,22 @@ def _register_font():
 
 
 def _render_timeseries_chart(
+    db: ResultsDB,
+    column: str,
+    ylabel: str,
+    runs: list[dict],
+    batch_id: Optional[str] = None,
+    hline_band: Optional[tuple[float, float]] = None,
+    legend_loc: str = "center right",
+) -> Optional[bytes]:
+    """Serialised on the shared matplotlib lock — pyplot state is global."""
+    with MPL_LOCK:
+        return _render_timeseries_chart_locked(
+            db, column, ylabel, runs, batch_id, hline_band, legend_loc
+        )
+
+
+def _render_timeseries_chart_locked(
     db: ResultsDB,
     column: str,
     ylabel: str,
@@ -140,6 +157,12 @@ def _render_timeseries_chart(
 
 
 def _render_scatter_chart(runs: list[dict]) -> Optional[bytes]:
+    """Serialised on the shared matplotlib lock — pyplot state is global."""
+    with MPL_LOCK:
+        return _render_scatter_chart_locked(runs=runs)
+
+
+def _render_scatter_chart_locked(runs: list[dict]) -> Optional[bytes]:
     """Render pass/fail scatter chart to PNG bytes using brand styling."""
     _register_font()
     import matplotlib

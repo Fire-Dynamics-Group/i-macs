@@ -1946,3 +1946,133 @@ class TestRunDetailProvenance:
 
         data = client.get(f"/api/runs/{run_id}").json()
         assert data["shear_flags"] == []
+
+
+class TestDataExportZip:
+    """The raw-data download: an engineer on their own machine pulls one batch
+    out as the legacy CSV set and re-plots it with their own scripts."""
+
+    def _seed(self, db_path, batch_id="b1", name="Unit 7"):
+        from macs_automation.db import ResultsDB
+        from macs_automation.tests.conftest import _insert_populated_run
+        db = ResultsDB(db_path)
+        db.insert_batch(batch_id, mode="sweep", total_expected=2, name=name)
+        for i in range(2):
+            _insert_populated_run(db, i, uf_max=0.5, qf=400.0 + i * 50.0,
+                                  window_percent=40.0, batch_id=batch_id)
+        db.close()
+
+    def test_returns_a_zip(self, client, use_tmp_db):
+        self._seed(use_tmp_db)
+        r = client.get("/api/report/zip", params={"batch_id": "b1"})
+        assert r.status_code == 200
+        assert r.headers["content-type"] == "application/zip"
+
+    def test_zip_holds_the_nine_legacy_csvs(self, client, use_tmp_db):
+        import io as _io
+        import zipfile as _zip
+        self._seed(use_tmp_db)
+        r = client.get("/api/report/zip", params={"batch_id": "b1"})
+        with _zip.ZipFile(_io.BytesIO(r.content)) as zf:
+            names = zf.namelist()
+        assert len([n for n in names if n.endswith(".csv")]) == 9
+        assert any(n.startswith("total_cap_data_") for n in names)
+
+    def test_filename_uses_the_batch_name(self, client, use_tmp_db):
+        self._seed(use_tmp_db, name="Unit 7")
+        r = client.get("/api/report/zip", params={"batch_id": "b1"})
+        assert "Unit_7" in r.headers["content-disposition"]
+
+    def test_unknown_batch_is_404(self, client, use_tmp_db):
+        self._seed(use_tmp_db)
+        r = client.get("/api/report/zip", params={"batch_id": "nope"})
+        assert r.status_code == 404
+        # Assert our payload, not just the status: a missing *route* also 404s,
+        # so status alone would pass even if the endpoint didn't exist.
+        assert r.json() == {"error": "Not found"}
+
+    def test_exports_everything_without_a_batch_id(self, client, use_tmp_db):
+        import io as _io
+        import zipfile as _zip
+        self._seed(use_tmp_db)
+        r = client.get("/api/report/zip")
+        assert r.status_code == 200
+        with _zip.ZipFile(_io.BytesIO(r.content)) as zf:
+            summary = next(n for n in zf.namelist() if n.startswith("summary_data_"))
+            assert zf.read(summary).decode("utf-8").count("\n") == 3
+
+
+class TestDataExportModes:
+    """Download the data, just the charts, or both."""
+
+    def _seed(self, db_path, batch_id="b1", name="Unit 7"):
+        from macs_automation.db import ResultsDB
+        from macs_automation.tests.conftest import _insert_populated_run
+        db = ResultsDB(db_path)
+        db.insert_batch(batch_id, mode="sweep", total_expected=2, name=name)
+        for i in range(2):
+            _insert_populated_run(db, i, uf_max=0.5, qf=400.0 + i * 50.0,
+                                  window_percent=40.0, batch_id=batch_id)
+        db.close()
+
+    def _names(self, client, **params):
+        import io as _io
+        import zipfile as _zip
+        r = client.get("/api/report/zip", params=params)
+        assert r.status_code == 200, r.text
+        with _zip.ZipFile(_io.BytesIO(r.content)) as zf:
+            return zf.namelist()
+
+    def test_charts_only(self, client, use_tmp_db):
+        self._seed(use_tmp_db)
+        names = self._names(client, batch_id="b1", include="charts")
+        assert len([n for n in names if n.endswith(".png")]) == 4
+        assert [n for n in names if n.endswith(".csv")] == []
+
+    def test_data_and_charts(self, client, use_tmp_db):
+        self._seed(use_tmp_db)
+        names = self._names(client, batch_id="b1", include="both")
+        assert len([n for n in names if n.endswith(".png")]) == 4
+        assert len([n for n in names if n.endswith(".csv")]) == 9
+
+    def test_data_remains_the_default(self, client, use_tmp_db):
+        self._seed(use_tmp_db)
+        names = self._names(client, batch_id="b1")
+        assert [n for n in names if n.endswith(".png")] == []
+        assert len([n for n in names if n.endswith(".csv")]) == 9
+
+    def test_unknown_mode_is_rejected(self, client, use_tmp_db):
+        self._seed(use_tmp_db)
+        r = client.get("/api/report/zip",
+                       params={"batch_id": "b1", "include": "everything"})
+        assert r.status_code == 400
+        assert "include" in r.json()["error"]
+
+    def test_filename_distinguishes_the_modes(self, client, use_tmp_db):
+        self._seed(use_tmp_db)
+        data = client.get("/api/report/zip", params={"batch_id": "b1"})
+        charts = client.get("/api/report/zip",
+                            params={"batch_id": "b1", "include": "charts"})
+        assert data.headers["content-disposition"] != charts.headers["content-disposition"]
+
+
+class TestDownloadFilenameIsReadable:
+    """The webview is cross-origin to the sidecar, so it can only read
+    Content-Disposition if CORS explicitly exposes it. Without that the browser
+    falls back to a generated name and users get 32-char-hex filenames."""
+
+    def test_content_disposition_is_exposed_to_the_webview(self, client, use_tmp_db):
+        from macs_automation.db import ResultsDB
+        from macs_automation.tests.conftest import _insert_populated_run
+        db = ResultsDB(use_tmp_db)
+        db.insert_batch("b1", mode="sweep", total_expected=1, name="Unit 7")
+        _insert_populated_run(db, 0, batch_id="b1")
+        db.close()
+
+        r = client.get("/api/report/zip",
+                       params={"batch_id": "b1"},
+                       headers={"Origin": "http://localhost:1420"})
+        assert r.status_code == 200
+        exposed = r.headers.get("access-control-expose-headers", "")
+        assert "Content-Disposition" in exposed
+        assert "Unit_7" in r.headers["content-disposition"]

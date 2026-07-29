@@ -1227,3 +1227,26 @@ class TestNamingMigrationLegacy:
             assert upgraded.conn.execute(
                 "SELECT name FROM sqlite_master WHERE type='table' AND name='frc_imports'"
             ).fetchone() is not None
+
+
+class TestUfTimes:
+    """get_uf_times replaces two per-run queries with two batched ones, so it has
+    to agree with the originals exactly — including the tie-break on time."""
+
+    def test_agrees_with_per_run_queries(self, populated_db):
+        batched = populated_db.get_uf_times()
+        for run in populated_db.get_successful_runs():
+            expected = (
+                populated_db.get_time_of_max_uf(run["id"]),
+                populated_db.get_time_exceed_one(run["id"]),
+            )
+            assert batched[run["id"]] == expected, f"run {run['id']}"
+
+    def test_scoped_to_batch(self, two_batch_db):
+        ids_a = {r["id"] for r in two_batch_db.get_batch_successful_runs("batch_a")}
+        assert set(two_batch_db.get_uf_times(batch_id="batch_a")) == ids_a
+
+    def test_run_that_never_exceeds_one_has_no_exceed_time(self, populated_db):
+        batched = populated_db.get_uf_times()
+        passing = [r for r in populated_db.get_successful_runs() if r["uf_max"] < 1.0]
+        assert all(batched[r["id"]][1] is None for r in passing)

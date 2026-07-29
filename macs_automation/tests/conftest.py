@@ -83,9 +83,10 @@ def _make_time_series(n_steps=12, uf_peak=0.85, capacity_base=700.0):
 
 
 def _insert_populated_run(db, run_index, uf_max=0.6, error=None,
-                          qf=500.0, window_percent=50.0):
+                          qf=500.0, window_percent=50.0, batch_id=None):
     """Insert a single run with full params, outputs, and time series."""
     params = {
+        "_batch_id": batch_id,
         "span1": 9.0, "span2": 9.0, "numbeam": 2,
         "SteelDeck": 1, "DeckName": "COFRAPLUS 60", "deck_type": "T",
         "deck_depth": 58.0, "deck_trug": 207.0, "deck_top": 106.0,
@@ -159,6 +160,32 @@ def populated_db(tmp_path):
 
     # 1 error run
     _insert_populated_run(db, 9, error="COMError: engine crashed")
+
+    yield db
+    db.close()
+
+
+@pytest.fixture
+def two_batch_db(tmp_path):
+    """Two batches on one device, so an export scoped to one must not leak the other.
+
+    batch A: 3 successful runs (qf 400/430/460) + 1 error run
+    batch B: 2 successful runs (qf 900/930)
+    """
+    db_path = tmp_path / "two_batch.db"
+    db = ResultsDB(db_path)
+
+    db.insert_batch("batch_a", mode="sweep", total_expected=4, config_json="{}")
+    db.insert_batch("batch_b", mode="sweep", total_expected=2, config_json="{}")
+
+    for i in range(3):
+        _insert_populated_run(db, i, uf_max=0.3 + i * 0.1, qf=400.0 + i * 30.0,
+                              window_percent=30.0 + i * 10.0, batch_id="batch_a")
+    _insert_populated_run(db, 3, error="COMError: engine crashed", batch_id="batch_a")
+
+    for i in range(2):
+        _insert_populated_run(db, i, uf_max=1.2, qf=900.0 + i * 30.0,
+                              window_percent=95.0, batch_id="batch_b")
 
     yield db
     db.close()
