@@ -32,9 +32,15 @@ jobs:
           }
 
       - name: Install sidecar Python deps
-        # requirements-sidecar.txt excludes scipy/matplotlib/python-docx —
-        # none of those have 32-bit Windows wheels for cp310, and they're
-        # only consumed by features deferred to follow-up PRs (LHS, report).
+        # matplotlib and python-docx ARE included: the report and chart-export
+        # endpoints need them, and a build without them answers
+        # {"detail": "No module named 'matplotlib'"} to every chart or report
+        # download while working perfectly in dev. numpy is capped below 2.0
+        # here — see requirements-sidecar.txt for why that is forced.
+        #
+        # scipy remains excluded because no 32-bit cp310 wheel exists at all,
+        # so LHS sampling cannot run in a packaged build. Grid/paired sweeps
+        # are unaffected.
         run: |
           python -m venv venv-32
           venv-32\Scripts\python -m pip install --upgrade pip
@@ -43,6 +49,42 @@ jobs:
       - name: Build sidecar (PyInstaller)
         shell: pwsh
         run: ./scripts/build-sidecar.ps1
+
+      - name: Verify the sidecar bundle can actually render
+        # A release once shipped a sidecar with no matplotlib in it. Nothing
+        # failed at build time — the modules are imported lazily inside the
+        # endpoint handlers, so the omission only surfaced as a 500 on a user's
+        # machine. Check the bundle, then boot it and confirm it answers.
+        shell: pwsh
+        run: |
+          $bundle = "src-tauri/binaries/i-macs-sidecar-x86_64-pc-windows-msvc"
+          foreach ($pkg in 'matplotlib', 'numpy', 'docx') {
+              if (-not (Test-Path "$bundle/_internal/$pkg")) {
+                  Write-Error "$pkg is missing from the frozen bundle — charts and reports would 500 at runtime."
+                  exit 1
+              }
+              Write-Host "  ok  $pkg present"
+          }
+
+          $exe = Resolve-Path "$bundle/i-macs-sidecar.exe"
+          $proc = Start-Process -FilePath $exe -ArgumentList '--port', '8199' -PassThru
+          try {
+              $alive = $false
+              foreach ($attempt in 1..30) {
+                  Start-Sleep -Seconds 1
+                  try {
+                      $r = Invoke-RestMethod -Uri 'http://127.0.0.1:8199/healthz' -TimeoutSec 2
+                      if ($r.sidecar -eq 'alive') { $alive = $true; break }
+                  } catch { }
+              }
+              if (-not $alive) {
+                  Write-Error "Frozen sidecar did not answer /healthz — the bundle is broken."
+                  exit 1
+              }
+              Write-Host "  ok  frozen sidecar booted and answered /healthz"
+          } finally {
+              if ($proc -and -not $proc.HasExited) { Stop-Process -Id $proc.Id -Force }
+          }
 
       - name: Set up Node 20
         uses: actions/setup-node@v4
