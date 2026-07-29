@@ -1,18 +1,34 @@
 # Runtime deps for the 32-bit Python 3.10 sidecar (PyInstaller bundle).
 #
-# Excludes scipy + matplotlib + python-docx because:
-#   1. scipy doesn't ship 32-bit Windows wheels for Python 3.10 (last 32-bit
-#      win wheel was scipy 1.7.x). LHS is deferred to a follow-up PR per
-#      pr1.md scope; sampling.py lazy-imports scipy.
-#   2. matplotlib + python-docx are only used by the report module, also
-#      deferred to a follow-up PR. Both are lazy-imported inside the
-#      report endpoint handlers.
+# scipy is still excluded: it doesn't ship 32-bit Windows wheels for Python
+# 3.10 (last 32-bit win wheel was scipy 1.7.x), and sampling.py lazy-imports
+# it so the sidecar starts fine without it.
+#
+# matplotlib and python-docx ARE needed here, despite an earlier note saying
+# otherwise: the report and chart-export endpoints both use them, and without
+# them a packaged build answers `{"detail": "No module named 'matplotlib'"}`
+# to every chart or report download while working perfectly in dev.
+#
+# ── Why numpy is capped below 2.0 ────────────────────────────────────────────
+# Only on this 32-bit interpreter. matplotlib's last release with a win32
+# wheel is 3.7.5, and matplotlib only gained numpy 2 support in 3.8.4 — so on
+# 32-bit Windows there is no combination of matplotlib and numpy 2 that works.
+# Installing numpy 2.x here gets you an importable matplotlib that dies with
+# "numpy.core.multiarray failed to import" the first time a chart is drawn.
+#
+# The sidecar's numpy usage is ndarray/random/log/sqrt/exp/euler_gamma, all
+# unchanged between 1.26 and 2.x, so the cap costs nothing functionally. Note
+# it does mean the frozen sidecar runs numpy 1.26 while the 64-bit test venv
+# (requirements.txt) runs 2.x — worth keeping in mind when a failure smells
+# numeric.
 #
 # Use requirements.txt for the 64-bit dev/test venv (full deps, runs all
 # pytest including LHS + report tests).
 pywin32>=306
 pyyaml>=6.0
-numpy>=1.24
+numpy>=1.24,<2
 fastapi>=0.115
 uvicorn[standard]>=0.34
 python-multipart>=0.0.9
+matplotlib==3.7.5
+python-docx>=1.1
