@@ -209,9 +209,13 @@ function Invoke-Run($entry) {
     # and only prints once CALCSUCCESS is set, so a PDF appearing at all is
     # evidence the calculation succeeded.
     Invoke-Js "window.setTimeout(function(){ Print(105); }, 30);"
+    # Poll hard for the dialog. Every millisecond between it appearing and the
+    # park-and-restore below is a millisecond of the user's keystrokes going to
+    # a window they cannot see; at 100 ms that measured ~0.25 s per run, which
+    # is plenty to notice while typing. Same 60 s ceiling.
     $dlg = $null
-    for ($i = 0; $i -lt 600; $i++) {
-        Start-Sleep -Milliseconds 100
+    for ($i = 0; $i -lt 2400; $i++) {
+        Start-Sleep -Milliseconds 25
         $dlg = Find-PrintDialog
         if ($null -ne $dlg) { break }
     }
@@ -250,6 +254,9 @@ function Invoke-Run($entry) {
         Start-Sleep -Milliseconds 40
     }
     if (-not $invoked) { throw "Print button never became invokable" }
+
+    # Invoking can re-activate the dialog, and it activates again as it closes.
+    Restore-Foreground $userWindow
 
     for ($i = 0; $i -lt 400; $i++) {
         Start-Sleep -Milliseconds 100

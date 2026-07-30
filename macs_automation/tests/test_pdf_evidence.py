@@ -335,6 +335,42 @@ class TestReset:
         assert pdf_evidence.status("alpha")["total"] == 0
 
 
+class TestFinishMessage:
+    """What the panel is told when the runner exits."""
+
+    def test_a_clean_finish_says_nothing(self):
+        assert pdf_evidence._finish_message(0, False, 10, 10, "") is None
+
+    # Regression: pausing showed "replay exited 1 (755/10000 done)" in red.
+    # Stopping on request is the feature working, not a failure.
+    def test_a_requested_stop_is_not_a_failure(self):
+        assert pdf_evidence._finish_message(1, True, 755, 10000, "") is None
+
+    def test_a_real_failure_says_how_far_it_got(self):
+        msg = pdf_evidence._finish_message(1, False, 40, 200, "")
+        assert msg is not None
+        assert "40/200" in msg
+
+    def test_prefers_what_the_runner_actually_said(self):
+        msg = pdf_evidence._finish_message(1, False, 0, 10, "printer 'MACS-PDF' not found")
+        assert "MACS-PDF" in msg
+
+
+class TestEtaAfterTheJobEnds:
+    def test_no_countdown_once_the_job_is_over(self):
+        """A finished job kept reporting ~17 h remaining."""
+        _set(active=False, batch_id="alpha", total=10000, completed=755,
+             start_time=time.time() - 5000, finished_at=time.time())
+
+        assert pdf_evidence.status("alpha")["eta_s"] is None
+
+    def test_still_counts_down_while_running(self):
+        _set(active=True, batch_id="alpha", total=100, completed=10,
+             start_time=time.time() - 20)
+
+        assert pdf_evidence.status("alpha")["eta_s"] == pytest.approx(180, abs=5)
+
+
 class TestOutputLocation:
     """10k runs is ~4.2 GB, which often wants a different drive from C:."""
 

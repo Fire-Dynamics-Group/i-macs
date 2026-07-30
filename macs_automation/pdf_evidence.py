@@ -265,7 +265,8 @@ def status(batch_id: Optional[str] = None) -> dict:
     elapsed = 0.0
     if st["start_time"]:
         elapsed = time.time() - st["start_time"]
-        if st["completed"] > 0 and st["total"]:
+        # A finished job has no remaining time; it kept reporting ~17 h left.
+        if st["active"] and st["completed"] > 0 and st["total"]:
             per = elapsed / st["completed"]
             eta = round(per * (st["total"] - st["completed"]), 1)
     st["elapsed_s"] = round(elapsed, 1)
@@ -293,6 +294,21 @@ def _count_pdfs(out: Path) -> int:
             )
     except OSError:
         return 0
+
+
+def _finish_message(returncode: int, stopping: bool, completed: int, total: int,
+                    stderr: str) -> Optional[str]:
+    """What to show once the runner exits, or None if nothing is wrong.
+
+    A requested stop is the feature working. The runner does not reliably exit 0
+    on its way out of a pause, and reporting that as "replay exited 1" put a red
+    failure in front of someone who had just pressed Pause.
+    """
+    if returncode == 0 or stopping:
+        return None
+    return (stderr or "").strip() or (
+        f"replay exited {returncode} ({completed}/{total} done)"
+    )
 
 
 def _poll_interval(completed: int) -> float:
@@ -356,9 +372,10 @@ def _worker(batch_id: str, db_path: str, sample: Optional[int], seed: Optional[s
             time.sleep(_poll_interval(count))
         with _lock:
             _state["completed"] = _count_pdfs(pdf_dir)
-            if proc.returncode != 0:
-                _state["error"] = (proc.stderr.read() if proc.stderr else "") or \
-                    f"replay exited {proc.returncode} ({_state['completed']}/{_state['total']} done)"
+            _state["error"] = _finish_message(
+                proc.returncode, _state["stopping"], _state["completed"],
+                _state["total"], proc.stderr.read() if proc.stderr else "",
+            )
     except SystemExit as exc:
         # export_batch refuses rather than writing wrong files - surface why
         with _lock:
@@ -369,6 +386,8 @@ def _worker(batch_id: str, db_path: str, sample: Optional[int], seed: Optional[s
     finally:
         with _lock:
             _state["active"] = False
+            # Or the panel sits on "Pausing..." forever after the runner exits.
+            _state["stopping"] = False
             _state["finished_at"] = time.time()
 
 
