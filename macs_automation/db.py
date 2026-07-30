@@ -210,6 +210,10 @@ class ResultsDB:
         # that the cloud-sync slice will ship.
         self._device_name = os.environ.get("MACS_DEVICE_NAME") or socket.gethostname()
         self._app_version = os.environ.get("MACS_APP_VERSION")
+        # sqlite3.connect does not create directories, and on a pristine
+        # machine the frozen fallback %LOCALAPPDATA%\i-macs\ doesn't exist
+        # yet — without this the sidecar dies at boot on first install.
+        Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
         self.conn = sqlite3.connect(self.db_path, check_same_thread=check_same_thread)
         self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.execute("PRAGMA synchronous=NORMAL")

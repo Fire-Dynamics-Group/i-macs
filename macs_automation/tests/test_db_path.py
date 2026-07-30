@@ -63,6 +63,20 @@ def test_env_override_wins_when_not_frozen(monkeypatch, tmp_path):
     assert Path(app_module.DB_PATH) == custom
 
 
+def test_resultsdb_creates_missing_parent_dirs(tmp_path):
+    """sqlite3.connect does not mkdir, so on a pristine machine the frozen
+    fallback %LOCALAPPDATA%\\i-macs\\ doesn't exist and the sidecar died at
+    boot with 'unable to open database file' (caught by the rc.13 release
+    verify step — it only worked on machines where an earlier run had
+    created the folder)."""
+    from macs_automation.db import ResultsDB
+
+    db_file = tmp_path / "i-macs" / "results.db"
+    assert not db_file.parent.exists()
+    ResultsDB(db_file).close()
+    assert db_file.exists()
+
+
 def test_dev_default_is_repo_results_db(monkeypatch):
     """Dev path unchanged: sidecar continues writing to <repo>/results.db."""
     monkeypatch.delattr(sys, "frozen", raising=False)
