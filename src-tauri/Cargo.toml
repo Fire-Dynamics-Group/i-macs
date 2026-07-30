@@ -1,6 +1,6 @@
 [package]
 name = "i-macs"
-version = "0.1.0-rc.13"
+version = "0.1.0-rc.14"
 description = "Tauri shell for the MACS+ Automation desktop app."
 authors = ["Fire Dynamics Group"]
 license = ""
