@@ -80,18 +80,40 @@ jobs:
               Write-Host "  ok  $pkg present"
           }
 
+          # Longest path in the bundle + a generous install-prefix budget must
+          # clear MAX_PATH (260): the app installs per-user under a path like
+          # C:\Users\<name>\AppData\Local\MACS+ Automation\binaries\<triple>\,
+          # and a dep that starts shipping deeper trees would otherwise only
+          # fail on a user's machine at install time.
+          $prefixBudget = 130
+          $longest = Get-ChildItem -Recurse -File $bundle |
+              ForEach-Object { $_.FullName.Substring((Resolve-Path $bundle).Path.Length + 1) } |
+              Sort-Object Length -Descending | Select-Object -First 1
+          if ($prefixBudget + $longest.Length -gt 260) {
+              Write-Error "Bundle path too deep for MAX_PATH: '$longest' is $($longest.Length) chars; with a $prefixBudget-char install prefix that exceeds 260."
+              exit 1
+          }
+          Write-Host "  ok  longest bundle path is $($longest.Length) chars (budget $(260 - $prefixBudget))"
+
           $exe = Resolve-Path "$bundle/i-macs-sidecar.exe"
-          $proc = Start-Process -FilePath $exe -ArgumentList '--port', '8199' -PassThru
+          $proc = Start-Process -FilePath $exe -ArgumentList '--port', '8199' -PassThru `
+              -RedirectStandardOutput sidecar-stdout.log -RedirectStandardError sidecar-stderr.log
           try {
               $alive = $false
-              foreach ($attempt in 1..30) {
+              foreach ($attempt in 1..90) {
                   Start-Sleep -Seconds 1
                   try {
                       $r = Invoke-RestMethod -Uri 'http://127.0.0.1:8199/healthz' -TimeoutSec 2
                       if ($r.sidecar -eq 'alive') { $alive = $true; break }
                   } catch { }
+                  if ($proc.HasExited) { break }
               }
               if (-not $alive) {
+                  Write-Host "process exited: $($proc.HasExited) (code $($proc.ExitCode))"
+                  Write-Host '== sidecar stdout =='
+                  Get-Content sidecar-stdout.log -ErrorAction SilentlyContinue
+                  Write-Host '== sidecar stderr =='
+                  Get-Content sidecar-stderr.log -ErrorAction SilentlyContinue
                   Write-Error "Frozen sidecar did not answer /healthz — the bundle is broken."
                   exit 1
               }
