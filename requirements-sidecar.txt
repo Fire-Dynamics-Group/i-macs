@@ -24,6 +24,11 @@
 #
 # Use requirements.txt for the 64-bit dev/test venv (full deps, runs all
 # pytest including LHS + report tests).
+# NOTE: releases install from requirements-sidecar.lock (fully pinned), not
+# this file. This file states intent and constraints; after changing it,
+# regenerate the lock (procedure in the lock's header) — otherwise the
+# change silently never ships.
+#
 # ── Why uvicorn has no [standard] extra and kiwisolver is pinned ─────────────
 # Everything here must install from win32 cp310 *wheels*: the GitHub runner
 # can't link x86 C extensions (kiwisolver 1.5.0's build died with

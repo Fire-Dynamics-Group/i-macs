@@ -44,7 +44,6 @@ venv-32/
 node_modules/
 .vite/
 src-tauri/target/
-src-tauri/Cargo.lock
 src-tauri/binaries/
 src-tauri/gen/
 

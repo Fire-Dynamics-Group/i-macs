@@ -38,16 +38,11 @@ jobs:
               exit 1
           }
 
-      - name: Install sidecar Python deps
-        # matplotlib and python-docx ARE included: the report and chart-export
-        # endpoints need them, and a build without them answers
-        # {"detail": "No module named 'matplotlib'"} to every chart or report
-        # download while working perfectly in dev. numpy is capped below 2.0
-        # here — see requirements-sidecar.txt for why that is forced.
-        #
-        # scipy remains excluded because no 32-bit cp310 wheel exists at all,
-        # so LHS sampling cannot run in a packaged build. Grid/paired sweeps
-        # are unaffected.
+      - name: Install sidecar Python deps (locked, wheels only)
+        # Installs from requirements-sidecar.lock — the fully pinned set —
+        # not the floating .txt. rc.13 froze uvicorn/fastapi versions no dev
+        # machine had ever run; releases must not float. See the lock file
+        # header for the regeneration procedure.
         #
         # --only-binary=:all: because this runner cannot link x86 C
         # extensions (rc.13's first run died compiling kiwisolver): a dep
@@ -57,7 +52,7 @@ jobs:
         run: |
           python -m venv venv-32
           venv-32\Scripts\python -m pip install --upgrade pip
-          venv-32\Scripts\pip install --only-binary=:all: -r requirements-sidecar.txt pyinstaller
+          venv-32\Scripts\pip install --only-binary=:all: -r requirements-sidecar.lock
           venv-32\Scripts\pip install --no-deps -e .
 
       - name: Build sidecar (PyInstaller)
@@ -178,18 +173,166 @@ jobs:
           node-version: "20"
 
       - name: Install npm deps
-        run: npm install
+        run: npm ci
 
-      - name: Build, sign, and publish (tauri-action)
+      - name: Build and sign the installer (no publishing yet)
+        # No tagName/release inputs: tauri-action only builds. Publishing
+        # happens at the end of this job, after the installer itself has
+        # survived a real update-over-previous-release on this runner —
+        # rc.13 published a green-looking build whose *installer* broke
+        # every updated machine, and nothing had ever tested the installer.
         uses: tauri-apps/tauri-action@v0
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-        with:
-          tagName: ${{ github.ref_name }}
-          releaseName: "MACS+ Automation ${{ github.ref_name }}"
-          releaseBody: "See the assets below to download and install. Already-installed copies will auto-update on next launch."
-          releaseDraft: false
-          prerelease: false
-          includeUpdaterJson: true
+
+      - name: Simulate a real user update from the previous release
+        # Install the previous published release on this runner, plant
+        # sentinel debris (stale package + marker file) exactly like the
+        # layer-cake found on real updated machines, run the NEW installer
+        # over it, then prove the hook wiped the debris and the installed
+        # sidecar boots on a pristine profile. This is the test that would
+        # have stopped rc.13.
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $newSetup = Get-ChildItem "src-tauri/target/release/bundle/nsis/*-setup.exe" |
+              Sort-Object LastWriteTime -Descending | Select-Object -First 1
+          Write-Host "new installer: $($newSetup.Name)"
+
+          New-Item -ItemType Directory -Path prev-release -Force | Out-Null
+          gh release download --pattern "*setup.exe" --dir prev-release
+          if ($LASTEXITCODE -ne 0) {
+              Write-Error "Could not download the previous release to update from. If this is genuinely the first release ever, remove this step for that one tag."
+              exit 1
+          }
+          $prevSetup = Get-ChildItem "prev-release/*.exe" | Select-Object -First 1
+          Write-Host "previous release installer: $($prevSetup.Name)"
+
+          $p = Start-Process $prevSetup.FullName -ArgumentList '/S' -PassThru -Wait
+          if ($p.ExitCode -ne 0) { Write-Error "previous-release install failed ($($p.ExitCode))"; exit 1 }
+
+          $inst = "$env:LOCALAPPDATA\MACS+ Automation"
+          $internal = "$inst\binaries\i-macs-sidecar-x86_64-pc-windows-msvc\_internal"
+          if (-not (Test-Path "$inst\i-macs.exe")) { Write-Error "previous release did not install where expected"; exit 1 }
+
+          New-Item -ItemType Directory -Path "$internal\stalepkg" -Force | Out-Null
+          Set-Content "$internal\stalepkg\__init__.py" "raise RuntimeError('stale package imported')"
+          Set-Content "$inst\binaries\STALE-SENTINEL.txt" "must be deleted by NSIS_HOOK_PREINSTALL"
+
+          $p = Start-Process $newSetup.FullName -ArgumentList '/S' -PassThru -Wait
+          if ($p.ExitCode -ne 0) { Write-Error "update install failed ($($p.ExitCode))"; exit 1 }
+
+          if (Test-Path "$inst\binaries\STALE-SENTINEL.txt") {
+              Write-Error "Sentinel survived the update — the NSIS pre-install cleanup hook did not run."
+              exit 1
+          }
+          if (Test-Path "$internal\stalepkg") {
+              Write-Error "Stale package survived the update — the NSIS pre-install cleanup hook did not run."
+              exit 1
+          }
+          Write-Host "  ok  update wiped sentinel debris"
+
+          $pristine = Join-Path $env:TEMP "update-sim-appdata"
+          New-Item -ItemType Directory -Path $pristine -Force | Out-Null
+          $psi = New-Object System.Diagnostics.ProcessStartInfo
+          $psi.FileName = "$inst\binaries\i-macs-sidecar-x86_64-pc-windows-msvc\i-macs-sidecar.exe"
+          $psi.Arguments = "--port 8197"
+          $psi.EnvironmentVariables['LOCALAPPDATA'] = $pristine
+          $psi.RedirectStandardOutput = $true; $psi.RedirectStandardError = $true
+          $psi.UseShellExecute = $false
+          $proc = [System.Diagnostics.Process]::Start($psi)
+          try {
+              $alive = $false
+              foreach ($attempt in 1..90) {
+                  Start-Sleep -Seconds 1
+                  try {
+                      $r = Invoke-RestMethod -Uri 'http://127.0.0.1:8197/healthz' -TimeoutSec 2
+                      if ($r.sidecar -eq 'alive') { $alive = $true; break }
+                  } catch { }
+                  if ($proc.HasExited) { break }
+              }
+              if (-not $alive) {
+                  Write-Host "process exited: $($proc.HasExited)"
+                  Write-Host $proc.StandardError.ReadToEnd()
+                  Write-Error "Updated install's sidecar did not boot — this installer would break updated machines."
+                  exit 1
+              }
+              Write-Host "  ok  updated install boots on a pristine profile"
+          } finally {
+              if (-not $proc.HasExited) { $proc.Kill() }
+          }
+
+      - name: Build latest.json and verify the update signature
+        # The updater chain is only as good as the manifest and signature.
+        # Construct latest.json ourselves (tauri-action would normally do
+        # this at upload time), then cryptographically verify the .sig
+        # against the public key baked into tauri.conf.json — a build signed
+        # with the wrong key would brick auto-updates silently.
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $tag = "${{ github.ref_name }}"
+          $version = $tag.TrimStart('v')
+          $setup = Get-ChildItem "src-tauri/target/release/bundle/nsis/*-setup.exe" |
+              Sort-Object LastWriteTime -Descending | Select-Object -First 1
+          $sigFile = "$($setup.FullName).sig"
+          if (-not (Test-Path $sigFile)) { Write-Error "No .sig next to the installer — signing did not run."; exit 1 }
+          $sig = (Get-Content $sigFile -Raw).Trim()
+
+          # GitHub normalises the asset filename (space -> dot) and the URL
+          # percent-encodes '+' — mirror rc.14's published manifest exactly.
+          $assetName = $setup.Name -replace ' ', '.'
+          $urlName = $assetName -replace '\+', '%2B'
+          $url = "https://github.com/${{ github.repository }}/releases/download/$tag/$urlName"
+
+          $entry = @{ signature = $sig; url = $url }
+          $manifest = @{
+              version   = $version
+              notes     = "See the assets below to download and install. Already-installed copies will auto-update on next launch."
+              pub_date  = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ss.fffZ")
+              platforms = @{
+                  'windows-x86_64'      = $entry
+                  'windows-x86_64-nsis' = $entry
+              }
+          }
+          $manifest | ConvertTo-Json -Depth 5 | Set-Content latest.json -Encoding utf8
+          Get-Content latest.json
+
+          # Cryptographic verification with minisign. Both the pubkey in
+          # tauri.conf.json and the .sig file are base64-wrapped minisign
+          # documents — decode to real files first.
+          choco install minisign -y --no-progress | Out-Null
+          $conf = Get-Content src-tauri/tauri.conf.json -Raw | ConvertFrom-Json
+          $pubB64 = $conf.plugins.updater.pubkey
+          [IO.File]::WriteAllBytes("minisign.pub", [Convert]::FromBase64String($pubB64))
+          [IO.File]::WriteAllBytes("installer.minisig", [Convert]::FromBase64String($sig))
+          & minisign -V -p minisign.pub -x installer.minisig -m $setup.FullName
+          if ($LASTEXITCODE -ne 0) {
+              Write-Error "Signature verification FAILED — the installer is not signed with the app's public key; auto-update would reject it."
+              exit 1
+          }
+          Write-Host "  ok  installer signature verifies against tauri.conf.json pubkey"
+
+      - name: Publish (draft, upload verified assets, promote)
+        # Draft-then-promote keeps the release invisible to the updater's
+        # /releases/latest endpoint until every asset — installer, signature,
+        # manifest — is uploaded. No half-published state can ever be served.
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $tag = "${{ github.ref_name }}"
+          $setup = Get-ChildItem "src-tauri/target/release/bundle/nsis/*-setup.exe" |
+              Sort-Object LastWriteTime -Descending | Select-Object -First 1
+          gh release create $tag --draft `
+              --title "MACS+ Automation $tag" `
+              --notes "See the assets below to download and install. Already-installed copies will auto-update on next launch." `
+              $setup.FullName "$($setup.FullName).sig" latest.json
+          if ($LASTEXITCODE -ne 0) { Write-Error "draft release creation failed"; exit 1 }
+          gh release edit $tag --draft=false --latest
+          if ($LASTEXITCODE -ne 0) { Write-Error "promoting the draft failed"; exit 1 }
+          Write-Host "  ok  $tag published"

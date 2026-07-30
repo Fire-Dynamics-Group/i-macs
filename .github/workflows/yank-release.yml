@@ -1,0 +1,40 @@
+name: Yank release
+
+# One-click rollback: deletes a published release so the updater's
+# /releases/latest endpoint falls back to the previous good version.
+# Installs that already took the bad update stay broken until a fixed
+# version ships forward (the updater never downgrades) — yanking protects
+# everyone who hasn't updated yet. The git tag is kept for the record.
+#
+# Born of rc.13 (2026-07-30): a release that crashed every updated install
+# was pulled by hand under time pressure. This makes the next pull a
+# deliberate, auditable, one-field action.
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to yank (e.g. v0.1.0-rc.13)"
+        required: true
+        type: string
+      reason:
+        description: "Why (recorded in the run log)"
+        required: true
+        type: string
+
+jobs:
+  yank:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Delete the release (tag is kept)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -e
+          echo "Yanking ${{ inputs.tag }} — reason: ${{ inputs.reason }}"
+          gh release view "${{ inputs.tag }}" --repo "${{ github.repository }}" >/dev/null
+          gh release delete "${{ inputs.tag }}" --repo "${{ github.repository }}" --yes
+          echo "Deleted. /releases/latest now serves:"
+          gh release view --repo "${{ github.repository }}" --json tagName -q .tagName
