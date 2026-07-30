@@ -38,6 +38,34 @@ python tools\macs_replay\export_batch.py --batch-id <id> --out export\
 python tools\macs_replay\verify_replay.py --manifest export\manifest.json --pdfs pdfs\
 ```
 
+### It will take the keyboard occasionally
+
+The print dialog takes focus when it is *created*, once per run. Parking it
+off-screen is a visual fix only — moving a window does not hand focus back — so
+the runner captures the foreground window before printing and restores it as
+soon as the dialog appears. That cuts interference to roughly 3% of wall clock,
+which is noticeable if you are typing but not disruptive.
+
+**It cannot currently be reduced to zero on a machine you are using.** Two
+routes were tried and both are closed:
+
+- *Windows' foreground lock.* Already at maximum (`ForegroundLockTimeout` =
+  2147483647) and the dialog steals focus regardless — it is hosted by
+  explorer.exe, and the shell is exempt from those rules.
+- *An isolated desktop* (`CreateDesktop` + launching the runner there with
+  `STARTUPINFO.lpDesktop`). MACS+ itself starts and attaches fine on a created
+  desktop, so this looked promising. But the print dialog never appears there:
+  it is an explorer-hosted `ApplicationFrameWindow`, and explorer does not run
+  on a created desktop. Every run fails with `no print dialog`. Measured, not
+  assumed. Note `SetThreadDesktop` also cannot be used from PowerShell's own
+  thread — it fails with "the requested resource is in use" once a thread owns
+  windows, which the host thread does.
+
+So a long batch still wants a machine nobody is typing on. If someone finds a
+way to print without the dialog — a silent `ExecWB(OLECMDID_PRINT,
+DONTPROMPTUSER)` rather than `Print(105)` — the isolated desktop becomes viable
+and this whole problem goes away.
+
 ### Pausing
 
 Drop a file called `_stop` in the output directory. The replay finishes the run
