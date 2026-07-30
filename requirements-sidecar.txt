@@ -24,11 +24,21 @@
 #
 # Use requirements.txt for the 64-bit dev/test venv (full deps, runs all
 # pytest including LHS + report tests).
+# ── Why uvicorn has no [standard] extra and kiwisolver is pinned ─────────────
+# Everything here must install from win32 cp310 *wheels*: the GitHub runner
+# can't link x86 C extensions (kiwisolver 1.5.0's build died with
+# LNK2001 __except_handler4 in the rc.13 release run).
+#   * uvicorn's [standard] extra pulls httptools, which has no win32 wheel
+#     for any version. The sidecar serves plain HTTP on localhost — uvicorn's
+#     h11 fallback covers that, and its auto-protocol modules import fine
+#     with the extras absent. websockets/watchfiles are equally unused.
+#   * kiwisolver (via matplotlib) dropped win32 wheels after 1.4.7.
 pywin32>=306
 pyyaml>=6.0
 numpy>=1.24,<2
 fastapi>=0.115
-uvicorn[standard]>=0.34
+uvicorn>=0.34
 python-multipart>=0.0.9
 matplotlib==3.7.5
+kiwisolver==1.4.7
 python-docx>=1.1

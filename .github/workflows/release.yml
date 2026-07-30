@@ -48,10 +48,17 @@ jobs:
         # scipy remains excluded because no 32-bit cp310 wheel exists at all,
         # so LHS sampling cannot run in a packaged build. Grid/paired sweeps
         # are unaffected.
+        #
+        # --only-binary=:all: because this runner cannot link x86 C
+        # extensions (rc.13's first run died compiling kiwisolver): a dep
+        # that stops shipping win32 wheels must fail at resolve time, not
+        # as a linker error mid-build. The local package itself is a source
+        # install, so it goes in a separate --no-deps step.
         run: |
           python -m venv venv-32
           venv-32\Scripts\python -m pip install --upgrade pip
-          venv-32\Scripts\pip install -r requirements-sidecar.txt -e . pyinstaller
+          venv-32\Scripts\pip install --only-binary=:all: -r requirements-sidecar.txt pyinstaller
+          venv-32\Scripts\pip install --no-deps -e .
 
       - name: Build sidecar (PyInstaller)
         shell: pwsh
