@@ -156,6 +156,29 @@ describe("PdfEvidencePanel", () => {
       expect(screen.getByText(/11 min remaining/i)).toBeInTheDocument();
     });
 
+    // A seed mismatch lists one line per input - 30 of them on a real batch.
+    // Collapsed into one paragraph it is an unreadable wall of text, and the
+    // whole point of the message is that you can see which inputs disagree.
+    it("keeps a multi-line refusal readable line by line", async () => {
+      getPdfEvidenceStatus.mockResolvedValue({
+        ...IDLE,
+        error:
+          "the seed .frc disagrees with the batch on 2 fixed input(s):\n" +
+          "  span1: seed='8' batch=7.3\n" +
+          "  deck_name: seed='TR60' batch='Multideck 60'\n\n" +
+          "Those inputs would be reproduced incorrectly in every PDF.",
+      });
+      await openPanel();
+
+      expect(await screen.findByText("span1: seed='8' batch=7.3")).toBeInTheDocument();
+      expect(
+        screen.getByText("deck_name: seed='TR60' batch='Multideck 60'"),
+      ).toBeInTheDocument();
+      expect(
+        screen.getByText(/disagrees with the batch on 2 fixed/),
+      ).toBeInTheDocument();
+    });
+
     it("surfaces a backend refusal verbatim", async () => {
       getPdfEvidenceStatus.mockResolvedValue({
         ...IDLE,

@@ -24,6 +24,35 @@ function humanDuration(seconds: number): string {
   return `${(seconds / 3600).toFixed(1)} h`;
 }
 
+/** A refusal from the exporter, kept line by line.
+ *
+ *  A seed mismatch lists one line per disagreeing input — 30 of them on a real
+ *  batch — and the whole value of the message is being able to read which ones.
+ *  Collapsed into a paragraph it is a wall of text. Indented lines are the
+ *  detail, so they get the monospace treatment.
+ */
+function Refusal({ text }: { text: string }) {
+  const lines = text.split("\n");
+  return (
+    <div className="mt-3 max-h-72 overflow-y-auto rounded-md border border-red-300 bg-red-50 p-3 text-sm text-red-900">
+      {lines.map((line, i) =>
+        line.trim() === "" ? (
+          <div key={i} className="h-2" />
+        ) : (
+          <div
+            key={i}
+            className={
+              line.startsWith("  ") ? "font-mono text-xs" : "mt-0.5 first:mt-0"
+            }
+          >
+            {line.trim()}
+          </div>
+        ),
+      )}
+    </div>
+  );
+}
+
 export default function PdfEvidencePanel({
   batchId,
   runCount,
@@ -393,16 +422,8 @@ export default function PdfEvidencePanel({
         </div>
       )}
 
-      {status?.error && (
-        <p className="mt-3 rounded-md border border-red-300 bg-red-50 p-2 text-sm text-red-800">
-          {status.error}
-        </p>
-      )}
-      {error && (
-        <p className="mt-3 rounded-md border border-red-300 bg-red-50 p-2 text-sm text-red-800">
-          {error}
-        </p>
-      )}
+      {status?.error && <Refusal text={status.error} />}
+      {error && <Refusal text={error} />}
       {status?.output_dir && (
         <div className="mt-3 flex flex-wrap items-center gap-2 text-sm text-slate-600">
           <span>
