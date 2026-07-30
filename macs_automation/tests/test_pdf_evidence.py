@@ -245,6 +245,96 @@ class TestSurvivingARestart:
         assert st["completed"] == 99
 
 
+class TestReset:
+    """Clearing a job out so the batch can be started fresh. The PDFs are hours
+    of work, so discarding them is opt-in and never a side effect."""
+
+    @pytest.fixture(autouse=True)
+    def _evidence_dir(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+        return tmp_path
+
+    def _job(self, batch_id="alpha", n=3, out_dir=None, total=10):
+        pdf_evidence.remember_job(batch_id, sample=None, out_dir=out_dir,
+                                  seed=None, total=total)
+        pdfs = pdf_evidence.resolve_out_dir(batch_id, out_dir) / "pdfs"
+        pdfs.mkdir(parents=True, exist_ok=True)
+        for i in range(n):
+            (pdfs / f"run{i}.pdf").write_bytes(b"%PDF" + b"x" * 5000)
+        return pdfs
+
+    def test_forgets_the_job_so_the_batch_starts_fresh(self):
+        self._job()
+
+        pdf_evidence.reset("alpha")
+
+        st = pdf_evidence.status("alpha")
+        assert st["resumable"] is False
+        assert st["total"] == 0
+
+    def test_keeps_the_pdfs_by_default(self):
+        pdfs = self._job(n=3)
+
+        pdf_evidence.reset("alpha")
+
+        assert len(list(pdfs.glob("*.pdf"))) == 3
+
+    def test_discards_the_pdfs_when_asked(self):
+        pdfs = self._job(n=3)
+
+        result = pdf_evidence.reset("alpha", delete_pdfs=True)
+
+        assert result["deleted"] == 3
+        assert list(pdfs.glob("*.pdf")) == []
+
+    def test_only_ever_deletes_pdfs(self):
+        """The output folder can be one the user chose, so nothing else in it
+        is ours to remove - and the folder itself stays put."""
+        pdfs = self._job(n=1)
+        (pdfs / "notes.txt").write_text("keep me")
+        (pdfs / "_replay_log.csv").write_text("name,run_id")
+
+        pdf_evidence.reset("alpha", delete_pdfs=True)
+
+        assert (pdfs / "notes.txt").exists()
+        assert (pdfs / "_replay_log.csv").exists()
+        assert pdfs.exists()
+
+    def test_finds_pdfs_in_a_chosen_folder(self, tmp_path):
+        chosen = tmp_path / "Evidence"
+        pdfs = self._job(out_dir=str(chosen), n=2)
+
+        assert pdf_evidence.reset("alpha", delete_pdfs=True)["deleted"] == 2
+        assert list(pdfs.glob("*.pdf")) == []
+
+    def test_refuses_while_the_job_is_still_running(self):
+        pdfs = self._job(n=3)
+        _set(active=True, batch_id="alpha")
+
+        result = pdf_evidence.reset("alpha", delete_pdfs=True)
+
+        assert "error" in result
+        assert len(list(pdfs.glob("*.pdf"))) == 3
+
+    def test_does_not_disturb_a_job_running_for_another_batch(self):
+        self._job("alpha")
+        _set(active=True, batch_id="beta")
+
+        assert pdf_evidence.reset("alpha").get("reset") is True
+
+    def test_resetting_something_that_never_ran_is_harmless(self):
+        assert pdf_evidence.reset("alpha").get("reset") is True
+
+    def test_clears_leftover_in_memory_state_too(self):
+        self._job()
+        _set(active=False, batch_id="alpha", total=10, completed=3,
+             finished_at=time.time())
+
+        pdf_evidence.reset("alpha")
+
+        assert pdf_evidence.status("alpha")["total"] == 0
+
+
 class TestOutputLocation:
     """10k runs is ~4.2 GB, which often wants a different drive from C:."""
 

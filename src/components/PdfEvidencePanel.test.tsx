@@ -10,6 +10,7 @@ const getReplayHostCheck = vi.fn();
 const startPdfEvidence = vi.fn();
 const getPdfEvidenceStatus = vi.fn();
 const stopPdfEvidence = vi.fn();
+const resetPdfEvidence = vi.fn();
 const revealItemInDir = vi.fn();
 const openDialog = vi.fn();
 
@@ -27,6 +28,7 @@ vi.mock("../api/client", async (importOriginal) => ({
   startPdfEvidence: (...args: unknown[]) => startPdfEvidence(...args),
   getPdfEvidenceStatus: (...args: unknown[]) => getPdfEvidenceStatus(...args),
   stopPdfEvidence: (...args: unknown[]) => stopPdfEvidence(...args),
+  resetPdfEvidence: (...args: unknown[]) => resetPdfEvidence(...args),
 }));
 
 const IDLE: PdfEvidenceStatus = {
@@ -65,6 +67,7 @@ beforeEach(() => {
   getPdfEvidenceStatus.mockResolvedValue(IDLE);
   startPdfEvidence.mockResolvedValue({ started: true });
   stopPdfEvidence.mockResolvedValue({ stopping: true });
+  resetPdfEvidence.mockResolvedValue({ reset: true, deleted: 0 });
   openDialog.mockResolvedValue(null);
 });
 
@@ -359,6 +362,68 @@ describe("PdfEvidencePanel", () => {
       });
       await openPanel(10000, null);
       expect(await screen.findByText(/disagrees with the batch/i)).toBeInTheDocument();
+    });
+  });
+
+  describe("reset", () => {
+    const PAUSED = {
+      ...IDLE, total: 10000, completed: 3184, resumable: true, finished_at: 1,
+    };
+
+    it("is offered alongside resume on a stopped job", async () => {
+      getPdfEvidenceStatus.mockResolvedValue(PAUSED);
+      await openPanel();
+      expect(await screen.findByRole("button", { name: /^reset/i })).toBeInTheDocument();
+    });
+
+    it("is not offered while the job is running", async () => {
+      getPdfEvidenceStatus.mockResolvedValue({ ...PAUSED, active: true });
+      await openPanel();
+      await screen.findByRole("button", { name: /pause/i });
+      expect(screen.queryByRole("button", { name: /^reset/i })).toBeNull();
+    });
+
+    // Discarding hours of PDFs is not something a stray click should do, so
+    // the first press only asks.
+    it("asks before doing anything", async () => {
+      getPdfEvidenceStatus.mockResolvedValue(PAUSED);
+      const user = await openPanel();
+      await user.click(await screen.findByRole("button", { name: /^reset/i }));
+      expect(resetPdfEvidence).not.toHaveBeenCalled();
+      expect(screen.getByText(/3,184 PDFs/i)).toBeInTheDocument();
+    });
+
+    it("keeps the PDFs when only forgetting the job", async () => {
+      getPdfEvidenceStatus.mockResolvedValue(PAUSED);
+      const user = await openPanel();
+      await user.click(await screen.findByRole("button", { name: /^reset/i }));
+      await user.click(screen.getByRole("button", { name: /keep the pdfs/i }));
+      expect(resetPdfEvidence).toHaveBeenCalledWith("b1", false);
+    });
+
+    it("discards the PDFs only when that is chosen explicitly", async () => {
+      getPdfEvidenceStatus.mockResolvedValue(PAUSED);
+      const user = await openPanel();
+      await user.click(await screen.findByRole("button", { name: /^reset/i }));
+      await user.click(screen.getByRole("button", { name: /delete the pdfs/i }));
+      expect(resetPdfEvidence).toHaveBeenCalledWith("b1", true);
+    });
+
+    it("can be backed out of", async () => {
+      getPdfEvidenceStatus.mockResolvedValue(PAUSED);
+      const user = await openPanel();
+      await user.click(await screen.findByRole("button", { name: /^reset/i }));
+      await user.click(screen.getByRole("button", { name: /cancel/i }));
+      expect(resetPdfEvidence).not.toHaveBeenCalled();
+      expect(screen.getByRole("button", { name: /resume/i })).toBeInTheDocument();
+    });
+
+    it("is offered on a finished job so the batch can be redone", async () => {
+      getPdfEvidenceStatus.mockResolvedValue({
+        ...IDLE, total: 6, completed: 6, output_dir: "C:\\x", finished_at: 1,
+      });
+      await openPanel();
+      expect(await screen.findByRole("button", { name: /^reset/i })).toBeInTheDocument();
     });
   });
 

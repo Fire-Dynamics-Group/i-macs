@@ -919,6 +919,20 @@ def api_start_pdf_evidence(batch_id: str, request_body: Optional[dict] = None):
     return result
 
 
+@app.post("/api/batches/{batch_id}/pdf-evidence/reset")
+def api_reset_pdf_evidence(batch_id: str, request_body: Optional[dict] = None):
+    """Forget the job so the batch can start fresh.
+
+    `delete_pdfs` discards the output as well; it defaults to false because
+    those PDFs can be hours of work and nothing else replaces them.
+    """
+    body = request_body or {}
+    result = pdf_evidence.reset(batch_id, delete_pdfs=bool(body.get("delete_pdfs")))
+    if "error" in result:
+        return JSONResponse(result, status_code=409)
+    return result
+
+
 @app.post("/api/batches/{batch_id}/pdf-evidence/stop")
 def api_stop_pdf_evidence(batch_id: str):
     """Pause after the current run. Resuming is the same start call again."""

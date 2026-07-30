@@ -130,6 +130,45 @@ def stop(batch_id: str) -> dict:
     return {"stopping": True, "batch_id": batch_id}
 
 
+def reset(batch_id: str, delete_pdfs: bool = False) -> dict:
+    """Forget a job so the batch can be started fresh.
+
+    The PDFs are hours of work, so they are kept unless `delete_pdfs` is asked
+    for explicitly. Even then only `*.pdf` inside the job's own `pdfs` folder
+    goes: the parent can be a directory the user chose, and nothing else in it
+    is ours to remove.
+    """
+    with _lock:
+        if _state["active"] and _state["batch_id"] == batch_id:
+            return {"error": "stop the job before resetting it"}
+    job = recall_job(batch_id) or {}
+
+    deleted = 0
+    if delete_pdfs:
+        pdf_dir = resolve_out_dir(batch_id, job.get("out_dir")) / "pdfs"
+        if pdf_dir.is_dir():
+            for pdf in pdf_dir.glob("*.pdf"):
+                try:
+                    pdf.unlink()
+                    deleted += 1
+                except OSError:
+                    pass
+
+    try:
+        _job_file(batch_id).unlink()
+    except (FileNotFoundError, OSError):
+        pass
+
+    with _lock:
+        if _state["batch_id"] == batch_id:
+            _state.update(
+                active=False, batch_id=None, total=0, completed=0,
+                start_time=None, output_dir=None, error=None, finished_at=None,
+                sample=None, seed=None, job_dir=None, stopping=False,
+            )
+    return {"reset": True, "deleted": deleted}
+
+
 def _powershell(script: Path, args: list[str], timeout: Optional[int] = None):
     return subprocess.run(
         ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(script), *args],

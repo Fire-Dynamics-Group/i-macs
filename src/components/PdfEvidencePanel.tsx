@@ -10,6 +10,7 @@ import { useCallback, useEffect, useState } from "react";
 import {
   getPdfEvidenceStatus,
   getReplayHostCheck,
+  resetPdfEvidence,
   startPdfEvidence,
   stopPdfEvidence,
   type HostCheck,
@@ -73,6 +74,7 @@ export default function PdfEvidencePanel({
   const [sampleText, setSampleText] = useState("200");
   const [outDir, setOutDir] = useState<string | null>(null);
   const [seed, setSeed] = useState<string | null>(null);
+  const [confirmingReset, setConfirmingReset] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
@@ -183,6 +185,18 @@ export default function PdfEvidencePanel({
       outDir: status?.job_dir ?? undefined,
       seed: status?.seed ?? undefined,
     });
+
+  async function doReset(deletePdfs: boolean) {
+    setError(null);
+    setConfirmingReset(false);
+    try {
+      const res = await resetPdfEvidence(batchId, deletePdfs);
+      if (res.error) setError(res.error);
+      await refresh();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  }
 
   async function pause() {
     setError(null);
@@ -364,7 +378,7 @@ export default function PdfEvidencePanel({
                   onClick={() => setSeed(null)}
                   className="text-xs text-slate-500 hover:underline"
                 >
-                  Reset
+                  Clear
                 </button>
               </>
             ) : seedName ? (
@@ -415,12 +429,59 @@ export default function PdfEvidencePanel({
                 onClick={() => setOutDir(null)}
                 className="text-xs text-slate-500 hover:underline"
               >
-                Reset
+                Use default
               </button>
             )}
           </div>
         </div>
       )}
+
+      {/* Reset is only meaningful once a job exists to forget, and never while
+          one is running — the runner is still writing into that folder. */}
+      {!running && (status?.total ?? 0) > 0 &&
+        (confirmingReset ? (
+          <div className="mt-3 rounded-md border border-amber-400 bg-amber-50 p-3 text-sm">
+            <p className="font-medium text-amber-900">
+              Reset this job? {(status?.completed ?? 0).toLocaleString()} PDFs are on
+              disk.
+            </p>
+            <p className="mt-1 text-amber-800">
+              Keeping them means a new run skips those runs again. Deleting them
+              cannot be undone.
+            </p>
+            <div className="mt-2 flex flex-wrap gap-2">
+              <button
+                type="button"
+                onClick={() => doReset(false)}
+                className="rounded-md bg-slate-700 px-3 py-1.5 text-sm font-medium text-white hover:bg-slate-800"
+              >
+                Keep the PDFs
+              </button>
+              <button
+                type="button"
+                onClick={() => doReset(true)}
+                className="rounded-md bg-red-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-red-700"
+              >
+                Delete the PDFs
+              </button>
+              <button
+                type="button"
+                onClick={() => setConfirmingReset(false)}
+                className="px-2 py-1.5 text-sm text-slate-600 hover:underline"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        ) : (
+          <button
+            type="button"
+            onClick={() => setConfirmingReset(true)}
+            className="mt-3 rounded-md border border-slate-300 px-3 py-1.5 text-sm font-medium text-slate-700 hover:bg-slate-100"
+          >
+            Reset
+          </button>
+        ))}
 
       {status?.error && <Refusal text={status.error} />}
       {error && <Refusal text={error} />}

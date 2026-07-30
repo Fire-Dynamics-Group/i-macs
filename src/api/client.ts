@@ -609,6 +609,19 @@ export async function startPdfEvidence(
   });
 }
 
+/** Forget the job so the batch can start fresh.
+ *
+ *  `deletePdfs` discards the output too — hours of work, so it is never the
+ *  default and the panel asks first. */
+export async function resetPdfEvidence(
+  batchId: string,
+  deletePdfs: boolean,
+): Promise<{ reset?: boolean; deleted?: number; error?: string }> {
+  return postJson(`/api/batches/${batchId}/pdf-evidence/reset`, {
+    delete_pdfs: deletePdfs,
+  });
+}
+
 /** Pause after the current run, leaving the runner to restore the machine. */
 export async function stopPdfEvidence(
   batchId: string,
