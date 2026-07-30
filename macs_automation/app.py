@@ -912,7 +912,17 @@ def api_start_pdf_evidence(batch_id: str, request_body: Optional[dict] = None):
         if sample < 1:
             return JSONResponse({"error": "sample must be at least 1"}, status_code=400)
 
-    result = pdf_evidence.start(batch_id, str(DB_PATH), sample=sample, seed=body.get("seed"))
+    result = pdf_evidence.start(batch_id, str(DB_PATH), sample=sample,
+                                seed=body.get("seed"), out_dir=body.get("out_dir"))
+    if "error" in result:
+        return JSONResponse(result, status_code=409)
+    return result
+
+
+@app.post("/api/batches/{batch_id}/pdf-evidence/stop")
+def api_stop_pdf_evidence(batch_id: str):
+    """Pause after the current run. Resuming is the same start call again."""
+    result = pdf_evidence.stop(batch_id)
     if "error" in result:
         return JSONResponse(result, status_code=409)
     return result

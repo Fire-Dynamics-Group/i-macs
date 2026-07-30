@@ -104,6 +104,101 @@ class TestStart:
         assert result["batch_id"] == "alpha"
 
 
+class TestPause:
+    """A 10k batch is an 11-hour job on a machine somebody else needs. Stopping
+    has to be graceful: the runner owns the default printer and a live MACS+
+    instance, and only tidies both up if it exits through its own finally."""
+
+    @pytest.fixture(autouse=True)
+    def _evidence_dir(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+        return tmp_path
+
+    def test_asks_the_runner_to_stop_after_the_current_run(self):
+        _set(active=True, batch_id="alpha", total=200, completed=12)
+
+        result = pdf_evidence.stop("alpha")
+
+        assert result.get("stopping") is True
+        assert pdf_evidence.stop_file("alpha").exists()
+
+    def test_reports_that_it_is_stopping(self):
+        _set(active=True, batch_id="alpha", total=200, completed=12)
+        pdf_evidence.stop("alpha")
+
+        assert pdf_evidence.status("alpha")["stopping"] is True
+
+    def test_will_not_stop_a_job_belonging_to_another_batch(self):
+        _set(active=True, batch_id="alpha")
+
+        result = pdf_evidence.stop("beta")
+
+        assert "error" in result
+        assert not pdf_evidence.stop_file("alpha").exists()
+
+    def test_nothing_to_stop_when_idle(self):
+        assert "error" in pdf_evidence.stop("alpha")
+
+    def test_a_stale_stop_signal_does_not_kill_the_next_run(self):
+        """Otherwise resuming after a pause stops again immediately."""
+        stop = pdf_evidence.stop_file("alpha")
+        stop.parent.mkdir(parents=True, exist_ok=True)
+        stop.write_text("")
+
+        pdf_evidence.clear_stop("alpha")
+
+        assert not stop.exists()
+
+
+class TestResume:
+    def test_remembers_the_sample_so_a_resume_covers_the_same_runs(self):
+        """Resuming with a different sample would export a different set of
+        runs, and the half-finished PDFs would no longer line up with it."""
+        _set(active=False, batch_id="alpha", total=200, completed=12, sample=200)
+
+        assert pdf_evidence.status("alpha")["sample"] == 200
+
+    def test_a_partly_done_job_is_resumable(self):
+        _set(active=False, batch_id="alpha", total=200, completed=12,
+             finished_at=time.time())
+
+        assert pdf_evidence.status("alpha")["resumable"] is True
+
+    def test_a_finished_job_is_not_resumable(self):
+        _set(active=False, batch_id="alpha", total=200, completed=200,
+             finished_at=time.time())
+
+        assert pdf_evidence.status("alpha")["resumable"] is False
+
+    def test_another_batch_is_never_resumable_from_this_one(self):
+        _set(active=False, batch_id="alpha", total=200, completed=12,
+             finished_at=time.time())
+
+        assert pdf_evidence.status("beta")["resumable"] is False
+
+
+class TestOutputLocation:
+    """10k runs is ~4.2 GB, which often wants a different drive from C:."""
+
+    def test_defaults_to_localappdata(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+
+        assert pdf_evidence.resolve_out_dir("alpha") == (
+            tmp_path / "i-macs" / "pdf_evidence" / "alpha"
+        )
+
+    def test_uses_a_chosen_folder(self, tmp_path):
+        chosen = tmp_path / "Evidence"
+
+        assert pdf_evidence.resolve_out_dir("alpha", str(chosen)) == chosen
+
+    def test_the_stop_signal_follows_the_chosen_folder(self, tmp_path):
+        chosen = tmp_path / "Evidence"
+        _set(active=True, batch_id="alpha", job_dir=str(chosen))
+
+        assert pdf_evidence.stop_file("alpha") == chosen / "pdfs" / "_stop"
+
+
 class TestPaths:
     def test_tool_dir_points_at_the_replay_scripts(self):
         assert (pdf_evidence.tool_dir() / "Invoke-MacsReplay.ps1").exists()

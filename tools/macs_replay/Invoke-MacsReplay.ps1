@@ -220,6 +220,12 @@ $mf = Get-Content $Manifest -Raw | ConvertFrom-Json
 if (-not $mf.runs) { throw "manifest contains no runs" }
 New-Item -ItemType Directory -Force $OutDir | Out-Null
 
+# Pause signal, written by whoever started us. Checked between runs rather than
+# acted on immediately: we hold the default printer and a live MACS+ instance,
+# and only the `finally` below puts them back.
+$stopFile = Join-Path $OutDir "_stop"
+Remove-Item $stopFile -ErrorAction SilentlyContinue   # a stale one would stop us at once
+
 if (-not $SpoolPath) {
     $port = (Get-Printer -Name $PrinterName -ErrorAction Stop).PortName
     if ($port -notmatch '\.pdf$') {
@@ -244,11 +250,17 @@ $seed = $mf.runs[0].frc
 $script:app = Start-MacsInstance $seed
 Write-Host "MACS+ up; replaying $($mf.runs.Count) runs from batch $($mf.batch_id)"
 
-$done = 0; $failed = 0; $skipped = 0; $restarts = 0
+$done = 0; $failed = 0; $skipped = 0; $restarts = 0; $stopped = $false
 $batchSw = [Diagnostics.Stopwatch]::StartNew()
 
 try {
     foreach ($entry in $mf.runs) {
+        if (Test-Path $stopFile) {
+            Write-Host "stop requested - finishing after $done run(s)"
+            $stopped = $true
+            break
+        }
+
         $target = Join-Path $OutDir "$($entry.name).pdf"
         # Resume: an 11-hour job will be interrupted at some point.
         if ((Test-Path $target) -and (Get-Item $target).Length -gt 1000) { $skipped++; continue }
@@ -283,6 +295,7 @@ try {
         }
     }
 } finally {
+    Remove-Item $stopFile -ErrorAction SilentlyContinue
     if ($prevDefault) {
         (Get-CimInstance Win32_Printer -Filter "Name='$prevDefault'") |
             Invoke-CimMethod -MethodName SetDefaultPrinter | Out-Null
@@ -291,7 +304,11 @@ try {
 }
 
 Write-Host ""
-Write-Host ("REPLAY DONE: {0} ok, {1} failed, {2} already present, {3} restarts, {4:N1} min" -f
+Write-Host ("REPLAY {0}: {1} ok, {2} failed, {3} already present, {4} restarts, {5:N1} min" -f
+    $(if ($stopped) { "PAUSED" } else { "DONE" }),
     $done, $failed, $skipped, $restarts, $batchSw.Elapsed.TotalMinutes)
+if ($stopped) {
+    Write-Host "Resume with the same command - runs already on disk are skipped."
+}
 Write-Host "Now verify: python tools/macs_replay/verify_replay.py --manifest $Manifest --pdfs $OutDir"
 if ($failed -gt 0) { exit 1 }

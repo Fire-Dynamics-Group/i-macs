@@ -31,6 +31,11 @@ _state: dict = {
     "output_dir": None,
     "error": None,
     "finished_at": None,
+    # Remembered so a resume covers the same runs, and so pausing can find the
+    # job's directory even when the user chose one.
+    "sample": None,
+    "job_dir": None,
+    "stopping": False,
 }
 
 
@@ -45,6 +50,50 @@ def evidence_root() -> Path:
     local = os.environ.get("LOCALAPPDATA")
     base = Path(local) / "i-macs" if local else Path.cwd()
     return base / "pdf_evidence"
+
+
+def resolve_out_dir(batch_id: str, out_dir: Optional[str] = None) -> Path:
+    """Where this batch's evidence goes: the chosen folder, or ours.
+
+    10k runs is roughly 4.2 GB, which frequently wants a drive other than C:.
+    """
+    return Path(out_dir) if out_dir else evidence_root() / batch_id
+
+
+def stop_file(batch_id: str) -> Path:
+    """Sentinel the runner watches for between runs.
+
+    A file rather than a signal because the runner is a separate PowerShell
+    process: it must finish the run it is holding and leave through its own
+    `finally`, which is what puts the default printer back and closes MACS+.
+    Killing it outright skips both.
+    """
+    with _lock:
+        job_dir = _state["job_dir"] if _state["batch_id"] == batch_id else None
+    return resolve_out_dir(batch_id, job_dir) / "pdfs" / "_stop"
+
+
+def clear_stop(batch_id: str) -> None:
+    """Drop a leftover signal, or a resume would stop again immediately."""
+    try:
+        stop_file(batch_id).unlink()
+    except (FileNotFoundError, OSError):
+        pass
+
+
+def stop(batch_id: str) -> dict:
+    with _lock:
+        if not _state["active"] or _state["batch_id"] != batch_id:
+            return {"error": f"no PDF evidence job is running for batch {batch_id}"}
+    path = stop_file(batch_id)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("stop", encoding="utf-8")
+    except OSError as exc:
+        return {"error": f"could not signal the runner: {exc}"}
+    with _lock:
+        _state["stopping"] = True
+    return {"stopping": True, "batch_id": batch_id}
 
 
 def _powershell(script: Path, args: list[str], timeout: Optional[int] = None):
@@ -96,8 +145,12 @@ _IDLE = {
     "output_dir": None,
     "error": None,
     "finished_at": None,
+    "sample": None,
+    "job_dir": None,
+    "stopping": False,
     "elapsed_s": 0.0,
     "eta_s": None,
+    "resumable": False,
 }
 
 
@@ -121,6 +174,11 @@ def status(batch_id: Optional[str] = None) -> dict:
             eta = round(per * (st["total"] - st["completed"]), 1)
     st["elapsed_s"] = round(elapsed, 1)
     st["eta_s"] = eta
+    # Runs already on disk are skipped, so picking up where a pause left off is
+    # just starting again with the same parameters.
+    st["resumable"] = (
+        not st["active"] and st["total"] > 0 and st["completed"] < st["total"]
+    )
     return st
 
 
@@ -128,8 +186,9 @@ def _count_pdfs(out: Path) -> int:
     return sum(1 for p in out.glob("*.pdf") if p.stat().st_size > 1000)
 
 
-def _worker(batch_id: str, db_path: str, sample: Optional[int], seed: Optional[str]):
-    out_dir = evidence_root() / batch_id
+def _worker(batch_id: str, db_path: str, sample: Optional[int], seed: Optional[str],
+            out_dir_arg: Optional[str] = None):
+    out_dir = resolve_out_dir(batch_id, out_dir_arg)
     pdf_dir = out_dir / "pdfs"
     try:
         export = _load_export_module()
@@ -153,6 +212,11 @@ def _worker(batch_id: str, db_path: str, sample: Optional[int], seed: Optional[s
         with _lock:
             _state["total"] = len(entries)
             _state["output_dir"] = str(pdf_dir)
+            stopping = _state["stopping"]
+        # Exporting a 10k batch takes a while; a pause during it should not be
+        # answered by launching MACS+ anyway.
+        if stopping:
+            return
 
         runner = tool_dir() / "Invoke-MacsReplay.ps1"
         proc = subprocess.Popen(
@@ -188,7 +252,9 @@ def _worker(batch_id: str, db_path: str, sample: Optional[int], seed: Optional[s
 
 
 def start(batch_id: str, db_path: str, sample: Optional[int] = None,
-          seed: Optional[str] = None) -> dict:
+          seed: Optional[str] = None, out_dir: Optional[str] = None) -> dict:
+    """Start (or resume) a job. Runs already on disk are skipped by the runner,
+    so resuming after a pause is the same call with the same parameters."""
     with _lock:
         if _state["active"]:
             return {"error": "PDF evidence generation is already running",
@@ -196,8 +262,10 @@ def start(batch_id: str, db_path: str, sample: Optional[int] = None,
         _state.update(
             active=True, batch_id=batch_id, total=0, completed=0,
             start_time=time.time(), output_dir=None, error=None, finished_at=None,
+            sample=sample, job_dir=out_dir, stopping=False,
         )
+    clear_stop(batch_id)
     threading.Thread(
-        target=_worker, args=(batch_id, db_path, sample, seed), daemon=True
+        target=_worker, args=(batch_id, db_path, sample, seed, out_dir), daemon=True
     ).start()
     return {"started": True, "batch_id": batch_id}

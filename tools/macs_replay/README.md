@@ -38,6 +38,20 @@ python tools\macs_replay\export_batch.py --batch-id <id> --out export\
 python tools\macs_replay\verify_replay.py --manifest export\manifest.json --pdfs pdfs\
 ```
 
+### Pausing
+
+Drop a file called `_stop` in the output directory. The replay finishes the run
+it is holding, then exits through its own cleanup — which is what puts your
+default printer back and closes MACS+. Killing the process skips both.
+
+```powershell
+New-Item pdfs\_stop -ItemType File
+```
+
+Resume by running step 3 again: runs whose PDF is already on disk are skipped.
+Re-export first only if you changed the sample size, and note that a different
+`--sample` covers a different set of runs.
+
 ## Read this before trusting output
 
 Every trap below produces confident, well-formed, **wrong** output and none of them

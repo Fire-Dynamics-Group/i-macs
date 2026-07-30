@@ -11,6 +11,7 @@ import {
   getPdfEvidenceStatus,
   getReplayHostCheck,
   startPdfEvidence,
+  stopPdfEvidence,
   type HostCheck,
   type PdfEvidenceStatus,
 } from "../api/client";
@@ -37,6 +38,7 @@ export default function PdfEvidencePanel({
   const [scope, setScope] = useState<"all" | "sample">("all");
   // Kept as text so an emptied box stays empty rather than reading as 0.
   const [sampleText, setSampleText] = useState("200");
+  const [outDir, setOutDir] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
@@ -77,10 +79,48 @@ export default function PdfEvidencePanel({
   // silently squashed charts, which is worse than an outright failure.
   const blocked = host?.ok !== true || (scope === "sample" && !sampleValid);
 
-  async function begin() {
+  // The PDFs are the deliverable and they land outside the app, so the path
+  // needs to be reachable rather than a string to retype into Explorer.
+  async function openFolder() {
+    if (!status?.output_dir) return;
+    try {
+      const { revealItemInDir } = await import("@tauri-apps/plugin-opener");
+      await revealItemInDir(status.output_dir);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  }
+
+  async function chooseFolder() {
+    try {
+      const { open: openPicker } = await import("@tauri-apps/plugin-dialog");
+      const picked = await openPicker({ directory: true, multiple: false });
+      if (typeof picked === "string") setOutDir(picked);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  }
+
+  async function run(sample: number | undefined) {
     setError(null);
     try {
-      const res = await startPdfEvidence(batchId, scope === "all" ? undefined : sampleSize);
+      const res = await startPdfEvidence(batchId, sample, outDir ?? undefined);
+      if (res.error) setError(res.error);
+      await refresh();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  }
+
+  const begin = () => run(scope === "all" ? undefined : sampleSize);
+  // Resume over the same runs the paused job covered: a different sample would
+  // export a different set, and the PDFs already on disk would not line up.
+  const resume = () => run(status?.sample ?? undefined);
+
+  async function pause() {
+    setError(null);
+    try {
+      const res = await stopPdfEvidence(batchId);
       if (res.error) setError(res.error);
       await refresh();
     } catch (e) {
@@ -160,6 +200,48 @@ export default function PdfEvidencePanel({
             Leave the app running and signed in. MACS+ windows will open and close; you can
             keep working, they do not take focus.
           </p>
+          <div className="mt-2 flex items-center gap-3">
+            <button
+              type="button"
+              onClick={pause}
+              disabled={status.stopping}
+              className="rounded-md border border-slate-300 px-3 py-1.5 text-sm font-medium text-slate-700 hover:bg-slate-100 disabled:text-slate-400"
+            >
+              {status.stopping ? "Pausing…" : "Pause"}
+            </button>
+            {status.stopping && (
+              <span className="text-sm text-slate-600">
+                Finishing the current run, then stopping — this frees MACS+ and puts your
+                default printer back.
+              </span>
+            )}
+          </div>
+        </div>
+      ) : status?.resumable ? (
+        <div className="mt-3">
+          <div className="h-2 w-full overflow-hidden rounded bg-slate-200">
+            <div
+              className="h-full bg-amber-500"
+              style={{ width: `${(status.completed / status.total) * 100}%` }}
+            />
+          </div>
+          <p className="mt-2 text-sm text-slate-700">
+            Paused — {status.completed} of {status.total} PDFs done.
+          </p>
+          <div className="mt-2 flex flex-wrap items-center gap-3">
+            <button
+              type="button"
+              onClick={resume}
+              disabled={host?.ok !== true}
+              className="rounded-md bg-blue-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-blue-700 disabled:bg-slate-300 disabled:text-slate-500"
+            >
+              Resume
+            </button>
+            <span className="text-sm text-slate-500">
+              Picks up where it stopped; ~
+              {humanDuration((status.total - status.completed) * SECONDS_PER_RUN)} left.
+            </span>
+          </div>
         </div>
       ) : (
         <div className="mt-3 flex flex-wrap items-center gap-3">
@@ -201,6 +283,29 @@ export default function PdfEvidencePanel({
               {((planned * 0.45) / 1024).toFixed(1)} GB
             </span>
           )}
+          {/* A 10k batch is ~4.2 GB, which often wants a drive other than C:. */}
+          <div className="flex w-full items-center gap-2 text-sm text-slate-600">
+            <span>Save to</span>
+            <code className="rounded bg-slate-100 px-1 text-xs">
+              {outDir ?? "the app's own folder"}
+            </code>
+            <button
+              type="button"
+              onClick={chooseFolder}
+              className="rounded border border-slate-300 px-2 py-0.5 text-xs font-medium text-slate-700 hover:bg-slate-100"
+            >
+              Choose folder
+            </button>
+            {outDir && (
+              <button
+                type="button"
+                onClick={() => setOutDir(null)}
+                className="text-xs text-slate-500 hover:underline"
+              >
+                Reset
+              </button>
+            )}
+          </div>
         </div>
       )}
 
@@ -214,11 +319,22 @@ export default function PdfEvidencePanel({
           {error}
         </p>
       )}
-      {status?.output_dir && !running && status.completed > 0 && (
-        <p className="mt-3 text-sm text-slate-600">
-          {status.completed} PDFs in{" "}
+      {status?.output_dir && (
+        <div className="mt-3 flex flex-wrap items-center gap-2 text-sm text-slate-600">
+          <span>
+            {running
+              ? "Saving to"
+              : `${status.completed} PDF${status.completed === 1 ? "" : "s"} in`}
+          </span>
           <code className="rounded bg-slate-100 px-1 text-xs">{status.output_dir}</code>
-        </p>
+          <button
+            type="button"
+            onClick={openFolder}
+            className="rounded border border-slate-300 px-2 py-0.5 text-xs font-medium text-slate-700 hover:bg-slate-100"
+          >
+            Open folder
+          </button>
+        </div>
       )}
     </section>
   );

@@ -570,6 +570,11 @@ export interface PdfEvidenceStatus {
   elapsed_s: number;
   eta_s: number | null;
   finished_at: number | null;
+  /** Sample the job was started with, so a resume covers the same runs. */
+  sample: number | null;
+  /** A pause has been asked for; the runner finishes its current run first. */
+  stopping: boolean;
+  resumable: boolean;
 }
 
 /** Is this machine fit to produce MACS+ PDF evidence? */
@@ -577,14 +582,26 @@ export async function getReplayHostCheck(): Promise<HostCheck> {
   return getJson<HostCheck>("/api/replay/host-check");
 }
 
-/** Replay a completed batch through MACS+, one real PDF per run. */
+/** Replay a completed batch through MACS+, one real PDF per run.
+ *
+ *  Also the resume: runs whose PDF is already on disk are skipped, so picking
+ *  up after a pause is this same call with the same arguments. */
 export async function startPdfEvidence(
   batchId: string,
   sample?: number,
+  outDir?: string,
 ): Promise<{ started?: boolean; error?: string }> {
   return postJson(`/api/batches/${batchId}/pdf-evidence`, {
     sample: sample ?? null,
+    out_dir: outDir ?? null,
   });
+}
+
+/** Pause after the current run, leaving the runner to restore the machine. */
+export async function stopPdfEvidence(
+  batchId: string,
+): Promise<{ stopping?: boolean; error?: string }> {
+  return postJson(`/api/batches/${batchId}/pdf-evidence/stop`, {});
 }
 
 export async function getPdfEvidenceStatus(

@@ -9,12 +9,24 @@ import type { HostCheck, PdfEvidenceStatus } from "../api/client";
 const getReplayHostCheck = vi.fn();
 const startPdfEvidence = vi.fn();
 const getPdfEvidenceStatus = vi.fn();
+const stopPdfEvidence = vi.fn();
+const revealItemInDir = vi.fn();
+const openDialog = vi.fn();
+
+vi.mock("@tauri-apps/plugin-opener", () => ({
+  revealItemInDir: (...args: unknown[]) => revealItemInDir(...args),
+}));
+
+vi.mock("@tauri-apps/plugin-dialog", () => ({
+  open: (...args: unknown[]) => openDialog(...args),
+}));
 
 vi.mock("../api/client", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../api/client")>()),
   getReplayHostCheck: () => getReplayHostCheck(),
   startPdfEvidence: (...args: unknown[]) => startPdfEvidence(...args),
   getPdfEvidenceStatus: (...args: unknown[]) => getPdfEvidenceStatus(...args),
+  stopPdfEvidence: (...args: unknown[]) => stopPdfEvidence(...args),
 }));
 
 const IDLE: PdfEvidenceStatus = {
@@ -27,6 +39,9 @@ const IDLE: PdfEvidenceStatus = {
   elapsed_s: 0,
   eta_s: null,
   finished_at: null,
+  sample: null,
+  stopping: false,
+  resumable: false,
 };
 
 const HOST_OK: HostCheck = { ok: true, lines: ["MACS+ 3.0.4 found"], error: null };
@@ -45,6 +60,8 @@ beforeEach(() => {
   getReplayHostCheck.mockResolvedValue(HOST_OK);
   getPdfEvidenceStatus.mockResolvedValue(IDLE);
   startPdfEvidence.mockResolvedValue({ started: true });
+  stopPdfEvidence.mockResolvedValue({ stopping: true });
+  openDialog.mockResolvedValue(null);
 });
 
 describe("PdfEvidencePanel", () => {
@@ -58,7 +75,7 @@ describe("PdfEvidencePanel", () => {
       const user = await openPanel();
       await screen.findByText(/set up correctly/i);
       await user.click(generateButton());
-      expect(startPdfEvidence).toHaveBeenCalledWith("b1", undefined);
+      expect(startPdfEvidence).toHaveBeenCalledWith("b1", undefined, undefined);
     });
 
     it("sends the sample size when generating a sample", async () => {
@@ -66,7 +83,7 @@ describe("PdfEvidencePanel", () => {
       await screen.findByText(/set up correctly/i);
       await user.click(screen.getByRole("radio", { name: /auditable sample/i }));
       await user.click(generateButton());
-      expect(startPdfEvidence).toHaveBeenCalledWith("b1", 200);
+      expect(startPdfEvidence).toHaveBeenCalledWith("b1", 200, undefined);
     });
 
     // A sample bigger than the batch is a typo, not a request for extra runs.
@@ -75,7 +92,7 @@ describe("PdfEvidencePanel", () => {
       await screen.findByText(/set up correctly/i);
       await user.click(screen.getByRole("radio", { name: /auditable sample/i }));
       await user.click(generateButton());
-      expect(startPdfEvidence).toHaveBeenCalledWith("b1", 50);
+      expect(startPdfEvidence).toHaveBeenCalledWith("b1", 50, undefined);
     });
 
     // Regression: an empty box read as 0, which the backend treats as falsy and
@@ -154,6 +171,104 @@ describe("PdfEvidencePanel", () => {
       });
       await openPanel();
       expect(await screen.findByText(/6 PDFs in/i)).toBeInTheDocument();
+    });
+
+    // The PDFs are the deliverable, so the path must be reachable rather than
+    // a string to retype into Explorer.
+    it("opens the output folder on request", async () => {
+      const dir = "C:\\Users\\x\\AppData\\Local\\i-macs\\pdf_evidence\\b1\\pdfs";
+      getPdfEvidenceStatus.mockResolvedValue({
+        ...IDLE, total: 6, completed: 6, output_dir: dir, finished_at: 1,
+      });
+      const user = await openPanel();
+      await user.click(await screen.findByRole("button", { name: /open folder/i }));
+      expect(revealItemInDir).toHaveBeenCalledWith(dir);
+    });
+
+    it("offers the folder while the job is still running", async () => {
+      const dir = "C:\\evidence\\b1\\pdfs";
+      getPdfEvidenceStatus.mockResolvedValue({
+        ...IDLE, active: true, total: 200, completed: 12, output_dir: dir,
+      });
+      const user = await openPanel();
+      await user.click(await screen.findByRole("button", { name: /open folder/i }));
+      expect(revealItemInDir).toHaveBeenCalledWith(dir);
+    });
+  });
+
+  describe("pause and resume", () => {
+    const RUNNING = { ...IDLE, active: true, total: 200, completed: 40, sample: 200 };
+
+    it("offers a pause while running", async () => {
+      getPdfEvidenceStatus.mockResolvedValue(RUNNING);
+      const user = await openPanel();
+      await user.click(await screen.findByRole("button", { name: /pause/i }));
+      expect(stopPdfEvidence).toHaveBeenCalledWith("b1");
+    });
+
+    // The runner holds the default printer and a live MACS+ instance, and only
+    // tidies both up on its way out, so a pause is a request, not an instant.
+    it("says it is finishing the current run once asked to pause", async () => {
+      getPdfEvidenceStatus.mockResolvedValue({ ...RUNNING, stopping: true });
+      await openPanel();
+      expect(await screen.findByText(/finishing the current run/i)).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: /pausing/i })).toBeDisabled();
+    });
+
+    it("offers to resume a paused job", async () => {
+      getPdfEvidenceStatus.mockResolvedValue({
+        ...RUNNING, active: false, resumable: true, finished_at: 1,
+      });
+      const user = await openPanel();
+      await user.click(await screen.findByRole("button", { name: /resume/i }));
+      expect(startPdfEvidence).toHaveBeenCalled();
+    });
+
+    // Resuming with a different sample would export a different set of runs,
+    // and the PDFs already on disk would no longer line up with it.
+    it("resumes over the same runs as the paused job", async () => {
+      getPdfEvidenceStatus.mockResolvedValue({
+        ...RUNNING, active: false, resumable: true, sample: 200, finished_at: 1,
+      });
+      const user = await openPanel();
+      await user.click(await screen.findByRole("button", { name: /resume/i }));
+      expect(startPdfEvidence).toHaveBeenCalledWith("b1", 200, undefined);
+    });
+
+    it("shows how much is already done when paused", async () => {
+      getPdfEvidenceStatus.mockResolvedValue({
+        ...RUNNING, active: false, resumable: true, finished_at: 1,
+      });
+      await openPanel();
+      expect(await screen.findByText(/40 of 200/i)).toBeInTheDocument();
+    });
+  });
+
+  describe("output folder", () => {
+    it("saves to the default location when none is chosen", async () => {
+      const user = await openPanel();
+      await screen.findByText(/set up correctly/i);
+      await user.click(generateButton());
+      expect(startPdfEvidence).toHaveBeenCalledWith("b1", undefined, undefined);
+    });
+
+    it("sends a chosen folder", async () => {
+      openDialog.mockResolvedValue("D:\\Evidence");
+      const user = await openPanel();
+      await screen.findByText(/set up correctly/i);
+      await user.click(screen.getByRole("button", { name: /choose folder/i }));
+      expect(await screen.findByText(/D:\\Evidence/)).toBeInTheDocument();
+      await user.click(generateButton());
+      expect(startPdfEvidence).toHaveBeenCalledWith("b1", undefined, "D:\\Evidence");
+    });
+
+    it("keeps the default when the picker is dismissed", async () => {
+      openDialog.mockResolvedValue(null);
+      const user = await openPanel();
+      await screen.findByText(/set up correctly/i);
+      await user.click(screen.getByRole("button", { name: /choose folder/i }));
+      await user.click(generateButton());
+      expect(startPdfEvidence).toHaveBeenCalledWith("b1", undefined, undefined);
     });
   });
 
