@@ -427,6 +427,22 @@ describe("PdfEvidencePanel", () => {
     });
   });
 
+  // Someone reads this before committing a machine for the night, so it should
+  // not flatter itself. Measured median on a real 10k batch is ~5.1 s/run and
+  // ~460 KB/PDF; the first estimate here said 12.5 h against a real 15.
+  describe("estimate", () => {
+    it("is in the right ballpark for a full 10k batch", async () => {
+      await openPanel(10000);
+      const text = (await screen.findByText(/GB/)).textContent ?? "";
+      const hours = Number(/([\d.]+) h/.exec(text)?.[1]);
+      expect(hours).toBeGreaterThan(13);
+      expect(hours).toBeLessThan(17);
+      const gb = Number(/~([\d.]+) GB/.exec(text)?.[1]);
+      expect(gb).toBeGreaterThan(4);
+      expect(gb).toBeLessThan(5);
+    });
+  });
+
   describe("output folder", () => {
     it("saves to the default location when none is chosen", async () => {
       const user = await openPanel();

@@ -25,7 +25,12 @@ param(
     [string]$MacsInstall = "C:\Program Files (x86)\MACS+_304",
     [string]$PrinterName = "MACS-PDF",
     [string]$SpoolPath,
-    [int]$MaxRestarts = 20
+    [int]$MaxRestarts = 20,
+    # Restart MACS+ every N runs. An instance wedges after ~87 prints and the
+    # runner only discovers that by waiting out a 60 s timeout, so recycling
+    # well before then trades ~95 s of stall for a few planned seconds.
+    # 0 disables it.
+    [int]$RecycleEvery = 60
 )
 
 $ErrorActionPreference = "Stop"
@@ -251,6 +256,7 @@ $script:app = Start-MacsInstance $seed
 Write-Host "MACS+ up; replaying $($mf.runs.Count) runs from batch $($mf.batch_id)"
 
 $done = 0; $failed = 0; $skipped = 0; $restarts = 0; $stopped = $false
+$sinceStart = 0; $recycles = 0
 $batchSw = [Diagnostics.Stopwatch]::StartNew()
 
 try {
@@ -265,10 +271,24 @@ try {
         # Resume: an 11-hour job will be interrupted at some point.
         if ((Test-Path $target) -and (Get-Item $target).Length -gt 1000) { $skipped++; continue }
 
+        # A MACS+ instance wedges after ~87 prints: the print dialog stops
+        # appearing, and the runner only finds out by waiting out its 60 s
+        # timeout, then restarting and retrying - about 95 s, measured every
+        # 87th run on a 10k batch, four intervals of exactly 87 while the wall
+        # clock between them ranged over 400-630 s. So it is prints, not time.
+        # Recycling early turns that into a planned few seconds.
+        if ($RecycleEvery -gt 0 -and $sinceStart -ge $RecycleEvery) {
+            Write-Host "  recycling MACS+ after $sinceStart runs"
+            $script:app = Start-MacsInstance $seed
+            $sinceStart = 0
+            $recycles++
+        }
+
         $sw = [Diagnostics.Stopwatch]::StartNew()
         $bytes = 0; $status = "ok"
         try {
             $bytes = Invoke-Run $entry
+            $sinceStart++
         } catch {
             $first = $_.Exception.Message
             # One retry on a fresh instance: mshta dying or a wedged dialog is
@@ -278,7 +298,9 @@ try {
                 Write-Warning "$($entry.name): $first - restarting MACS+ (restart $restarts/$MaxRestarts)"
                 try {
                     $script:app = Start-MacsInstance $seed
+                    $sinceStart = 0
                     $bytes = Invoke-Run $entry
+                    $sinceStart++
                 } catch { $status = "FAIL: $first | after restart: $($_.Exception.Message)" }
             } else {
                 $status = "FAIL: $first (restart budget exhausted)"
@@ -307,6 +329,7 @@ Write-Host ""
 Write-Host ("REPLAY {0}: {1} ok, {2} failed, {3} already present, {4} restarts, {5:N1} min" -f
     $(if ($stopped) { "PAUSED" } else { "DONE" }),
     $done, $failed, $skipped, $restarts, $batchSw.Elapsed.TotalMinutes)
+Write-Host ("  {0} planned recycles" -f $recycles)
 if ($stopped) {
     Write-Host "Resume with the same command - runs already on disk are skipped."
 }

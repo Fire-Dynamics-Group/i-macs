@@ -17,7 +17,11 @@ import {
   type PdfEvidenceStatus,
 } from "../api/client";
 
-const SECONDS_PER_RUN = 4.5;
+// Measured over a real 10k batch: median 5.1 s/run, ~460 KB per PDF. The
+// mean is higher because a MACS+ instance wedges every ~87 prints, but the
+// runner now recycles before that so the median is what a job should see.
+const SECONDS_PER_RUN = 5.2;
+const MB_PER_RUN = 0.46;
 
 function humanDuration(seconds: number): string {
   if (seconds < 90) return `${Math.round(seconds)}s`;
@@ -361,7 +365,7 @@ export default function PdfEvidencePanel({
           {planned > 0 && (
             <span className="text-sm text-slate-500">
               ~{humanDuration(planned * SECONDS_PER_RUN)}, ~
-              {((planned * 0.45) / 1024).toFixed(1)} GB
+              {((planned * MB_PER_RUN) / 1024).toFixed(1)} GB
             </span>
           )}
           {/* The seed carries everything the run rows never stored — project

@@ -374,3 +374,27 @@ class TestPdfCounting:
         (tmp_path / "manifest.json").write_text("{}")
 
         assert pdf_evidence._count_pdfs(tmp_path) == 1
+
+    def test_counts_a_large_directory(self, tmp_path):
+        for i in range(300):
+            (tmp_path / f"run{i}.pdf").write_bytes(b"%PDF" + b"x" * 2000)
+
+        assert pdf_evidence._count_pdfs(tmp_path) == 300
+
+    def test_missing_directory_is_zero_not_an_error(self, tmp_path):
+        assert pdf_evidence._count_pdfs(tmp_path / "nope") == 0
+
+
+class TestProgressPolling:
+    """Counting is a progress bar, not the job. Re-listing the output every two
+    seconds costs more as the batch grows, and that disk traffic competes with
+    the single-threaded print spooler that is doing the actual work."""
+
+    def test_polls_briskly_at_the_start(self):
+        assert pdf_evidence._poll_interval(0) == 2.0
+
+    def test_backs_off_as_the_directory_fills(self):
+        assert pdf_evidence._poll_interval(5000) > pdf_evidence._poll_interval(100)
+
+    def test_never_backs_off_so_far_that_progress_looks_stuck(self):
+        assert pdf_evidence._poll_interval(10_000_000) <= 15.0

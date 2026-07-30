@@ -279,7 +279,30 @@ def status(batch_id: Optional[str] = None) -> dict:
 
 
 def _count_pdfs(out: Path) -> int:
-    return sum(1 for p in out.glob("*.pdf") if p.stat().st_size > 1000)
+    """How many real PDFs are in `out`.
+
+    os.scandir rather than glob+stat: on Windows the size comes back with the
+    directory entry, so this is one pass instead of a syscall per file. At
+    10,000 PDFs the difference is the whole cost of the progress bar.
+    """
+    try:
+        with os.scandir(out) as entries:
+            return sum(
+                1 for e in entries
+                if e.name.endswith(".pdf") and e.is_file() and e.stat().st_size > 1000
+            )
+    except OSError:
+        return 0
+
+
+def _poll_interval(completed: int) -> float:
+    """How long to wait between progress counts.
+
+    Two seconds is fine for the first few hundred PDFs and wasteful at ten
+    thousand, where the listing competes for disk with the single-threaded
+    spooler doing the real work. Capped so progress never looks stuck.
+    """
+    return min(15.0, 2.0 + completed / 1000.0)
 
 
 def _worker(batch_id: str, db_path: str, sample: Optional[int], seed: Optional[str],
@@ -327,11 +350,12 @@ def _worker(batch_id: str, db_path: str, sample: Optional[int], seed: Optional[s
         # Progress from the output directory rather than by parsing stdout: the
         # runner is resumable, so files on disk are the truth either way.
         while proc.poll() is None:
+            count = _count_pdfs(pdf_dir)
             with _lock:
-                _state["completed"] = _count_pdfs(pdf_dir) if pdf_dir.exists() else 0
-            time.sleep(2)
+                _state["completed"] = count
+            time.sleep(_poll_interval(count))
         with _lock:
-            _state["completed"] = _count_pdfs(pdf_dir) if pdf_dir.exists() else 0
+            _state["completed"] = _count_pdfs(pdf_dir)
             if proc.returncode != 0:
                 _state["error"] = (proc.stderr.read() if proc.stderr else "") or \
                     f"replay exited {proc.returncode} ({_state['completed']}/{_state['total']} done)"
