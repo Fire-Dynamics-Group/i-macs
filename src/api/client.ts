@@ -570,8 +570,11 @@ export interface PdfEvidenceStatus {
   elapsed_s: number;
   eta_s: number | null;
   finished_at: number | null;
-  /** Sample the job was started with, so a resume covers the same runs. */
+  /** What the job was started with, rebuilt from disk after a restart so a
+   *  resume repeats it rather than asking for it all again. */
   sample: number | null;
+  seed: string | null;
+  job_dir: string | null;
   /** A pause has been asked for; the runner finishes its current run first. */
   stopping: boolean;
   resumable: boolean;
@@ -588,12 +591,21 @@ export async function getReplayHostCheck(): Promise<HostCheck> {
  *  up after a pause is this same call with the same arguments. */
 export async function startPdfEvidence(
   batchId: string,
-  sample?: number,
-  outDir?: string,
+  opts: {
+    /** Replay only the first N runs; omit for the whole batch. */
+    sample?: number;
+    /** Where to write. Omit for the app's own folder under LOCALAPPDATA. */
+    outDir?: string;
+    /** Path to the .frc the batch was built from. Required for batches run
+     *  before i-macs recorded one — the run rows cannot be turned back into a
+     *  .frc, so it has to come from the user. Checked against those rows. */
+    seed?: string;
+  } = {},
 ): Promise<{ started?: boolean; error?: string }> {
   return postJson(`/api/batches/${batchId}/pdf-evidence`, {
-    sample: sample ?? null,
-    out_dir: outDir ?? null,
+    sample: opts.sample ?? null,
+    out_dir: opts.outDir ?? null,
+    seed: opts.seed ?? null,
   });
 }
 

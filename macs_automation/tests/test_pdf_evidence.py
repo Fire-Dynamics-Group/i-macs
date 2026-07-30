@@ -177,6 +177,74 @@ class TestResume:
         assert pdf_evidence.status("beta")["resumable"] is False
 
 
+class TestSurvivingARestart:
+    """Closing the app kills the runner, and the PDFs already written are the
+    only record of how far it got. The job's parameters have to outlive the
+    process too, or resuming means re-picking the folder and the seed by hand.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _evidence_dir(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+        return tmp_path
+
+    def _wrote(self, batch_id, n, out_dir=None):
+        pdfs = pdf_evidence.resolve_out_dir(batch_id, out_dir) / "pdfs"
+        pdfs.mkdir(parents=True, exist_ok=True)
+        for i in range(n):
+            (pdfs / f"run{i}.pdf").write_bytes(b"%PDF" + b"x" * 5000)
+
+    def test_offers_to_resume_a_job_the_process_never_saw(self):
+        pdf_evidence.remember_job("alpha", sample=200, out_dir=None, seed=None, total=200)
+        self._wrote("alpha", 40)
+
+        st = pdf_evidence.status("alpha")
+
+        assert st["resumable"] is True
+        assert st["total"] == 200
+        assert st["completed"] == 40
+
+    def test_counts_the_pdfs_rather_than_trusting_the_record(self):
+        """The record is written once; the runner keeps going after it."""
+        pdf_evidence.remember_job("alpha", sample=200, out_dir=None, seed=None, total=200)
+        self._wrote("alpha", 137)
+
+        assert pdf_evidence.status("alpha")["completed"] == 137
+
+    def test_remembers_the_seed_and_folder_so_a_resume_repeats_the_job(self, tmp_path):
+        chosen = tmp_path / "Evidence"
+        pdf_evidence.remember_job(
+            "alpha", sample=200, out_dir=str(chosen), seed=r"D:\jobs\Cal.frc", total=200
+        )
+        self._wrote("alpha", 12, out_dir=str(chosen))
+
+        st = pdf_evidence.status("alpha")
+
+        assert st["sample"] == 200
+        assert st["seed"] == r"D:\jobs\Cal.frc"
+        assert st["job_dir"] == str(chosen)
+
+    def test_a_finished_job_is_not_offered_as_resumable(self):
+        pdf_evidence.remember_job("alpha", sample=None, out_dir=None, seed=None, total=6)
+        self._wrote("alpha", 6)
+
+        assert pdf_evidence.status("alpha")["resumable"] is False
+
+    def test_a_batch_that_never_ran_is_idle(self):
+        assert pdf_evidence.status("alpha")["resumable"] is False
+        assert pdf_evidence.status("alpha")["total"] == 0
+
+    def test_a_live_job_wins_over_the_record(self):
+        pdf_evidence.remember_job("alpha", sample=200, out_dir=None, seed=None, total=200)
+        _set(active=True, batch_id="alpha", total=200, completed=99,
+             start_time=time.time())
+
+        st = pdf_evidence.status("alpha")
+
+        assert st["active"] is True
+        assert st["completed"] == 99
+
+
 class TestOutputLocation:
     """10k runs is ~4.2 GB, which often wants a different drive from C:."""
 

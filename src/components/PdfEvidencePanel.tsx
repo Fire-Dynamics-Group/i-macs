@@ -27,9 +27,13 @@ function humanDuration(seconds: number): string {
 export default function PdfEvidencePanel({
   batchId,
   runCount,
+  seedName,
 }: {
   batchId: string;
   runCount: number;
+  /** Filename of the .frc this batch was seeded from, or null if none was
+   *  recorded — in which case the user has to supply it. */
+  seedName?: string | null;
 }) {
   const [open, setOpen] = useState(false);
   const [host, setHost] = useState<HostCheck | null>(null);
@@ -39,6 +43,7 @@ export default function PdfEvidencePanel({
   // Kept as text so an emptied box stays empty rather than reading as 0.
   const [sampleText, setSampleText] = useState("200");
   const [outDir, setOutDir] = useState<string | null>(null);
+  const [seed, setSeed] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
@@ -77,7 +82,11 @@ export default function PdfEvidencePanel({
   // An unanswered host check is not a passing one, so anything short of a
   // confirmed pass blocks: the scaling trap yields correct numbers with
   // silently squashed charts, which is worse than an outright failure.
-  const blocked = host?.ok !== true || (scope === "sample" && !sampleValid);
+  // Batches predating seed storage have no .frc on record and the run rows
+  // cannot be turned back into one, so the file has to come from the user.
+  const needsSeed = !seedName && !seed;
+  const blocked =
+    host?.ok !== true || needsSeed || (scope === "sample" && !sampleValid);
 
   // The PDFs are the deliverable and they land outside the app, so the path
   // needs to be reachable rather than a string to retype into Explorer.
@@ -101,10 +110,27 @@ export default function PdfEvidencePanel({
     }
   }
 
-  async function run(sample: number | undefined) {
+  async function chooseSeed() {
+    try {
+      const { open: openPicker } = await import("@tauri-apps/plugin-dialog");
+      const picked = await openPicker({
+        multiple: false,
+        filters: [{ name: "MACS+ job file", extensions: ["frc"] }],
+      });
+      if (typeof picked === "string") setSeed(picked);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  }
+
+  async function run(opts: {
+    sample?: number;
+    outDir?: string;
+    seed?: string;
+  }) {
     setError(null);
     try {
-      const res = await startPdfEvidence(batchId, sample, outDir ?? undefined);
+      const res = await startPdfEvidence(batchId, opts);
       if (res.error) setError(res.error);
       await refresh();
     } catch (e) {
@@ -112,10 +138,22 @@ export default function PdfEvidencePanel({
     }
   }
 
-  const begin = () => run(scope === "all" ? undefined : sampleSize);
-  // Resume over the same runs the paused job covered: a different sample would
-  // export a different set, and the PDFs already on disk would not line up.
-  const resume = () => run(status?.sample ?? undefined);
+  const begin = () =>
+    run({
+      sample: scope === "all" ? undefined : sampleSize,
+      outDir: outDir ?? undefined,
+      seed: seed ?? undefined,
+    });
+
+  // Repeat the paused job exactly, including a folder and seed this session may
+  // never have seen: a different sample covers a different set of runs, and the
+  // PDFs already on disk would stop lining up with it.
+  const resume = () =>
+    run({
+      sample: status?.sample ?? undefined,
+      outDir: status?.job_dir ?? undefined,
+      seed: status?.seed ?? undefined,
+    });
 
   async function pause() {
     setError(null);
@@ -283,6 +321,52 @@ export default function PdfEvidencePanel({
               {((planned * 0.45) / 1024).toFixed(1)} GB
             </span>
           )}
+          {/* The seed carries everything the run rows never stored — project
+              metadata, the deck identifiers — so it cannot be reconstructed. */}
+          <div className="flex w-full flex-wrap items-center gap-2 text-sm">
+            {seed ? (
+              <>
+                <span className="text-slate-600">Seed</span>
+                <code className="rounded bg-slate-100 px-1 text-xs">
+                  {seed.split(/[\\/]/).pop()}
+                </code>
+                <button
+                  type="button"
+                  onClick={() => setSeed(null)}
+                  className="text-xs text-slate-500 hover:underline"
+                >
+                  Reset
+                </button>
+              </>
+            ) : seedName ? (
+              <>
+                <span className="text-slate-600">Seeded from</span>
+                <code className="rounded bg-slate-100 px-1 text-xs">{seedName}</code>
+                <button
+                  type="button"
+                  onClick={chooseSeed}
+                  className="text-xs text-slate-500 hover:underline"
+                >
+                  Use a different .frc
+                </button>
+              </>
+            ) : (
+              <>
+                <span className="text-amber-800">
+                  This batch has no .frc on record — choose the job file it was run
+                  from.
+                </span>
+                <button
+                  type="button"
+                  onClick={chooseSeed}
+                  className="rounded border border-amber-400 bg-amber-50 px-2 py-0.5 text-xs font-medium text-amber-900 hover:bg-amber-100"
+                >
+                  Choose .frc
+                </button>
+              </>
+            )}
+          </div>
+
           {/* A 10k batch is ~4.2 GB, which often wants a drive other than C:. */}
           <div className="flex w-full items-center gap-2 text-sm text-slate-600">
             <span>Save to</span>

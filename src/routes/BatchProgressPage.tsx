@@ -321,7 +321,11 @@ function AnalyticalView({ batch }: { batch: BatchSummary }) {
         </div>
       </header>
 
-      <PdfEvidencePanel batchId={batch.batch_id} runCount={batch.run_count} />
+      <PdfEvidencePanel
+        batchId={batch.batch_id}
+        runCount={batch.run_count}
+        seedName={batch.frc?.filename ?? null}
+      />
 
       {exportError ? (
         <p

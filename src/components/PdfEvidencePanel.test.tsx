@@ -40,15 +40,19 @@ const IDLE: PdfEvidenceStatus = {
   eta_s: null,
   finished_at: null,
   sample: null,
+  seed: null,
+  job_dir: null,
   stopping: false,
   resumable: false,
 };
 
 const HOST_OK: HostCheck = { ok: true, lines: ["MACS+ 3.0.4 found"], error: null };
 
-async function openPanel(runCount = 10000) {
+async function openPanel(runCount = 10000, seedName: string | null = "job.frc") {
   const user = userEvent.setup();
-  render(<PdfEvidencePanel batchId="b1" runCount={runCount} />);
+  render(
+    <PdfEvidencePanel batchId="b1" runCount={runCount} seedName={seedName} />,
+  );
   await user.click(screen.getByRole("button", { name: /MACS\+ PDF evidence/i }));
   return user;
 }
@@ -75,7 +79,7 @@ describe("PdfEvidencePanel", () => {
       const user = await openPanel();
       await screen.findByText(/set up correctly/i);
       await user.click(generateButton());
-      expect(startPdfEvidence).toHaveBeenCalledWith("b1", undefined, undefined);
+      expect(startPdfEvidence).toHaveBeenCalledWith("b1", expect.objectContaining({ sample: undefined }));
     });
 
     it("sends the sample size when generating a sample", async () => {
@@ -83,7 +87,7 @@ describe("PdfEvidencePanel", () => {
       await screen.findByText(/set up correctly/i);
       await user.click(screen.getByRole("radio", { name: /auditable sample/i }));
       await user.click(generateButton());
-      expect(startPdfEvidence).toHaveBeenCalledWith("b1", 200, undefined);
+      expect(startPdfEvidence).toHaveBeenCalledWith("b1", expect.objectContaining({ sample: 200 }));
     });
 
     // A sample bigger than the batch is a typo, not a request for extra runs.
@@ -92,7 +96,7 @@ describe("PdfEvidencePanel", () => {
       await screen.findByText(/set up correctly/i);
       await user.click(screen.getByRole("radio", { name: /auditable sample/i }));
       await user.click(generateButton());
-      expect(startPdfEvidence).toHaveBeenCalledWith("b1", 50, undefined);
+      expect(startPdfEvidence).toHaveBeenCalledWith("b1", expect.objectContaining({ sample: 50 }));
     });
 
     // Regression: an empty box read as 0, which the backend treats as falsy and
@@ -232,7 +236,28 @@ describe("PdfEvidencePanel", () => {
       });
       const user = await openPanel();
       await user.click(await screen.findByRole("button", { name: /resume/i }));
-      expect(startPdfEvidence).toHaveBeenCalledWith("b1", 200, undefined);
+      expect(startPdfEvidence).toHaveBeenCalledWith("b1", expect.objectContaining({ sample: 200 }));
+    });
+
+    // Closing the app kills the runner; the sidecar rebuilds the job from disk,
+    // so resuming must not make the user re-pick the folder and the seed.
+    it("resumes a job this session never started, with its original settings", async () => {
+      getPdfEvidenceStatus.mockResolvedValue({
+        ...IDLE,
+        total: 10000,
+        completed: 3184,
+        resumable: true,
+        sample: null,
+        seed: "D:\\jobs\\CaliforniaDrive.frc",
+        job_dir: "E:\\evidence",
+      });
+      const user = await openPanel(10000, null);
+      await user.click(await screen.findByRole("button", { name: /resume/i }));
+      expect(startPdfEvidence).toHaveBeenCalledWith("b1", {
+        sample: undefined,
+        outDir: "E:\\evidence",
+        seed: "D:\\jobs\\CaliforniaDrive.frc",
+      });
     });
 
     it("shows how much is already done when paused", async () => {
@@ -244,12 +269,82 @@ describe("PdfEvidencePanel", () => {
     });
   });
 
+  // Batches run before i-macs stored the seed have no .frc on record, and the
+  // run rows cannot be turned back into one - project metadata and the deck
+  // identifiers were never columns. So the file has to come from the user.
+  describe("seed .frc", () => {
+    it("uses the stored seed when the batch has one", async () => {
+      const user = await openPanel(10000, "job.frc");
+      await screen.findByText(/set up correctly/i);
+      expect(screen.getByText(/job\.frc/)).toBeInTheDocument();
+      await user.click(generateButton());
+      expect(startPdfEvidence).toHaveBeenCalledWith(
+        "b1",
+        expect.objectContaining({ seed: undefined }),
+      );
+    });
+
+    it("will not start without a seed when the batch has none", async () => {
+      await openPanel(10000, null);
+      await screen.findByText(/set up correctly/i);
+      expect(screen.getByText(/no .frc on record/i)).toBeInTheDocument();
+      expect(generateButton()).toBeDisabled();
+    });
+
+    it("starts once a seed is chosen for a batch that has none", async () => {
+      openDialog.mockResolvedValue("D:\\jobs\\CaliforniaDrive.frc");
+      const user = await openPanel(10000, null);
+      await screen.findByText(/set up correctly/i);
+      await user.click(screen.getByRole("button", { name: /choose \.frc/i }));
+      expect(await screen.findByText(/CaliforniaDrive\.frc/)).toBeInTheDocument();
+      await user.click(generateButton());
+      expect(startPdfEvidence).toHaveBeenCalledWith(
+        "b1",
+        expect.objectContaining({ seed: "D:\\jobs\\CaliforniaDrive.frc" }),
+      );
+    });
+
+    it("asks for .frc files in the picker", async () => {
+      const user = await openPanel(10000, null);
+      await screen.findByText(/set up correctly/i);
+      await user.click(screen.getByRole("button", { name: /choose \.frc/i }));
+      expect(openDialog).toHaveBeenCalledWith(
+        expect.objectContaining({
+          filters: [expect.objectContaining({ extensions: ["frc"] })],
+        }),
+      );
+    });
+
+    it("lets a stored seed be overridden", async () => {
+      openDialog.mockResolvedValue("D:\\jobs\\Other.frc");
+      const user = await openPanel(10000, "job.frc");
+      await screen.findByText(/set up correctly/i);
+      await user.click(screen.getByRole("button", { name: /different \.frc/i }));
+      await user.click(generateButton());
+      expect(startPdfEvidence).toHaveBeenCalledWith(
+        "b1",
+        expect.objectContaining({ seed: "D:\\jobs\\Other.frc" }),
+      );
+    });
+
+    // export_batch checks the seed against the run rows and refuses on a
+    // mismatch, which is how you find out you picked the wrong one of several.
+    it("surfaces a seed that does not match the batch", async () => {
+      getPdfEvidenceStatus.mockResolvedValue({
+        ...IDLE,
+        error: "seed disagrees with the batch on 23 fixed inputs: span1 9.0 vs 12.0",
+      });
+      await openPanel(10000, null);
+      expect(await screen.findByText(/disagrees with the batch/i)).toBeInTheDocument();
+    });
+  });
+
   describe("output folder", () => {
     it("saves to the default location when none is chosen", async () => {
       const user = await openPanel();
       await screen.findByText(/set up correctly/i);
       await user.click(generateButton());
-      expect(startPdfEvidence).toHaveBeenCalledWith("b1", undefined, undefined);
+      expect(startPdfEvidence).toHaveBeenCalledWith("b1", expect.objectContaining({ sample: undefined }));
     });
 
     it("sends a chosen folder", async () => {
@@ -259,7 +354,10 @@ describe("PdfEvidencePanel", () => {
       await user.click(screen.getByRole("button", { name: /choose folder/i }));
       expect(await screen.findByText(/D:\\Evidence/)).toBeInTheDocument();
       await user.click(generateButton());
-      expect(startPdfEvidence).toHaveBeenCalledWith("b1", undefined, "D:\\Evidence");
+      expect(startPdfEvidence).toHaveBeenCalledWith(
+        "b1",
+        expect.objectContaining({ outDir: "D:\\Evidence" }),
+      );
     });
 
     it("keeps the default when the picker is dismissed", async () => {
@@ -268,7 +366,7 @@ describe("PdfEvidencePanel", () => {
       await screen.findByText(/set up correctly/i);
       await user.click(screen.getByRole("button", { name: /choose folder/i }));
       await user.click(generateButton());
-      expect(startPdfEvidence).toHaveBeenCalledWith("b1", undefined, undefined);
+      expect(startPdfEvidence).toHaveBeenCalledWith("b1", expect.objectContaining({ sample: undefined }));
     });
   });
 

@@ -13,6 +13,7 @@ is running, and would break if the sidecar ever became a service.
 from __future__ import annotations
 
 import importlib.util
+import json
 import os
 import subprocess
 import sys
@@ -34,6 +35,7 @@ _state: dict = {
     # Remembered so a resume covers the same runs, and so pausing can find the
     # job's directory even when the user chose one.
     "sample": None,
+    "seed": None,
     "job_dir": None,
     "stopping": False,
 }
@@ -58,6 +60,38 @@ def resolve_out_dir(batch_id: str, out_dir: Optional[str] = None) -> Path:
     10k runs is roughly 4.2 GB, which frequently wants a drive other than C:.
     """
     return Path(out_dir) if out_dir else evidence_root() / batch_id
+
+
+def _job_file(batch_id: str) -> Path:
+    """Kept under our own root even when the PDFs go elsewhere, so a job can be
+    found again without already knowing where the user sent it."""
+    return evidence_root() / "_jobs" / f"{batch_id}.json"
+
+
+def remember_job(batch_id: str, *, sample: Optional[int], out_dir: Optional[str],
+                 seed: Optional[str], total: int) -> None:
+    """Record what a job was started with so it outlives the process.
+
+    Closing the app kills the runner mid-batch; without this, resuming means
+    re-picking the output folder and the seed .frc by hand.
+    """
+    path = _job_file(batch_id)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps({"sample": sample, "out_dir": out_dir, "seed": seed,
+                        "total": total}),
+            encoding="utf-8",
+        )
+    except OSError:
+        pass  # a job that cannot be remembered still runs
+
+
+def recall_job(batch_id: str) -> Optional[dict]:
+    try:
+        return json.loads(_job_file(batch_id).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
 
 
 def stop_file(batch_id: str) -> Path:
@@ -146,12 +180,35 @@ _IDLE = {
     "error": None,
     "finished_at": None,
     "sample": None,
+    "seed": None,
     "job_dir": None,
     "stopping": False,
     "elapsed_s": 0.0,
     "eta_s": None,
     "resumable": False,
 }
+
+
+def _recalled_status(batch_id: str) -> dict:
+    """Rebuild a job's state from disk for a process that never ran it.
+
+    The PDFs are counted rather than read back from the record: the record is
+    written once, and the runner keeps going after it.
+    """
+    st = dict(_IDLE)
+    job = recall_job(batch_id)
+    if not job:
+        return st
+    pdf_dir = resolve_out_dir(batch_id, job.get("out_dir")) / "pdfs"
+    completed = _count_pdfs(pdf_dir) if pdf_dir.exists() else 0
+    total = job.get("total") or 0
+    st.update(
+        batch_id=batch_id, total=total, completed=completed,
+        sample=job.get("sample"), seed=job.get("seed"),
+        job_dir=job.get("out_dir"), output_dir=str(pdf_dir),
+        resumable=total > 0 and completed < total,
+    )
+    return st
 
 
 def status(batch_id: Optional[str] = None) -> dict:
@@ -164,7 +221,7 @@ def status(batch_id: Optional[str] = None) -> dict:
     with _lock:
         st = dict(_state)
     if batch_id is not None and st["batch_id"] != batch_id:
-        return dict(_IDLE)
+        return _recalled_status(batch_id)
     eta = None
     elapsed = 0.0
     if st["start_time"]:
@@ -206,13 +263,14 @@ def _worker(batch_id: str, db_path: str, sample: Optional[int], seed: Optional[s
             sys.argv = old_argv
 
         manifest = out_dir / "manifest.json"
-        import json
-
         entries = json.loads(manifest.read_text(encoding="utf-8"))["runs"]
         with _lock:
             _state["total"] = len(entries)
             _state["output_dir"] = str(pdf_dir)
             stopping = _state["stopping"]
+        # Written before the runner starts, so a job survives the app closing.
+        remember_job(batch_id, sample=sample, out_dir=out_dir_arg, seed=seed,
+                     total=len(entries))
         # Exporting a 10k batch takes a while; a pause during it should not be
         # answered by launching MACS+ anyway.
         if stopping:
@@ -262,7 +320,7 @@ def start(batch_id: str, db_path: str, sample: Optional[int] = None,
         _state.update(
             active=True, batch_id=batch_id, total=0, completed=0,
             start_time=time.time(), output_dir=None, error=None, finished_at=None,
-            sample=sample, job_dir=out_dir, stopping=False,
+            sample=sample, seed=seed, job_dir=out_dir, stopping=False,
         )
     clear_stop(batch_id)
     threading.Thread(
