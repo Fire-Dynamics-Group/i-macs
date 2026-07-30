@@ -122,6 +122,56 @@ jobs:
               if ($proc -and -not $proc.HasExited) { Stop-Process -Id $proc.Id -Force }
           }
 
+      - name: Verify the sidecar survives stale packages from older installs
+        # The NSIS updater historically overlaid files without deleting
+        # removed ones, so updated machines had leftover websockets/httptools
+        # packages next to the new bundle — rc.13 crashed at boot on every
+        # updated install because uvicorn's "auto" protocols imported the
+        # debris. The sidecar now pins http="h11"/ws="none"; prove it by
+        # booting a copy of the bundle with poison packages planted in
+        # _internal. If either package gets imported, the sidecar dies and
+        # this step fails.
+        shell: pwsh
+        run: |
+          $bundle = "src-tauri/binaries/i-macs-sidecar-x86_64-pc-windows-msvc"
+          $staleCopy = "stale-sim-bundle"
+          Copy-Item -Recurse $bundle $staleCopy
+          foreach ($pkg in 'websockets', 'httptools') {
+              New-Item -ItemType Directory -Path "$staleCopy/_internal/$pkg" -Force | Out-Null
+              # RuntimeError, not ImportError: uvicorn's "auto" selection
+              # catches ImportError and would silently fall back, hiding the
+              # import. RuntimeError propagates, so any import of the stale
+              # package kills the boot and fails this step.
+              Set-Content "$staleCopy/_internal/$pkg/__init__.py" "raise RuntimeError('stale $pkg package from a previous install was imported')"
+          }
+          $exe = Resolve-Path "$staleCopy/i-macs-sidecar.exe"
+          $proc = Start-Process -FilePath $exe -ArgumentList '--port', '8198' -PassThru `
+              -RedirectStandardOutput stale-sim-stdout.log -RedirectStandardError stale-sim-stderr.log
+          try {
+              $alive = $false
+              foreach ($attempt in 1..90) {
+                  Start-Sleep -Seconds 1
+                  try {
+                      $r = Invoke-RestMethod -Uri 'http://127.0.0.1:8198/healthz' -TimeoutSec 2
+                      if ($r.sidecar -eq 'alive') { $alive = $true; break }
+                  } catch { }
+                  if ($proc.HasExited) { break }
+              }
+              if (-not $alive) {
+                  Write-Host "process exited: $($proc.HasExited) (code $($proc.ExitCode))"
+                  Write-Host '== sidecar stdout =='
+                  Get-Content stale-sim-stdout.log -ErrorAction SilentlyContinue
+                  Write-Host '== sidecar stderr =='
+                  Get-Content stale-sim-stderr.log -ErrorAction SilentlyContinue
+                  Write-Error "Sidecar did not survive stale packages next to the bundle — the rc.13 update crash would recur."
+                  exit 1
+              }
+              Write-Host "  ok  sidecar boots with poison websockets/httptools planted"
+          } finally {
+              if ($proc -and -not $proc.HasExited) { Stop-Process -Id $proc.Id -Force }
+              Remove-Item -Recurse -Force $staleCopy -ErrorAction SilentlyContinue
+          }
+
       - name: Set up Node 20
         uses: actions/setup-node@v4
         with:

@@ -1520,7 +1520,13 @@ def main(argv: Optional[list[str]] = None) -> None:
         _configure_file_logging(args.log_dir)
 
     import uvicorn
-    uvicorn.run(app, host="127.0.0.1", port=args.port, log_config=None)
+    # http/ws are pinned, not "auto": auto-selection does `try: import
+    # httptools/websockets`, and on an updated install those imports can hit
+    # stale packages left behind by the NSIS overlay updater (rc.13 died at
+    # boot exactly this way). h11 covers everything the sidecar serves —
+    # plain HTTP on localhost, no websocket endpoints.
+    uvicorn.run(app, host="127.0.0.1", port=args.port, log_config=None,
+                http="h11", ws="none")
 
 
 if __name__ == "__main__":
