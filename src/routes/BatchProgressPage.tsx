@@ -23,6 +23,7 @@ const EXPORT_HINTS: Record<ExportMode, string> = {
 };
 import { BatchHeading } from "../components/BatchHeading";
 import { BatchSetupPanel } from "../components/BatchSetupPanel";
+import PdfEvidencePanel from "../components/PdfEvidencePanel";
 import { batchLabel } from "../lib/batchLabel";
 import { detectVaryingFields } from "../sweep/buildScatterTraces";
 import { DistributionChart } from "../sweep/DistributionChart";
@@ -319,6 +320,8 @@ function AnalyticalView({ batch }: { batch: BatchSummary }) {
           )}
         </div>
       </header>
+
+      <PdfEvidencePanel batchId={batch.batch_id} runCount={batch.run_count} />
 
       {exportError ? (
         <p

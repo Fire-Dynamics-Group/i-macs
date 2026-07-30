@@ -39,6 +39,7 @@ from macs_automation.report import (
     _forward_filled_average,
     _sanitise_label,
 )
+from macs_automation import pdf_evidence
 from macs_automation.shear_check import flags_for_run
 from macs_automation.sse_broker import Broker
 from macs_automation.sweep import DEFAULTS, PARAM_ALIASES, BEAM_SIDE_MAP, resolve_deck, resolve_mesh, generate_combinations
@@ -878,6 +879,48 @@ def api_sweep_status():
         "eta_s": eta,
         "mode": state["mode"],
     }
+
+
+@app.get("/api/replay/host-check")
+def api_replay_host_check():
+    """Is this machine fit to produce MACS+ PDF evidence?
+
+    Worth showing before anyone starts: the display-scaling trap yields correct
+    numbers with silently squashed charts, so it cannot be left to be noticed.
+    """
+    return pdf_evidence.host_check()
+
+
+@app.post("/api/batches/{batch_id}/pdf-evidence")
+def api_start_pdf_evidence(batch_id: str, request_body: Optional[dict] = None):
+    """Replay a completed batch through MACS+ to produce one real PDF per run."""
+    body = request_body or {}
+    db = _get_db()
+    try:
+        runs = db.get_batch_runs(batch_id)
+    finally:
+        db.close()
+    if not runs:
+        return JSONResponse({"error": f"Unknown or empty batch {batch_id}"}, status_code=404)
+
+    sample = body.get("sample")
+    if sample is not None:
+        try:
+            sample = int(sample)
+        except (TypeError, ValueError):
+            return JSONResponse({"error": "sample must be a number"}, status_code=400)
+        if sample < 1:
+            return JSONResponse({"error": "sample must be at least 1"}, status_code=400)
+
+    result = pdf_evidence.start(batch_id, str(DB_PATH), sample=sample, seed=body.get("seed"))
+    if "error" in result:
+        return JSONResponse(result, status_code=409)
+    return result
+
+
+@app.get("/api/batches/{batch_id}/pdf-evidence")
+def api_pdf_evidence_status(batch_id: str):
+    return pdf_evidence.status(batch_id)
 
 
 @app.get("/api/runs")

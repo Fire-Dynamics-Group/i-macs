@@ -554,6 +554,45 @@ export const deleteCustomSection = (id: string) =>
 
 /** Resolved URL for the SSE endpoint. The dashboard's hook opens an
  *  EventSource against this URL. */
+export interface HostCheck {
+  ok: boolean;
+  lines: string[];
+  error: string | null;
+}
+
+export interface PdfEvidenceStatus {
+  active: boolean;
+  batch_id: string | null;
+  total: number;
+  completed: number;
+  output_dir: string | null;
+  error: string | null;
+  elapsed_s: number;
+  eta_s: number | null;
+  finished_at: number | null;
+}
+
+/** Is this machine fit to produce MACS+ PDF evidence? */
+export async function getReplayHostCheck(): Promise<HostCheck> {
+  return getJson<HostCheck>("/api/replay/host-check");
+}
+
+/** Replay a completed batch through MACS+, one real PDF per run. */
+export async function startPdfEvidence(
+  batchId: string,
+  sample?: number,
+): Promise<{ started?: boolean; error?: string }> {
+  return postJson(`/api/batches/${batchId}/pdf-evidence`, {
+    sample: sample ?? null,
+  });
+}
+
+export async function getPdfEvidenceStatus(
+  batchId: string,
+): Promise<PdfEvidenceStatus> {
+  return getJson<PdfEvidenceStatus>(`/api/batches/${batchId}/pdf-evidence`);
+}
+
 export async function getEventsUrl(): Promise<string> {
   const base = await baseUrl();
   return `${base}/api/sweeps/events`;
