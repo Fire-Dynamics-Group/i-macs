@@ -45,6 +45,12 @@ using System;
 using System.Runtime.InteropServices;
 public class ReplayWin {
   [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr h, IntPtr a, int x, int y, int cx, int cy, uint f);
+  [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+  [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
+  [DllImport("user32.dll")] public static extern bool IsWindow(IntPtr h);
+  [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h, IntPtr pid);
+  [DllImport("user32.dll")] public static extern bool AttachThreadInput(uint from, uint to, bool attach);
+  [DllImport("kernel32.dll")] public static extern uint GetCurrentThreadId();
 }
 "@
 # NOSIZE | NOZORDER | NOACTIVATE - move without ever taking focus.
@@ -98,7 +104,33 @@ function Wait-FileReady([string]$path, [int]$timeoutMs = 60000) {
     return 0
 }
 
+# Launching MACS+ activates its window, which is the one thing in the whole
+# batch that steals the keyboard: the print dialog is parked off-screen and only
+# takes focus if MACS already had it. Handing focus back afterwards is what
+# makes an all-day batch survivable on a machine somebody is working at.
+#
+# Windows only lets the foreground thread hand focus around, so borrow its input
+# queue for the call. Best-effort throughout - failing to restore focus must
+# never take the batch down with it.
+function Restore-Foreground([IntPtr]$hwnd) {
+    if ($hwnd -eq [IntPtr]::Zero -or -not [ReplayWin]::IsWindow($hwnd)) { return }
+    try {
+        $fg = [ReplayWin]::GetForegroundWindow()
+        if ($fg -eq $hwnd) { return }
+        $fgThread = [ReplayWin]::GetWindowThreadProcessId($fg, [IntPtr]::Zero)
+        $mine = [ReplayWin]::GetCurrentThreadId()
+        $attached = $false
+        if ($fgThread -ne 0 -and $fgThread -ne $mine) {
+            $attached = [ReplayWin]::AttachThreadInput($mine, $fgThread, $true)
+        }
+        [ReplayWin]::SetForegroundWindow($hwnd) | Out-Null
+        if ($attached) { [ReplayWin]::AttachThreadInput($mine, $fgThread, $false) | Out-Null }
+    } catch { }
+}
+
 function Start-MacsInstance([string]$seedFrc) {
+    # Whatever the user is typing into, captured before we take it away.
+    $userWindow = [ReplayWin]::GetForegroundWindow()
     Clear-StaleDialog
     Get-Process mshta -ErrorAction SilentlyContinue | Stop-Process -Force
     Start-Sleep -Seconds 2
@@ -115,12 +147,16 @@ function Start-MacsInstance([string]$seedFrc) {
                 if ($null -ne $pw) {
                     $pw.execScript("document.documentElement.setAttribute('__p','1');", "JScript")
                     if ($d.documentElement.getAttribute('__p') -eq '1') {
+                        # Launching MACS+ activates its window too, so the same
+                        # courtesy applies on every restart and recycle.
+                        Restore-Foreground $userWindow
                         return @{ Doc = $d; Win = $pw; Frame = $h.Frame }
                     }
                 }
             }
         } catch { }
     }
+    Restore-Foreground $userWindow
     throw "could not attach to a MACS+ instance"
 }
 
@@ -166,6 +202,9 @@ function Invoke-Run($entry) {
         }
     }
 
+    # Whatever the user is typing into, captured before the print dialog exists.
+    $userWindow = [ReplayWin]::GetForegroundWindow()
+
     # LoadJob sets FLR_CALCDIRTY itself. Print() validates, runs the analysis
     # and only prints once CALCSUCCESS is set, so a PDF appearing at all is
     # evidence the calculation succeeded.
@@ -182,6 +221,18 @@ function Invoke-Run($entry) {
     # keeps a 10k batch from flashing a window 10,000 times.
     [ReplayWin]::SetWindowPos([IntPtr]$dlg.Current.NativeWindowHandle, [IntPtr]::Zero,
         -32000, -32000, 0, 0, $SWP_MOVE_ONLY) | Out-Null
+
+    # Parking moves the dialog but does not give the keyboard back - it took
+    # focus when it was created, once per run, which is what eats a letter out
+    # of whatever you were typing. Hand focus back now rather than after the
+    # print: the button below can take up to 3.5 s to become invokable, and
+    # that is 3.5 s of lost keystrokes every single run.
+    #
+    # UI Automation drives the button through InvokePattern, which does not
+    # require the dialog to be active, and the retry loop below re-finds the
+    # element each pass, so a wrong guess here fails loudly rather than
+    # silently printing the wrong thing.
+    Restore-Foreground $userWindow
 
     # The Print button is findable within ~5 ms but is not invokable until its
     # content is built - usually ~100 ms, occasionally 2.6-3.5 s. Take the fast
