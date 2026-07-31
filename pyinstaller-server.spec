@@ -46,6 +46,10 @@ hidden_imports = (
 # stays in requirements, so collect its data to keep imports clean.
 datas = []
 datas += collect_data_files('matplotlib')
+# MACS+ PDF replay scripts, driven by macs_automation/pdf_evidence.py. They are
+# data rather than code, so they need naming explicitly or the batch page's
+# "MACS+ PDF evidence" action finds nothing in a packaged build.
+datas += [('tools/macs_replay', 'macs_replay')]
 
 a = Analysis(
     ['macs_automation/app.py'],

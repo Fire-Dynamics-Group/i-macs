@@ -2076,3 +2076,95 @@ class TestDownloadFilenameIsReadable:
         exposed = r.headers.get("access-control-expose-headers", "")
         assert "Content-Disposition" in exposed
         assert "Unit_7" in r.headers["content-disposition"]
+
+
+class TestPdfEvidenceEndpoints:
+    """The contract the batch page drives. Worth covering directly: the status
+    route takes a batch_id, and once returned another batch's job under it."""
+
+    @pytest.fixture(autouse=True)
+    def _evidence_dir(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+
+    @pytest.fixture(autouse=True)
+    def _clean_state(self):
+        from macs_automation import pdf_evidence
+        before = dict(pdf_evidence._state)
+        yield
+        with pdf_evidence._lock:
+            pdf_evidence._state.clear()
+            pdf_evidence._state.update(before)
+
+    def _make_batch(self, client, runs=2):
+        """A batch with real run rows - replay reads the rows, not the batch."""
+        from macs_automation.db import ResultsDB
+        import macs_automation.app as app_module
+        batch_id = "b" * 32
+        db = ResultsDB(app_module.DB_PATH)
+        db.insert_batch(batch_id, mode="iso", total_expected=runs,
+                        config_json="{}", name="b")
+        for i in range(runs):
+            db.insert_run(
+                {"span1": 9.0, "span2": 9.0, "uSecSize": "IPE_500", "method": "iso",
+                 "time_limit": 60, "fck": 25, "slab_depth": 130,
+                 "_batch_id": batch_id},
+                outputs={"comp_failure": 0, "uf_max": 0.5, "duration_ms": 1.0},
+            )
+        db.close()
+        return batch_id
+
+    def test_status_is_idle_for_a_batch_that_never_ran(self, client):
+        batch_id = self._make_batch(client)
+        body = client.get(f"/api/batches/{batch_id}/pdf-evidence").json()
+        assert body["active"] is False
+        assert body["resumable"] is False
+
+    def test_status_does_not_report_another_batchs_job(self, client):
+        from macs_automation import pdf_evidence
+        batch_id = self._make_batch(client)
+        with pdf_evidence._lock:
+            pdf_evidence._state.update(active=True, batch_id="someone-else",
+                                       total=200, completed=40,
+                                       output_dir=r"C:\elsewhere")
+
+        body = client.get(f"/api/batches/{batch_id}/pdf-evidence").json()
+
+        assert body["active"] is False
+        assert body["output_dir"] is None
+
+    def test_starting_an_unknown_batch_is_a_404(self, client):
+        resp = client.post("/api/batches/nope/pdf-evidence", json={})
+        assert resp.status_code == 404
+
+    def test_a_sample_below_one_is_rejected(self, client):
+        batch_id = self._make_batch(client)
+        resp = client.post(f"/api/batches/{batch_id}/pdf-evidence",
+                           json={"sample": 0})
+        assert resp.status_code == 400
+
+    def test_stopping_when_nothing_runs_is_a_409(self, client):
+        batch_id = self._make_batch(client)
+        resp = client.post(f"/api/batches/{batch_id}/pdf-evidence/stop")
+        assert resp.status_code == 409
+
+    def test_reset_forgets_the_job(self, client):
+        from macs_automation import pdf_evidence
+        batch_id = self._make_batch(client)
+        pdf_evidence.remember_job(batch_id, sample=None, out_dir=None,
+                                  seed=None, total=10)
+
+        resp = client.post(f"/api/batches/{batch_id}/pdf-evidence/reset",
+                           json={"delete_pdfs": False})
+
+        assert resp.status_code == 200
+        assert client.get(f"/api/batches/{batch_id}/pdf-evidence").json()["total"] == 0
+
+    def test_reset_is_refused_while_the_job_runs(self, client):
+        from macs_automation import pdf_evidence
+        batch_id = self._make_batch(client)
+        with pdf_evidence._lock:
+            pdf_evidence._state.update(active=True, batch_id=batch_id)
+
+        resp = client.post(f"/api/batches/{batch_id}/pdf-evidence/reset", json={})
+
+        assert resp.status_code == 409

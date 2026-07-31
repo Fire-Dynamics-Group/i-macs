@@ -16,6 +16,8 @@ const tempRow = (overrides: Partial<TimeSeriesRow> = {}): TimeSeriesRow => ({
   slabbot_temp: 20,
   beam_hot_capacity: 0,
   deflection: 0,
+  slab_yield: 0,
+  enhancement: 0,
   slab_cap: 0,
   total_plate_capacity: 0,
   utilization_factor: 0,

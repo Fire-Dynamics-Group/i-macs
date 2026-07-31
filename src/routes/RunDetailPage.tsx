@@ -1,8 +1,10 @@
+import { useState } from "react";
 import { useParams, Link } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 
 import { getRun, getRunTimeseries, type Run, type TimeSeriesRow } from "../api/client";
 import { CheckBreakdown } from "../components/CheckBreakdown";
+import { PerimeterBeamCheck } from "../components/PerimeterBeamCheck";
 import { RunSetupPanel } from "../components/BatchSetupPanel";
 import { frcLabel } from "../lib/batchLabel";
 import { RunTemperatureChart } from "../sweep/RunTemperatureChart";
@@ -58,6 +60,9 @@ export default function RunDetailPage() {
       {runQuery.data && <RunSummary run={runQuery.data} />}
       {runQuery.data && !runQuery.data.error && (
         <CheckBreakdown checks={runQuery.data.checks ?? []} />
+      )}
+      {runQuery.data && !runQuery.data.error && (
+        <PerimeterBeamCheck run={runQuery.data} />
       )}
       {Number.isFinite(runId) && <RunSetupPanel runId={runId} />}
       {tsQuery.data && tsQuery.data.length > 0 && (
@@ -168,38 +173,115 @@ export function RunSummary({ run }: { run: Run }) {
   );
 }
 
-function TimeSeriesTable({ rows }: { rows: TimeSeriesRow[] }) {
+interface TimeSeriesColumn {
+  key: string;
+  header: string;
+  render: (row: TimeSeriesRow) => string;
+}
+
+const SUMMARY_COLUMNS: TimeSeriesColumn[] = [
+  { key: "time", header: "Time (min)", render: (r) => r.time_min.toFixed(1) },
+  { key: "fire_temp", header: "Fire temp (°C)", render: (r) => r.fire_temp.toFixed(0) },
+  { key: "uf", header: "UF", render: (r) => r.utilization_factor.toFixed(3) },
+  {
+    key: "total_slab_capacity",
+    header: "Total slab capacity (kN/m²)",
+    render: (r) => r.total_plate_capacity.toFixed(1),
+  },
+];
+
+// Mirrors the full per-time-step table from the MACS+ PDF report (see
+// report_docx.py's beam/mesh temperature charts and pdf_oracle.py's column
+// list) — lofl_temp is the unprotected beam's temperature.
+const FULL_REPORT_COLUMNS: TimeSeriesColumn[] = [
+  { key: "time", header: "Time (min)", render: (r) => r.time_min.toFixed(0) },
+  { key: "beam_temp", header: "Beam (°C)", render: (r) => r.lofl_temp.toFixed(0) },
+  { key: "mesh_temp", header: "Mesh (°C)", render: (r) => r.mesh_temp.toFixed(0) },
+  { key: "slab_top_temp", header: "Slab top (°C)", render: (r) => r.slabtop_temp.toFixed(0) },
+  {
+    key: "slab_bottom_temp",
+    header: "Slab bottom (°C)",
+    render: (r) => r.slabbot_temp.toFixed(0),
+  },
+  {
+    key: "beam_capacity",
+    header: "Beam capacity (kN/m²)",
+    render: (r) => r.beam_hot_capacity.toFixed(2),
+  },
+  {
+    key: "max_deflection",
+    header: "Maximum allowable deflection (mm)",
+    render: (r) => r.deflection.toFixed(0),
+  },
+  {
+    key: "slab_yield",
+    header: "Slab yield (kN/m²)",
+    render: (r) => r.slab_yield.toFixed(2),
+  },
+  {
+    key: "enhancement",
+    header: "Enhancement",
+    render: (r) => r.enhancement.toFixed(2),
+  },
+  {
+    key: "slab_capacity",
+    header: "Slab capacity (kN/m²)",
+    render: (r) => r.slab_cap.toFixed(2),
+  },
+  {
+    key: "total_capacity",
+    header: "Total capacity (kN/m²)",
+    render: (r) => r.total_plate_capacity.toFixed(2),
+  },
+  {
+    key: "unity_factor",
+    header: "Unity factor",
+    render: (r) => r.utilization_factor.toFixed(2),
+  },
+];
+
+export function TimeSeriesTable({ rows }: { rows: TimeSeriesRow[] }) {
+  const [expanded, setExpanded] = useState(false);
   if (!rows || rows.length === 0) {
     return null;
   }
+  const columns = expanded ? FULL_REPORT_COLUMNS : SUMMARY_COLUMNS;
   return (
     <section className="mt-6 overflow-hidden rounded-md border border-slate-200 bg-white shadow-sm">
-      <h2 className="border-b border-slate-100 px-6 py-3 text-sm font-semibold uppercase tracking-wide text-slate-500">
-        Capacity vs time
-      </h2>
+      <div className="flex items-center justify-between border-b border-slate-100 px-6 py-3">
+        <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-500">
+          Capacity vs time
+        </h2>
+        <button
+          type="button"
+          onClick={() => setExpanded((v) => !v)}
+          className="text-xs font-medium text-blue-700 hover:underline"
+        >
+          {expanded ? "Show fewer columns" : "Show all columns"}
+        </button>
+      </div>
       <div className="max-h-96 overflow-auto">
         <table className="w-full text-sm">
           <thead className="bg-slate-50">
             <tr>
-              <th className="px-4 py-2 text-left font-medium text-slate-700">Time (min)</th>
-              <th className="px-4 py-2 text-left font-medium text-slate-700">Fire temp (°C)</th>
-              <th className="px-4 py-2 text-left font-medium text-slate-700">UF</th>
-              <th className="px-4 py-2 text-left font-medium text-slate-700">
-                Total slab capacity (kN/m²)
-              </th>
+              {columns.map((col) => (
+                <th
+                  key={col.key}
+                  className="px-4 py-2 text-left font-medium text-slate-700"
+                >
+                  {col.header}
+                </th>
+              ))}
             </tr>
           </thead>
           <tbody>
             {rows.map((row) => (
               <tr key={row.time_step} className="border-t border-slate-100">
-                <td className="px-4 py-1 tabular-nums">{row.time_min.toFixed(1)}</td>
-                <td className="px-4 py-1 tabular-nums">{row.fire_temp.toFixed(0)}</td>
-                <td className="px-4 py-1 tabular-nums">
-                  {row.utilization_factor.toFixed(3)}
-                </td>
-                <td className="px-4 py-1 tabular-nums">
-                  {row.total_plate_capacity.toFixed(1)}
-                </td>
+                {columns.map((col) => (
+                  <td key={col.key} className="px-4 py-1 tabular-nums">
+                    {col.render(row)}
+                  </td>
+                ))}
               </tr>
             ))}
           </tbody>

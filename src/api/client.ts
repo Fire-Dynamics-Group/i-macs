@@ -173,6 +173,8 @@ export interface TimeSeriesRow {
   slabbot_temp: number;
   beam_hot_capacity: number;
   deflection: number;
+  slab_yield: number;
+  enhancement: number;
   slab_cap: number;
   total_plate_capacity: number;
   utilization_factor: number;
@@ -554,6 +556,87 @@ export const deleteCustomSection = (id: string) =>
 
 /** Resolved URL for the SSE endpoint. The dashboard's hook opens an
  *  EventSource against this URL. */
+export interface HostCheck {
+  ok: boolean;
+  lines: string[];
+  error: string | null;
+}
+
+export interface PdfEvidenceStatus {
+  active: boolean;
+  batch_id: string | null;
+  total: number;
+  completed: number;
+  output_dir: string | null;
+  error: string | null;
+  elapsed_s: number;
+  eta_s: number | null;
+  finished_at: number | null;
+  /** What the job was started with, rebuilt from disk after a restart so a
+   *  resume repeats it rather than asking for it all again. */
+  sample: number | null;
+  seed: string | null;
+  job_dir: string | null;
+  /** A pause has been asked for; the runner finishes its current run first. */
+  stopping: boolean;
+  resumable: boolean;
+}
+
+/** Is this machine fit to produce MACS+ PDF evidence? */
+export async function getReplayHostCheck(): Promise<HostCheck> {
+  return getJson<HostCheck>("/api/replay/host-check");
+}
+
+/** Replay a completed batch through MACS+, one real PDF per run.
+ *
+ *  Also the resume: runs whose PDF is already on disk are skipped, so picking
+ *  up after a pause is this same call with the same arguments. */
+export async function startPdfEvidence(
+  batchId: string,
+  opts: {
+    /** Replay only the first N runs; omit for the whole batch. */
+    sample?: number;
+    /** Where to write. Omit for the app's own folder under LOCALAPPDATA. */
+    outDir?: string;
+    /** Path to the .frc the batch was built from. Required for batches run
+     *  before i-macs recorded one — the run rows cannot be turned back into a
+     *  .frc, so it has to come from the user. Checked against those rows. */
+    seed?: string;
+  } = {},
+): Promise<{ started?: boolean; error?: string }> {
+  return postJson(`/api/batches/${batchId}/pdf-evidence`, {
+    sample: opts.sample ?? null,
+    out_dir: opts.outDir ?? null,
+    seed: opts.seed ?? null,
+  });
+}
+
+/** Forget the job so the batch can start fresh.
+ *
+ *  `deletePdfs` discards the output too — hours of work, so it is never the
+ *  default and the panel asks first. */
+export async function resetPdfEvidence(
+  batchId: string,
+  deletePdfs: boolean,
+): Promise<{ reset?: boolean; deleted?: number; error?: string }> {
+  return postJson(`/api/batches/${batchId}/pdf-evidence/reset`, {
+    delete_pdfs: deletePdfs,
+  });
+}
+
+/** Pause after the current run, leaving the runner to restore the machine. */
+export async function stopPdfEvidence(
+  batchId: string,
+): Promise<{ stopping?: boolean; error?: string }> {
+  return postJson(`/api/batches/${batchId}/pdf-evidence/stop`, {});
+}
+
+export async function getPdfEvidenceStatus(
+  batchId: string,
+): Promise<PdfEvidenceStatus> {
+  return getJson<PdfEvidenceStatus>(`/api/batches/${batchId}/pdf-evidence`);
+}
+
 export async function getEventsUrl(): Promise<string> {
   const base = await baseUrl();
   return `${base}/api/sweeps/events`;
