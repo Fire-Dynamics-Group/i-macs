@@ -64,10 +64,16 @@ class TestSetBeamData:
 
 
 class FakeCOMProxy:
-    """A fake COMProxy that stores properties as a dict for testing."""
+    """A fake COMProxy that stores properties as a dict for testing.
+
+    Indexed output series (uf(i), lofl_temp2(i), ...) are served from
+    ``_series``: a ``{name: {index: value}}`` dict; unknown names/indices
+    read as 0.0, like a real engine returning zeroed outputs.
+    """
 
     def __init__(self):
         self._props = {}
+        self._series = {}
 
     def __setattr__(self, name, value):
         if name.startswith("_"):
@@ -84,7 +90,7 @@ class FakeCOMProxy:
         pass
 
     def call_indexed(self, name, index):
-        return 0.0
+        return self._series.get(name, {}).get(index, 0.0)
 
 
 class TestSetInputs:
@@ -200,6 +206,116 @@ class TestReadOutputs:
     def test_mb1_reqd_defaults_to_zero_when_absent(self, mock_engine):
         result = mock_engine._read_outputs()
         assert result["mb1_reqd"] == 0.0
+
+
+class TestSecondMeshLoop:
+    """When mesh_area_min != mesh_area_max (and OneLoop != 1) FRACOF computes a
+    SECOND analysis: MACS+'s Calc.js reads uf2/time_intervals_count2, reports
+    ufmax = max(UF1Max, UF2Max) and displays the governing loop's table and
+    extremes (GraphTbl / CalcExtremes, Calc.js lines 354-380 + 448). Only
+    square meshes (main area == transverse area, e.g. A193) skip the loop; any
+    B-series mesh diverges without this.
+    """
+
+    def _sections_db(self):
+        return {
+            "IPE_500": {"family": "IPE", "grade": "355", "h": 500.0, "b": 200.0,
+                        "tw": 10.2, "tf": 16.0, "name": "IPE 500"}
+        }
+
+    def _params(self, **overrides):
+        p = {
+            "uSecSize": "IPE_500", "uSec1Size": "IPE_500", "uSec2Size": "IPE_500",
+            "SideASecSize": "IPE_500", "SideBSecSize": "IPE_500",
+            "SideCSecSize": "IPE_500", "SideDSecSize": "IPE_500",
+        }
+        p.update(overrides)
+        return p
+
+    def _engine_with_two_loops(self, uf1=0.5, uf2=0.9):
+        eng = MACSEngine.__new__(MACSEngine)  # skip __init__
+        eng.engine = FakeCOMProxy()
+        eng.engine_version = None
+        eng.engine.COMPFAILURE = 0
+        for side in ("A", "B", "C", "D"):
+            setattr(eng.engine, f"Side{side}LoadRatio", 0.0)
+            setattr(eng.engine, f"Side{side}CriticalTemp", 0.0)
+        eng.engine.time_intervals_count = 1
+        eng.engine.time_intervals_count2 = 1
+        eng.engine._series["uf"] = {1: uf1}
+        eng.engine._series["uf2"] = {1: uf2}
+        eng.engine._series["lofl_temp"] = {1: 500.0}
+        eng.engine._series["lofl_temp2"] = {1: 600.0}
+        eng.engine._series["time_interval"] = {1: 15.0}
+        eng.engine._series["time_interval2"] = {1: 15.0}
+        return eng
+
+    def test_second_loop_flag_set_when_mesh_areas_differ(self):
+        eng = MACSEngine.__new__(MACSEngine)
+        eng.engine = FakeCOMProxy()
+        eng.set_inputs(self._params(mesh_area_max=283, mesh_area_min=193),
+                       self._sections_db())
+        assert eng.second_loop is True
+
+    def test_second_loop_flag_clear_for_square_mesh(self):
+        eng = MACSEngine.__new__(MACSEngine)
+        eng.engine = FakeCOMProxy()
+        eng.set_inputs(self._params(mesh_area_max=193, mesh_area_min=193),
+                       self._sections_db())
+        assert eng.second_loop is False
+
+    def test_second_loop_flag_clear_when_one_loop_requested(self):
+        """MACS+'s OneLoop flag suppresses the second analysis read."""
+        eng = MACSEngine.__new__(MACSEngine)
+        eng.engine = FakeCOMProxy()
+        eng.set_inputs(self._params(mesh_area_max=283, mesh_area_min=193,
+                                    OneLoop="1"),
+                       self._sections_db())
+        assert eng.second_loop is False
+
+    def test_uf_max_is_max_over_both_loops(self):
+        eng = self._engine_with_two_loops(uf1=0.5, uf2=0.9)
+        eng.second_loop = True
+        result = eng._read_outputs()
+        assert result["uf_max"] == pytest.approx(0.9)
+        assert result["uf1_max"] == pytest.approx(0.5)
+        assert result["uf2_max"] == pytest.approx(0.9)
+
+    def test_governing_loop_2_supplies_time_series_and_extremes(self):
+        """Mirrors CalcExtremes(GraphTbl): when UF2Max > UF1Max the second
+        loop's table and extremes are what MACS+ reports."""
+        eng = self._engine_with_two_loops(uf1=0.5, uf2=0.9)
+        eng.second_loop = True
+        result = eng._read_outputs()
+        assert result["governing_mesh_loop"] == 2
+        assert result["time_series"][0]["lofl_temp"] == pytest.approx(600.0)
+        assert result["max_temperature"] == pytest.approx(600.0)
+
+    def test_governing_loop_1_keeps_first_series(self):
+        eng = self._engine_with_two_loops(uf1=0.9, uf2=0.5)
+        eng.second_loop = True
+        result = eng._read_outputs()
+        assert result["governing_mesh_loop"] == 1
+        assert result["uf_max"] == pytest.approx(0.9)
+        assert result["time_series"][0]["lofl_temp"] == pytest.approx(500.0)
+
+    def test_no_second_loop_reads_nothing_extra(self):
+        eng = self._engine_with_two_loops(uf1=0.5, uf2=0.9)
+        eng.second_loop = False
+        result = eng._read_outputs()
+        assert result["uf_max"] == pytest.approx(0.5)
+        assert result["uf2_max"] is None
+        assert result["governing_mesh_loop"] == 1
+
+    def test_engine_without_loop2_properties_degrades_gracefully(self):
+        """An engine variant that never exposes time_intervals_count2 must not
+        crash the read — treat it as an empty second loop."""
+        eng = self._engine_with_two_loops(uf1=0.5, uf2=0.9)
+        eng.engine._props.pop("time_intervals_count2")
+        eng.second_loop = True
+        result = eng._read_outputs()
+        assert result["uf_max"] == pytest.approx(0.5)
+        assert result["uf2_max"] is None
 
 
 class TestComRunnerIsolation:

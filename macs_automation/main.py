@@ -8,7 +8,7 @@ from tqdm import tqdm
 from macs_automation.data_loader import load_data
 from macs_automation.db import ResultsDB
 from macs_automation.runner import run_batch_with_callback
-from macs_automation.sweep import generate_combinations, load_config, resolve_deck, resolve_mesh
+from macs_automation.sweep import generate_combinations, load_config, resolve_deck, resolve_mesh, resolve_slab_weight
 
 
 def list_sections(data: dict):
@@ -78,10 +78,12 @@ def run_batch(config_path: str, db_path: str, resume: bool = True):
 
     combinations = generate_combinations(config)
 
-    # Resolve deck and mesh lookups for each combination
+    # Resolve deck and mesh lookups for each combination, then recompute the
+    # slab weight from the resolved geometry (mirrors MACS+'s auto-calc)
     for params in combinations:
         resolve_deck(params, data["decks"])
         resolve_mesh(params, data["meshes"])
+        resolve_slab_weight(params)
 
     print(f"Total combinations: {len(combinations)}")
 

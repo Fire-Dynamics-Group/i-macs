@@ -94,6 +94,46 @@ Skips cleanly when COM/Data.xml are unavailable (gated by `conftest.com_and_data
   sent). Dropping them is correct; `engine.py` `direct_props` matches Calc.js's `InputProps`.
 - `min/max_mesh_dia` are parsed but unused by the engine — harmless.
 
+## Round 2: blindspot audit against the installed MACS+ scripts (2026-07-31)
+
+A follow-up sweep of `Calc.js`/`PrintP.js`/`TABs.js` for further places where i-MACS output
+could diverge from MACS+. All four fixed (tests alongside each):
+
+1. **Second mesh loop was entirely unread.** When `mesh_area_min != mesh_area_max` and
+   `OneLoop != 1`, FRACOF computes a second analysis; MACS+ reads `uf2`/`time_intervals_count2`
+   (Calc.js 354-379), reports `ufmax = max(UF1Max, UF2Max)` and displays the governing loop's
+   table/extremes (`GraphTbl`, `CalcExtremes`). i-MACS read only loop 1 — and `resolve_mesh`
+   maps `mainArea`/`transArea`, which differ for every **B-series mesh**, so any such run
+   understated `uf_max`. (The 10k corpora are square A193 — historical results unaffected.)
+   `engine.py` now mirrors the whole dance (`second_loop` flag, `uf1_max`/`uf2_max`/
+   `governing_mesh_loop` in results); `frc_parser` now carries `OneLoop` instead of skipping it.
+   Perimeter side ratios stay loop-1 — MACS+'s own FillPerim2Beam prints loop-1 values too.
+2. **Side B/D line load didn't match the printed PDF.** PrintP.js computes B/D as
+   `8·Mb1_Reqd/(span1·span2)` — not the textbook `8M/span2²` — in *both* report variants
+   (lines 524/600). Atlantic Park is 7.3 × 7.48 m, so this was visibly wrong against corpus
+   PDFs (23.97 vs 24.56 kN/m). `PerimeterBeamCheck` now reproduces MACS+ verbatim.
+3. **Side-ratio verdict threshold.** MACS+ bolds "ratio fails" only at `> 1.01`; `status.py`
+   failed at `> 1.0`, so ratios in (1.0, 1.01] disagreed with the PDF. Now 1.01. (Gating the
+   overall verdict on side ratios at all is still deliberately stricter than MACS+'s summary
+   cell, which reads UF only.)
+4. **`calc_slab_weight = 1` never recomputed.** MACS+ recomputes `slab_weight` in the UI before
+   every calc (TABs.js `SlabWeight()`); the .frc value is just the last computed one. i-MACS
+   held it frozen, so sweeping `slab_depth`/deck geometry diverged — and even pure-DEFAULTS
+   runs used the static 2.47 where MACS+ computes **2.28** for that geometry.
+   `resolve_slab_weight()` (sweep.py) now mirrors the formula incl. the parseInt rounding;
+   validated bit-for-bit against the Atlantic Park .frc (150/Multideck 60 → 2.83). Wired into
+   the single-run, sweep and CLI paths after `resolve_deck`/`resolve_mesh`.
+
+Also added: `engine.set_inputs` now logs a warning listing any `InputProps` key absent from
+params (MACS+ always sets every input; a missing key silently inherits FRACOF's internal
+default — the exact failure class of the original `mesh_axis` bug).
+
+Known remaining divergences (deliberate/accepted): `_get_fy` falls back to 355 where MACS+
+returns `undefined` for unknown grades; engine.py prefers `SCTI11.FRACOF` while the 3.0.4 HTA
+instantiates `SCTI9` (engine version is stamped on every result, ±3 °C on perimeter critical
+temps); `OneLoop` is not threaded through the React form (an imported .frc with `OneLoop=1`
+run via the UI computes both loops — rare, and the stricter direction).
+
 ## Environment notes (for re-running the real engine on this box)
 
 - `MACS_DATA_PATH=C:\Program Files (x86)\MACS+\EN\Data\Data.xml` — the code default points at

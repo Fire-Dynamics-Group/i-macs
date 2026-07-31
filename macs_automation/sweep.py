@@ -120,6 +120,46 @@ def resolve_mesh(params: dict, meshes_db: dict):
         params["mesh_area_min"] = mesh["transArea"]
 
 
+def resolve_slab_weight(params: dict):
+    """Recompute slab_weight from geometry when calc_slab_weight is on.
+
+    Mirrors MACS+ exactly: with the 'Calculate slab weight' box ticked, the
+    desktop app recomputes slab_weight in the UI immediately before every
+    calculation (Calc.js SetInputValues line 151 -> TABs.js SlabWeight()); the
+    slab_weight stored in a .frc is only the last computed value. Recomputing
+    here keeps sweeps that vary slab_depth or deck geometry in line with what
+    MACS+ would send the engine run-for-run.
+
+    Validated against the Atlantic Park run00000 .frc: slab 150 / Multideck 60
+    (60/323/142/119) -> 2.83, the value MACS+ stored.
+    """
+    if str(params.get("calc_slab_weight", "0")) != "1":
+        return
+
+    def _num(key):
+        try:
+            return float(params.get(key, 0) or 0)
+        except (TypeError, ValueError):
+            return 0.0
+
+    slab_depth = _num("slab_depth")
+    deck_depth = _num("deck_depth")
+    deck_trug = _num("deck_trug")
+
+    weight = 0.0
+    if slab_depth > 0 and slab_depth >= deck_depth + 30:
+        # Rib displacement of the deck profile. deck_trug=0 would be a
+        # division by zero in MACS+ too (only reachable with a zero-pitch
+        # custom deck); treat the rib term as absent there.
+        rib = 0.0
+        if deck_trug > 0:
+            rib = deck_depth * (1 - 0.5 * ((deck_trug - _num("deck_top") + _num("deck_bot")) / deck_trug))
+        density = 24 if str(params.get("conc_type", "NW")) == "NW" else 19
+        weight = (slab_depth - rib) * density / 1000
+        weight = int(weight * 100 + 0.5) / 100  # TABs.js parseInt(w*100+0.5)/100
+    params["slab_weight"] = weight
+
+
 def _check_window_percent_units(config: dict) -> None:
     """Reject window_percent supplied as fractions instead of percent.
 

@@ -61,15 +61,17 @@ describe("PerimeterBeamCheck", () => {
     render(<PerimeterBeamCheck run={makeRun()} />);
     // Required moment resistance is read straight off mb2_reqd (shared by A + C).
     expect(screen.getAllByText("105.06 kNm")).toHaveLength(2);
-    // Line load = 8 * Mreqd / span^2 = 8 * 105.06 / 7.3^2 = 15.77 kN/m.
+    // Line load = 8 * Mreqd / (span1 * span1) = 8 * 105.06 / 7.3^2 = 15.77 kN/m.
     expect(screen.getAllByText("15.77 kN/m")).toHaveLength(2);
   });
 
-  it("derives Side B/D's moment resistance and line load from Mb1_Reqd_1 + span2", () => {
+  it("derives Side B/D's line load from Mb1_Reqd_1 over span1*span2, matching the MACS+ PDF", () => {
     render(<PerimeterBeamCheck run={makeRun()} />);
     expect(screen.getAllByText("167.61 kNm")).toHaveLength(2);
-    // 8 * 167.61 / 7.48^2 = 23.97 kN/m
-    expect(screen.getAllByText("23.97 kN/m")).toHaveLength(2);
+    // MACS+'s PrintP.js prints sides B/D as 8 * Mb1 / (span1 * span2) — NOT
+    // 8M/L² over span2 — in both report variants (lines 524/600). Parity with
+    // the printed PDF wins: 8 * 167.61 / (7.3 * 7.48) = 24.56 kN/m.
+    expect(screen.getAllByText("24.56 kN/m")).toHaveLength(2);
   });
 
   it("labels beam type from the composite/edge flags", () => {

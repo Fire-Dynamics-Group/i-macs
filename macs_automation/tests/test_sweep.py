@@ -4,6 +4,7 @@ import pytest
 import yaml
 
 from macs_automation.sweep import (
+    resolve_slab_weight,
     DEFAULTS,
     generate_combinations,
     load_config,
@@ -210,6 +211,77 @@ class TestResolveMesh:
         params = {"mesh_type": "UNKNOWN"}
         resolve_mesh(params, {})
         assert "mesh_area_max" not in params
+
+
+class TestResolveSlabWeight:
+    """resolve_slab_weight mirrors MACS+'s TABs.js SlabWeight(): with the
+    'Calculate slab weight' box ticked, MACS+ recomputes slab_weight from
+    slab/deck geometry immediately before every calculation — the value stored
+    in a .frc is only the last computed one. Without this, sweeps varying
+    slab_depth or deck geometry hold slab_weight frozen where MACS+ tracks it.
+    """
+
+    def test_reproduces_atlantic_park_stored_value(self):
+        """The Atlantic Park run00000 .frc: slab 150, Multideck 60
+        (depth 60, trug 323, top 142, bot 119), NW -> stored 2.83."""
+        params = {
+            "calc_slab_weight": "1", "conc_type": "NW", "slab_depth": 150,
+            "deck_depth": 60, "deck_trug": 323, "deck_top": 142, "deck_bot": 119,
+            "slab_weight": 999,  # stale — must be overwritten
+        }
+        resolve_slab_weight(params)
+        assert params["slab_weight"] == pytest.approx(2.83)
+
+    def test_defaults_geometry_computes_2_28(self):
+        """DEFAULTS geometry (slab 130 / COFRAPLUS 60) computes 2.28 — NOT the
+        2.47 the static default carried; MACS+ with the box ticked uses 2.28."""
+        params = {
+            "calc_slab_weight": "1", "conc_type": "NW", "slab_depth": 130,
+            "deck_depth": 58, "deck_trug": 207, "deck_top": 106, "deck_bot": 62,
+        }
+        resolve_slab_weight(params)
+        assert params["slab_weight"] == pytest.approx(2.28)
+
+    def test_lightweight_concrete_uses_19(self):
+        params = {
+            "calc_slab_weight": "1", "conc_type": "LW", "slab_depth": 150,
+            "deck_depth": 60, "deck_trug": 323, "deck_top": 142, "deck_bot": 119,
+        }
+        resolve_slab_weight(params)
+        # (150 - 60*(1 - 0.5*300/323)) * 19 / 1000 = 2.2394 -> 2.24
+        assert params["slab_weight"] == pytest.approx(2.24)
+
+    def test_disabled_leaves_manual_value(self):
+        params = {"calc_slab_weight": "0", "slab_weight": 3.1, "slab_depth": 150}
+        resolve_slab_weight(params)
+        assert params["slab_weight"] == 3.1
+
+    def test_slab_too_thin_for_deck_gives_zero(self):
+        """TABs.js returns 0 when slab_depth < deck_depth + 30 — mirrored."""
+        params = {
+            "calc_slab_weight": "1", "conc_type": "NW", "slab_depth": 80,
+            "deck_depth": 60, "deck_trug": 323, "deck_top": 142, "deck_bot": 119,
+        }
+        resolve_slab_weight(params)
+        assert params["slab_weight"] == 0.0
+
+    def test_string_inputs_from_frc_are_accepted(self):
+        """.frc-parsed params can arrive as strings."""
+        params = {
+            "calc_slab_weight": "1", "conc_type": "NW", "slab_depth": "150",
+            "deck_depth": "60", "deck_trug": "323", "deck_top": "142",
+            "deck_bot": "119",
+        }
+        resolve_slab_weight(params)
+        assert params["slab_weight"] == pytest.approx(2.83)
+
+    def test_no_deck_is_plain_slab(self):
+        params = {
+            "calc_slab_weight": "1", "conc_type": "NW", "slab_depth": 100,
+            "deck_depth": 0, "deck_trug": 0, "deck_top": 0, "deck_bot": 0,
+        }
+        resolve_slab_weight(params)
+        assert params["slab_weight"] == pytest.approx(2.4)
 
 
 class TestLoadConfig:

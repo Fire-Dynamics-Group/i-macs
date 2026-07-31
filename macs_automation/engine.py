@@ -201,6 +201,28 @@ class MACSEngine:
                     val = max(5.0, float(val))
                 setattr(eng, prop, val)
 
+        # MACS+ always sets every input (Calc.js InputProps); a key missing here
+        # leaves FRACOF's own internal default in place, which is the silent-
+        # divergence class that produced the mesh_axis 40-vs-52 bug.
+        missing = [p for p in direct_props if p not in params]
+        if missing:
+            logger.warning(
+                "Engine inputs missing from params — FRACOF internal defaults "
+                "will apply, MACS+ would have sent explicit values: %s",
+                ", ".join(missing),
+            )
+
+        # Second mesh loop: when the two mesh areas differ (non-square mesh,
+        # e.g. B-series) and OneLoop isn't set, FRACOF computes a second full
+        # analysis that MACS+ reads via uf2/time_intervals_count2 (Calc.js
+        # lines 354-379) and folds into its reported ufmax. Record whether this
+        # run qualifies so _read_outputs() mirrors that.
+        self.second_loop = (
+            str(params.get("OneLoop", "0")) != "1"
+            and float(_to_numeric(params.get("mesh_area_max", 0)))
+            != float(_to_numeric(params.get("mesh_area_min", 0)))
+        )
+
         # If no steel deck, set deck_depth = 0 (Calc.js lines 181-184)
         if str(params.get("SteelDeck", "1")) == "0":
             eng.deck_depth = 0
@@ -328,54 +350,92 @@ class MACSEngine:
         result["side_d_load_ratio"] = float(eng.SideDLoadRatio)
         result["side_d_critical_temp"] = float(eng.SideDCriticalTemp)
 
-        # Time series data (Calc.js lines 388-402, 452-476)
-        n = int(eng.time_intervals_count)
-        time_series = []
+        # Time series data (Calc.js lines 388-402, 452-476). When the second
+        # mesh loop applies (see set_inputs), mirror Calc.js lines 354-380 +
+        # 448: ufmax is the max over BOTH loops, and the table/extremes shown
+        # come from the governing loop (GraphTbl = '2' iff UF2Max > UF1Max).
+        series1, ext1 = self._read_time_series("")
+        uf1_max = ext1["uf_max"]
+        uf2_max = None
+        governing_series, governing_ext = series1, ext1
+        governing_loop = 1
 
-        uf_max = -float("inf")
-        max_temp = -float("inf")
-        max_defl = -float("inf")
-        max_slab_cap = -float("inf")
-        max_beam_cap = -float("inf")
-        max_total_cap = -float("inf")
+        if getattr(self, "second_loop", False):
+            series2, ext2 = self._read_time_series("2")
+            if series2:
+                uf2_max = ext2["uf_max"]
+                if uf2_max > uf1_max:
+                    governing_series, governing_ext = series2, ext2
+                    governing_loop = 2
+
+        neg_inf = -float("inf")
+        result["time_series"] = governing_series
+        result["governing_mesh_loop"] = governing_loop
+        result["uf1_max"] = uf1_max if uf1_max > neg_inf else 0.0
+        result["uf2_max"] = uf2_max
+        result["uf_max"] = governing_ext["uf_max"] if governing_ext["uf_max"] > neg_inf else 0.0
+        result["max_temperature"] = governing_ext["max_temp"] if governing_ext["max_temp"] > neg_inf else 0.0
+        result["max_deflection"] = governing_ext["max_defl"] if governing_ext["max_defl"] > neg_inf else 0.0
+        result["max_slab_cap"] = governing_ext["max_slab_cap"] if governing_ext["max_slab_cap"] > neg_inf else 0.0
+        result["max_beam_cap"] = governing_ext["max_beam_cap"] if governing_ext["max_beam_cap"] > neg_inf else 0.0
+        result["max_total_cap"] = governing_ext["max_total_cap"] if governing_ext["max_total_cap"] > neg_inf else 0.0
+
+        return result
+
+    def _read_time_series(self, suffix: str) -> tuple[list, dict]:
+        """Read one analysis loop's time series and extremes.
+
+        ``suffix`` is '' for the first loop, '2' for the second — matching
+        MACS+'s property naming (uf/uf2, lofl_temp/lofl_temp2, ...; Calc.js
+        appends GraphTbl the same way in CalcExtremes). Returns ([], extremes)
+        when the count property is absent or zero (e.g. an engine build without
+        the second-loop outputs).
+        """
+        eng = self.engine
+        try:
+            n = int(getattr(eng, "time_intervals_count" + suffix))
+        except (RuntimeError, TypeError, ValueError):
+            n = 0
+
+        time_series = []
+        ext = {
+            "uf_max": -float("inf"),
+            "max_temp": -float("inf"),
+            "max_defl": -float("inf"),
+            "max_slab_cap": -float("inf"),
+            "max_beam_cap": -float("inf"),
+            "max_total_cap": -float("inf"),
+        }
 
         for i in range(1, n + 1):
             row = {
                 "time_step": i,
-                "time_min": float(eng.call_indexed("time_interval", i)),
-                "fire_temp": float(eng.call_indexed("fire_temps", i)),
-                "lofl_temp": float(eng.call_indexed("lofl_temp", i)),
-                "mesh_temp": float(eng.call_indexed("mesh_temp", i)),
-                "slabtop_temp": float(eng.call_indexed("slabtop_temp", i)),
-                "slabbot_temp": float(eng.call_indexed("slabbot_temp", i)),
-                "beam_hot_capacity": float(eng.call_indexed("beam_hot_capacity", i)),
-                "deflection": float(eng.call_indexed("cgb_w", i)),
-                "slab_yield": float(eng.call_indexed("slab_yield", i)),
-                "enhancement": float(eng.call_indexed("enhancement", i)),
-                "slab_cap": float(eng.call_indexed("slabcap", i)),
-                "total_plate_capacity": float(eng.call_indexed("total_plate_capacity", i)),
-                "utilization_factor": float(eng.call_indexed("uf", i)),
+                "time_min": float(eng.call_indexed("time_interval" + suffix, i)),
+                "fire_temp": float(eng.call_indexed("fire_temps" + suffix, i)),
+                "lofl_temp": float(eng.call_indexed("lofl_temp" + suffix, i)),
+                "mesh_temp": float(eng.call_indexed("mesh_temp" + suffix, i)),
+                "slabtop_temp": float(eng.call_indexed("slabtop_temp" + suffix, i)),
+                "slabbot_temp": float(eng.call_indexed("slabbot_temp" + suffix, i)),
+                "beam_hot_capacity": float(eng.call_indexed("beam_hot_capacity" + suffix, i)),
+                "deflection": float(eng.call_indexed("cgb_w" + suffix, i)),
+                "slab_yield": float(eng.call_indexed("slab_yield" + suffix, i)),
+                "enhancement": float(eng.call_indexed("enhancement" + suffix, i)),
+                "slab_cap": float(eng.call_indexed("slabcap" + suffix, i)),
+                "total_plate_capacity": float(eng.call_indexed("total_plate_capacity" + suffix, i)),
+                "utilization_factor": float(eng.call_indexed("uf" + suffix, i)),
             }
             time_series.append(row)
 
             # Track extremes (CalcExtremes in Calc.js lines 453-476)
-            uf_max = max(uf_max, row["utilization_factor"])
+            ext["uf_max"] = max(ext["uf_max"], row["utilization_factor"])
             for temp_key in ("lofl_temp", "mesh_temp", "slabtop_temp", "slabbot_temp", "fire_temp"):
-                max_temp = max(max_temp, row[temp_key])
-            max_defl = max(max_defl, row["deflection"])
-            max_slab_cap = max(max_slab_cap, row["slab_cap"])
-            max_beam_cap = max(max_beam_cap, row["beam_hot_capacity"])
-            max_total_cap = max(max_total_cap, row["total_plate_capacity"])
+                ext["max_temp"] = max(ext["max_temp"], row[temp_key])
+            ext["max_defl"] = max(ext["max_defl"], row["deflection"])
+            ext["max_slab_cap"] = max(ext["max_slab_cap"], row["slab_cap"])
+            ext["max_beam_cap"] = max(ext["max_beam_cap"], row["beam_hot_capacity"])
+            ext["max_total_cap"] = max(ext["max_total_cap"], row["total_plate_capacity"])
 
-        result["time_series"] = time_series
-        result["uf_max"] = uf_max if uf_max > -float("inf") else 0.0
-        result["max_temperature"] = max_temp if max_temp > -float("inf") else 0.0
-        result["max_deflection"] = max_defl if max_defl > -float("inf") else 0.0
-        result["max_slab_cap"] = max_slab_cap if max_slab_cap > -float("inf") else 0.0
-        result["max_beam_cap"] = max_beam_cap if max_beam_cap > -float("inf") else 0.0
-        result["max_total_cap"] = max_total_cap if max_total_cap > -float("inf") else 0.0
-
-        return result
+        return time_series, ext
 
 
 def _to_numeric(val):

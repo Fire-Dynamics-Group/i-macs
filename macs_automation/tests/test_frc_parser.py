@@ -71,6 +71,13 @@ class TestParseFrc:
         assert params["mesh_axis"] == 40.0
         assert params["mesh_strength"] == 500.0
 
+    def test_one_loop_carried_as_string(self):
+        """OneLoop isn't an engine input, but it decides whether MACS+ reads
+        the second mesh-loop analysis (Calc.js lines 363-379) — engine.py
+        needs it to mirror that, so the parser must not drop it."""
+        params = parse_frc(FIXTURES / "atlantic_park_run00000.frc")["params"]
+        assert params["OneLoop"] == "0"
+
     def test_beams_unprotected(self, sample_frc_file):
         params = parse_frc(sample_frc_file)["params"]
         assert params["uSecSize"] == "UB_457x152x60"

@@ -44,8 +44,18 @@ class TestOverallPass:
         assert s["overall_pass"] is False
 
     def test_side_b_load_ratio_fails(self):
-        s = compute_status(_row(side_b_load_ratio=1.01))
+        s = compute_status(_row(side_b_load_ratio=1.02))
         assert s["overall_pass"] is False
+
+    def test_side_ratio_at_macs_flag_threshold_passes(self):
+        """MACS+ bolds 'ratio fails' only when SideXLoadRatio > 1.01
+        (PrintP.js FillPerim1Beam) — a ratio of exactly 1.01, or in
+        (1.0, 1.01], carries no flag in the MACS+ report, so it passes here
+        too. Keeps i-macs verdicts diff-able against corpus PDFs."""
+        s = compute_status(_row(side_b_load_ratio=1.01))
+        assert s["overall_pass"] is True
+        s = compute_status(_row(side_b_load_ratio=1.005))
+        assert s["overall_pass"] is True
 
     def test_side_c_load_ratio_fails(self):
         s = compute_status(_row(side_c_load_ratio=2.0))

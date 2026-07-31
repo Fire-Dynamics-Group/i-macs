@@ -15,16 +15,19 @@ _METHOD_MAP = {
 # Properties that should remain as strings (not cast to float)
 _STRING_PROPS = {
     "conc_type", "DeckId", "DeckName", "deck_type", "SteelDeck",
-    "mesh_type", "USecTypeFlag", "calc_slab_weight",
+    "mesh_type", "USecTypeFlag", "calc_slab_weight", "OneLoop",
     "uSecSize", "uSec1Size", "uSec2Size",
     "SideASecSize", "SideBSecSize", "SideCSecSize", "SideDSecSize",
     "SideASecName", "SideBSecName", "SideCSecName", "SideDSecName",
     "fy1", "fy2", "fy3", "fy4", "fy5",
 }
 
-# Properties we skip (display/UI-only, not engine inputs)
+# Properties we skip (display/UI-only, not engine inputs).
+# OneLoop is NOT skipped: it isn't an engine input, but it controls whether
+# MACS+ reads the second mesh-loop analysis (Calc.js lines 363-379), and
+# engine.py needs it to mirror that decision.
 _SKIP_PROPS = {
-    "DeckTree", "deck_cover", "deck_scale", "OneLoop",
+    "DeckTree", "deck_cover", "deck_scale",
     "SecFamily1", "SecFamily2", "SecFamily3", "SecFamily4", "SecFamily5",
     "SecFlags1", "SecFlags2", "SecFlags3", "SecFlags4", "SecFlags5",
     "SideASecName", "SideBSecName", "SideCSecName", "SideDSecName",

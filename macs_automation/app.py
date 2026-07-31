@@ -42,7 +42,7 @@ from macs_automation.report import (
 from macs_automation import pdf_evidence
 from macs_automation.shear_check import flags_for_run
 from macs_automation.sse_broker import Broker
-from macs_automation.sweep import DEFAULTS, PARAM_ALIASES, BEAM_SIDE_MAP, resolve_deck, resolve_mesh, generate_combinations
+from macs_automation.sweep import DEFAULTS, PARAM_ALIASES, BEAM_SIDE_MAP, resolve_deck, resolve_mesh, resolve_slab_weight, generate_combinations
 from macs_automation.sampling import FIRE_LOAD_PRESETS
 from macs_automation.varying_params import varying_params_from_config
 
@@ -736,9 +736,10 @@ def api_submit_run(request_body: dict):
     for key, value in meta.items():
         params[f"_{key}"] = value
 
-    # Resolve deck and mesh
+    # Resolve deck and mesh, then recompute slab weight off the resolved deck
     resolve_deck(params, all_decks)
     resolve_mesh(params, all_meshes)
+    resolve_slab_weight(params)
 
     try:
         outputs = _run_single_com(params, all_sections)
@@ -841,10 +842,11 @@ def api_submit_sweep(request_body: dict):
     for p in combinations:
         p["_batch_id"] = batch_id
 
-    # Resolve deck/mesh for each
+    # Resolve deck/mesh for each, then slab weight off the resolved deck
     for p in combinations:
         resolve_deck(p, all_decks)
         resolve_mesh(p, all_meshes)
+        resolve_slab_weight(p)
 
     # Start background thread
     t = threading.Thread(

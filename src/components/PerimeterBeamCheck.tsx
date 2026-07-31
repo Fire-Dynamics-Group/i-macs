@@ -34,11 +34,18 @@ function str(v: unknown): string | null {
   return typeof v === "string" && v.trim() !== "" ? v : null;
 }
 
-/** Side A/C share a span (span1) and required moment (Mb2_Reqd_1); Side B/D
- *  share span2 + Mb1_Reqd_1 — mirrors MACS+'s own PrintP.js FillPerim1Beam. */
-function lineLoad(momentReqd: number | null, span: number | null): number | null {
-  if (momentReqd === null || !span) return null;
-  return (8 * momentReqd) / (span * span);
+/** Sides A/C share Mb2_Reqd_1, sides B/D share Mb1_Reqd_1. Line loads mirror
+ *  MACS+'s PrintP.js FillPerim1Beam exactly: 8·M/(span1·span1) for A/C and
+ *  8·M/(span1·span2) for B/D (lines 486/524/562/600; FillPerim2Beam is
+ *  identical). Plain w = 8M/L² would put span2² under B/D, but the printed
+ *  MACS+ PDF uses span1·span2 and matching the reference output wins. */
+function lineLoad(
+  momentReqd: number | null,
+  spanA: number | null,
+  spanB: number | null,
+): number | null {
+  if (momentReqd === null || !spanA || !spanB) return null;
+  return (8 * momentReqd) / (spanA * spanB);
 }
 
 export function PerimeterBeamCheck({ run }: Props) {
@@ -57,7 +64,7 @@ export function PerimeterBeamCheck({ run }: Props) {
       loadRatio: num(run.side_a_load_ratio),
       criticalTemp: num(run.side_a_critical_temp),
       momentReqd: mb2Reqd,
-      lineLoad: lineLoad(mb2Reqd, span1),
+      lineLoad: lineLoad(mb2Reqd, span1, span1),
     },
     {
       label: "Side B",
@@ -68,7 +75,7 @@ export function PerimeterBeamCheck({ run }: Props) {
       loadRatio: num(run.side_b_load_ratio),
       criticalTemp: num(run.side_b_critical_temp),
       momentReqd: mb1Reqd,
-      lineLoad: lineLoad(mb1Reqd, span2),
+      lineLoad: lineLoad(mb1Reqd, span1, span2),
     },
     {
       label: "Side C",
@@ -79,7 +86,7 @@ export function PerimeterBeamCheck({ run }: Props) {
       loadRatio: num(run.side_c_load_ratio),
       criticalTemp: num(run.side_c_critical_temp),
       momentReqd: mb2Reqd,
-      lineLoad: lineLoad(mb2Reqd, span1),
+      lineLoad: lineLoad(mb2Reqd, span1, span1),
     },
     {
       label: "Side D",
@@ -90,7 +97,7 @@ export function PerimeterBeamCheck({ run }: Props) {
       loadRatio: num(run.side_d_load_ratio),
       criticalTemp: num(run.side_d_critical_temp),
       momentReqd: mb1Reqd,
-      lineLoad: lineLoad(mb1Reqd, span2),
+      lineLoad: lineLoad(mb1Reqd, span1, span2),
     },
   ].filter((s) => s.sec !== null);
 

@@ -2,19 +2,25 @@
 
 A run passes only when every applicable check passes:
   - Slab utilization factor (uf_max) < 1.001
-  - Each defined perimeter beam load ratio (side_X_load_ratio) <= 1.0
+  - Each defined perimeter beam load ratio (side_X_load_ratio) <= 1.01
 
-This mirrors the verdict cell MACS+ itself computes (PrintP.js:388,
-TabReport.js:846): ``UF1Max < 1.001 ? 'strAdequate' : ...``. MACS+'s
-``COMPFAILURE`` flag is a failure-mode *label*, not an independent pass/fail
-criterion, so it does not gate the verdict here.
+The slab check mirrors the verdict cell MACS+ itself computes (PrintP.js:388,
+TabReport.js:846): ``UF1Max < 1.001 ? 'strAdequate' : ...``. The side checks
+use MACS+'s own flag threshold — its perimeter-beam report table bolds
+"ratio fails" only when ``SideXLoadRatio > 1.01`` (PrintP.js FillPerim1Beam) —
+so a run i-macs fails is exactly a run whose MACS+ report carries a failure
+flag somewhere. (Gating the overall verdict on the side ratios at all is
+stricter than MACS+'s summary cell, which reads UF only — deliberate: a
+flagged side shouldn't count as a clean pass.) MACS+'s ``COMPFAILURE`` flag is
+a failure-mode *label*, not an independent pass/fail criterion, so it does not
+gate the verdict here.
 
 NULL side ratios are skipped (e.g. when a side wasn't analyzed). A run with an
 error or no uf_max returns overall_pass=None — we can't say either way.
 """
 
 UF_LIMIT = 1.001
-LOAD_RATIO_LIMIT = 1.0
+LOAD_RATIO_LIMIT = 1.01
 
 
 def _check(name: str, value, limit: float, passed: bool) -> dict:
