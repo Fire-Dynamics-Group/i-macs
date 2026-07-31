@@ -173,6 +173,8 @@ export interface TimeSeriesRow {
   slabbot_temp: number;
   beam_hot_capacity: number;
   deflection: number;
+  slab_yield: number;
+  enhancement: number;
   slab_cap: number;
   total_plate_capacity: number;
   utilization_factor: number;

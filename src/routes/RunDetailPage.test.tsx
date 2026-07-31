@@ -1,9 +1,10 @@
 /** @jsxImportSource react */
 import { describe, expect, it } from "vitest";
 import { render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 
-import { RunSummary } from "./RunDetailPage";
-import type { Run } from "../api/client";
+import { RunSummary, TimeSeriesTable } from "./RunDetailPage";
+import type { Run, TimeSeriesRow } from "../api/client";
 
 function makeRun(overrides: Partial<Run> = {}): Run {
   return {
@@ -49,5 +50,71 @@ describe("RunSummary", () => {
   it("shows no shear-connection warning when nothing is flagged", () => {
     render(<RunSummary run={makeRun({ shear_flags: [] })} />);
     expect(screen.queryByText(/shear connection/i)).not.toBeInTheDocument();
+  });
+});
+
+function makeTimeSeriesRow(overrides: Partial<TimeSeriesRow> = {}): TimeSeriesRow {
+  return {
+    time_step: 1,
+    time_min: 4,
+    fire_temp: 349,
+    lofl_temp: 43,
+    mesh_temp: 20,
+    slabtop_temp: 20,
+    slabbot_temp: 63,
+    beam_hot_capacity: 20.07,
+    deflection: 270,
+    slab_yield: 1.01,
+    enhancement: 2.64,
+    slab_cap: 2.67,
+    total_plate_capacity: 22.74,
+    utilization_factor: 0.24,
+    ...overrides,
+  } as TimeSeriesRow;
+}
+
+describe("TimeSeriesTable", () => {
+  it("shows only the summary columns by default", () => {
+    render(<TimeSeriesTable rows={[makeTimeSeriesRow()]} />);
+    expect(screen.getByText("Time (min)")).toBeInTheDocument();
+    expect(screen.getByText("Fire temp (°C)")).toBeInTheDocument();
+    expect(screen.queryByText(/Slab yield/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Enhancement/i)).not.toBeInTheDocument();
+  });
+
+  it("reveals every MACS report column once expanded", async () => {
+    const user = userEvent.setup();
+    render(<TimeSeriesTable rows={[makeTimeSeriesRow()]} />);
+
+    await user.click(screen.getByRole("button", { name: /show all columns/i }));
+
+    for (const header of [
+      "Beam (°C)",
+      "Mesh (°C)",
+      "Slab top (°C)",
+      "Slab bottom (°C)",
+      "Beam capacity (kN/m²)",
+      "Maximum allowable deflection (mm)",
+      "Slab yield (kN/m²)",
+      "Enhancement",
+      "Slab capacity (kN/m²)",
+      "Total capacity (kN/m²)",
+      "Unity factor",
+    ]) {
+      expect(screen.getByText(header)).toBeInTheDocument();
+    }
+    // spot-check a couple of formatted values from the expanded columns
+    expect(screen.getByText("43")).toBeInTheDocument(); // Beam temp (lofl_temp)
+    expect(screen.getByText("1.01")).toBeInTheDocument(); // Slab yield
+  });
+
+  it("collapses back to the summary columns when toggled again", async () => {
+    const user = userEvent.setup();
+    render(<TimeSeriesTable rows={[makeTimeSeriesRow()]} />);
+
+    await user.click(screen.getByRole("button", { name: /show all columns/i }));
+    await user.click(screen.getByRole("button", { name: /show fewer columns/i }));
+
+    expect(screen.queryByText(/Slab yield/i)).not.toBeInTheDocument();
   });
 });
