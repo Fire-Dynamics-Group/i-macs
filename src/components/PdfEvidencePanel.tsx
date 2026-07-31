@@ -17,11 +17,12 @@ import {
   type PdfEvidenceStatus,
 } from "../api/client";
 
-// Measured over a real 10k batch: median 5.1 s/run, ~460 KB per PDF. The
-// mean is higher because a MACS+ instance wedges every ~87 prints, but the
-// runner now recycles before that so the median is what a job should see.
-const SECONDS_PER_RUN = 5.2;
-const MB_PER_RUN = 0.46;
+// Measured over 120 consecutive runs printing without the print dialog: 3.55 s
+// median, 4.14 s mean including one stall, 442 KB per PDF. The old dialog route
+// was 5.1 s and took the keyboard once a run. Leaving a little headroom over the
+// median for the restarts and instance recycles a long batch will hit.
+const SECONDS_PER_RUN = 3.8;
+const MB_PER_RUN = 0.44;
 
 function humanDuration(seconds: number): string {
   if (seconds < 90) return `${Math.round(seconds)}s`;

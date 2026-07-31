@@ -19,7 +19,9 @@ the box; at 150% they reach ~0.59.
 from __future__ import annotations
 
 import argparse
+import difflib
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -32,6 +34,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from macs_automation import pdf_oracle  # noqa: E402
 
 REACH_MIN = 0.95
+
+# The one thing that legitimately differs between two prints of the same job.
+STAMP = re.compile(r"Date:\s*\d{1,2} \w+ \d{4},\s*\d{1,2}:\d{2}")
+MAX_DIFF_LINES = 20
 
 
 def graphs_page(doc):
@@ -72,6 +78,77 @@ def self_test(path: Path) -> int:
         return 1
     print("  PASS: charts span the plot box, so display scaling is correct")
     return 0
+
+
+def normalise(lines) -> list[str]:
+    """Report lines with the print timestamp masked out."""
+    return [STAMP.sub("Date: <stamp>", line).rstrip() for line in lines]
+
+
+def text_differences(reference, candidate) -> list[str]:
+    """Diff lines between two reports, empty when they say the same thing.
+
+    Everything but the timestamp must match: the two routes into MACS's own
+    print path snapshot the page at different moments, and the visible symptom
+    of getting that wrong is a dropped field label, not a wrong number.
+    """
+    diff = [
+        line
+        for line in difflib.unified_diff(
+            normalise(reference), normalise(candidate), "dialog", "silent", n=0
+        )
+        if line[:1] in "+-" and line[:3] not in ("+++", "---")
+    ]
+    if len(diff) > MAX_DIFF_LINES:
+        extra = len(diff) - MAX_DIFF_LINES
+        diff = diff[: MAX_DIFF_LINES - 1] + [f"... and {extra + 1} more differing lines"]
+    return diff
+
+
+def pdf_lines(path: Path) -> list[str]:
+    return pdf_oracle.read_text(path).splitlines()
+
+
+def compare(manifest_path: Path, pdf_dir: Path, ref_dir: Path) -> int:
+    """Check PDFs against known-good ones for the same runs, run by run."""
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    runs = manifest["runs"]
+    checked = 0
+    skipped = 0
+    problems: list[tuple[str, list[str]]] = []
+
+    for entry in runs:
+        name = entry["name"]
+        new, ref = pdf_dir / f"{name}.pdf", ref_dir / f"{name}.pdf"
+        if not new.exists():
+            problems.append((name, ["missing PDF"]))
+            continue
+        if not ref.exists():
+            # Only runs with a reference can be compared; say how many were not.
+            skipped += 1
+            continue
+        try:
+            diff = text_differences(pdf_lines(ref), pdf_lines(new))
+        except Exception as exc:  # noqa: BLE001 - report, don't abort the sweep
+            problems.append((name, [f"{type(exc).__name__}: {exc}"]))
+            continue
+        checked += 1
+        if diff:
+            problems.append((name, diff))
+
+    print(f"\ncompared {checked} PDF(s) against {ref_dir}")
+    if skipped:
+        print(f"skipped {skipped} with no reference PDF to compare against")
+    print(f"\nreports that differ: {len(problems)}")
+    for name, diff in problems[:10]:
+        print(f"  {name}:")
+        for line in diff:
+            print(f"      {line}")
+    if len(problems) > 10:
+        print(f"  ... and {len(problems) - 10} more")
+    if not problems and checked:
+        print("  none - identical to the reference reports apart from the timestamp")
+    return 1 if problems or not checked else 0
 
 
 def verify(manifest_path: Path, pdf_dir: Path) -> int:
@@ -153,12 +230,19 @@ def main() -> int:
     ap.add_argument("--self-test", type=Path, help="check one PDF's chart geometry and exit")
     ap.add_argument("--manifest", type=Path)
     ap.add_argument("--pdfs", type=Path)
+    ap.add_argument(
+        "--compare-to",
+        type=Path,
+        help="directory of known-good PDFs; report any difference but the timestamp",
+    )
     args = ap.parse_args()
 
     if args.self_test:
         return self_test(args.self_test)
     if not (args.manifest and args.pdfs):
         ap.error("--manifest and --pdfs are required unless --self-test is used")
+    if args.compare_to:
+        return compare(args.manifest, args.pdfs, args.compare_to)
     return verify(args.manifest, args.pdfs)
 
 

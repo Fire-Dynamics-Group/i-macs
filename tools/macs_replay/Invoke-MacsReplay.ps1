@@ -7,13 +7,20 @@ Drives one running MACS+ instance, re-seeding it per run with LoadJob() and
 printing to a file-port printer. Output is indistinguishable from the reference
 corpus apart from /Author and the timestamp.
 
+Prints by calling MACS's own PrintMaster with its prompt argument false, so no
+print dialog is ever raised and the batch never takes the keyboard. -UseDialog
+restores the old route. Prove the two agree with
+verify_replay.py --compare-to.
+
 Run Test-ReplayHost.ps1 first. Three host-level settings silently corrupt
 output rather than failing: display scaling other than 100% squashes the chart
 curves while leaving every number correct, an unregistered AppSupport.dll stops
 MACS starting at all, and the wrong default printer sends the batch to paper.
 
-Requires an interactive logged-on session — the Windows print dialog is an
-explorer.exe-hosted window that does not exist in a service or SSH session.
+-UseDialog requires an interactive logged-on session, because the Windows print
+dialog is an explorer.exe-hosted window that does not exist in a service or SSH
+session. The silent path raises no dialog; whether it also lifts that
+requirement has not been tested.
 
 .EXAMPLE
 .\Invoke-MacsReplay.ps1 -Manifest .\export\manifest.json -OutDir .\pdfs
@@ -30,7 +37,11 @@ param(
     # runner only discovers that by waiting out a 60 s timeout, so recycling
     # well before then trades ~95 s of stall for a few planned seconds.
     # 0 disables it.
-    [int]$RecycleEvery = 60
+    [int]$RecycleEvery = 60,
+    # Print through MACS's print dialog instead of PrintMaster directly. Slower
+    # (~5.2 s/run against ~2 s) and it takes the keyboard once per run, but it
+    # is the route the existing corpus was printed by. Kept as a fallback.
+    [switch]$UseDialog
 )
 
 $ErrorActionPreference = "Stop"
@@ -104,6 +115,46 @@ function Wait-FileReady([string]$path, [int]$timeoutMs = 60000) {
     return 0
 }
 
+# Wait for the spooled PDF and claim it. Deliberately touches nothing but the
+# filesystem: PrintMaster blocks the script engine until the spooler has the
+# document, and any DOM call made meanwhile would block with it.
+function Complete-Print([string]$target) {
+    for ($i = 0; $i -lt 400; $i++) {
+        Start-Sleep -Milliseconds 100
+        if (Test-Path $script:spool) {
+            if ((Wait-FileReady $script:spool) -eq 0) { throw "spool never released" }
+            # The spooler can hold the handle briefly after the last byte, and
+            # a non-terminating Move-Item failure would log this run as "ok"
+            # with nothing behind it.
+            for ($m = 0; $m -lt 25; $m++) {
+                try { Move-Item $script:spool $target -Force -ErrorAction Stop; break }
+                catch { Start-Sleep -Milliseconds 200 }
+            }
+            if (-not (Test-Path $target)) { throw "could not move the spooled file" }
+            if ((Get-Item $target).Length -lt 1000) { throw "spooled file is empty" }
+            return (Get-Item $target).Length
+        }
+    }
+    throw "no PDF appeared"
+}
+
+# Wait for a print we intend to throw away, and remove it. The spooler writes a
+# local file port in a second or two, so a print still absent after ten was lost
+# rather than delayed - which is what the first print of a process usually does.
+function Clear-Spool([int]$waits = 100) {
+    for ($i = 0; $i -lt $waits; $i++) {
+        Start-Sleep -Milliseconds 100
+        if (Test-Path $script:spool) {
+            Wait-FileReady $script:spool | Out-Null
+            for ($m = 0; $m -lt 25; $m++) {
+                try { [System.IO.File]::Delete($script:spool); break } catch { Start-Sleep -Milliseconds 200 }
+            }
+            return $true
+        }
+    }
+    return $false
+}
+
 # Launching MACS+ activates its window, which is the one thing in the whole
 # batch that steals the keyboard: the print dialog is parked off-screen and only
 # takes focus if MACS already had it. Handing focus back afterwards is what
@@ -160,8 +211,181 @@ function Start-MacsInstance([string]$seedFrc) {
     throw "could not attach to a MACS+ instance"
 }
 
-function Invoke-Js($js) { $script:app.Win.execScript($js, "JScript") }
-function Get-Attr([string]$n) { $script:app.Doc.documentElement.getAttribute($n) }
+# MACS recycles its document object while it navigates - the calculation bounces
+# MainFrame through Calc.htm - and calls on the stale one fail with a null
+# pointer rather than anything you could read. The window and document are
+# cheap to re-acquire, so do that and retry once instead.
+function Sync-App {
+    $h = Get-IEServerHwnd "MACS\+"
+    $d = Get-Document $h.IE
+    $script:app = @{ Doc = $d; Win = $d.parentWindow; Frame = $h.Frame }
+}
+function Invoke-Js($js) {
+    try { $script:app.Win.execScript($js, "JScript") | Out-Null }
+    catch { Sync-App; $script:app.Win.execScript($js, "JScript") | Out-Null }
+}
+function Get-Attr([string]$n) {
+    for ($try = 0; $try -lt 2; $try++) {
+        try { return $script:app.Doc.documentElement.getAttribute($n) }
+        catch {
+            # An attribute that is not set comes back as a null BSTR, which
+            # PowerShell reports as a null-pointer error instead of $null. MACS
+            # reloads its top document during the calculation, so anything we
+            # stashed on it before then is legitimately gone: read that as unset.
+            if ($_.Exception -is [ArgumentNullException] -or
+                $_.Exception.InnerException -is [ArgumentNullException]) { return $null }
+            if ($try -eq 1) { throw }
+            Sync-App
+        }
+    }
+}
+
+# --------------------------------------------------------- silent printing ---
+#
+# MACS's print page ends with
+#     PrintMasterTag.Print ( template, /*preview*/ ..., /*prompt*/ true )
+# and that hardcoded `true` is the print dialog. Calling the same method with
+# `false` prints straight to the default printer: no dialog, no window, and
+# nothing taken from whoever is using the machine.
+#
+# Reaching that call ourselves means doing the two things MACS's own Print()
+# does on the way there - run the analysis, then build the report page - which
+# is why this is three steps rather than one.
+
+# Step 1. Analysis. MACS runs it by bouncing MainFrame through Calc.htm and
+# back to the tab it names, so send it back to the tab we are already on: a
+# different destination would mean the next LoadJob unloads a different form.
+# Printing used to imply this ran; now it is asserted.
+function Invoke-Calc {
+    Invoke-Js "document.documentElement.setAttribute('__calc','');"
+    Invoke-Js @"
+window.setTimeout(function(){
+  try { ShowTAB ( TAB_LASTACTIVE, TAB_ALLINACTIVE,
+                  'Calc.htm?GroupIndex=' + CurrentGroup + '&TabIndex=' + CurrentTabs [CurrentGroup] ); }
+  catch(e) { document.documentElement.setAttribute('__calc','err:'+e.message); }
+}, 10);
+"@
+    for ($i = 0; $i -lt 600; $i++) {
+        Start-Sleep -Milliseconds 50
+        Invoke-Js @"
+var f = 'dirty';
+try { f = ((RuntimeFlags & FLR_CALCDIRTY) ? 'dirty' : 'clean') +
+          (((RuntimeFlags & FLR_CALCSUCCESS) == FLR_CALCSUCCESS) ? '+ok' : '+no'); } catch(e) { f = 'err'; }
+document.documentElement.setAttribute('__rf', f);
+"@
+        if ((Get-Attr '__rf') -eq 'clean+ok') { return }
+        $err = Get-Attr '__calc'
+        if ($err) { throw "calculate failed: $err" }
+        # A modal blocks execScript outright, so a wedge would otherwise present
+        # as a silent hang. Checking it is a UI Automation call, so do it once a
+        # second rather than every pass.
+        if (($i % 20) -eq 19 -and $null -ne (Find-MacsModal)) {
+            throw "MACS raised a modal during the calculation"
+        }
+    }
+    throw "the calculation did not finish (flags: $(Get-Attr '__rf'))"
+}
+
+# Step 2. Build the report. Loading the print page WITHOUT ?Print=1 makes MACS
+# ask PrintMaster for a preview rather than a print, and a preview with no host
+# window is silent - measured: no dialog, no new window, no focus change. What
+# it leaves behind is a fully rendered report.
+function Show-PrintPage {
+    # Everything MACS's own StartPrint does on the way to this page except the
+    # ?Print=1. The settings it pushes are what PrintMaster reads when it prints,
+    # and without them the first print of a process reports success and spools
+    # nothing. Take the language from the same place it does, too.
+    Invoke-Js "document.documentElement.setAttribute('__pp','');"
+    Invoke-Js @"
+EnvCOM.SetParam ( 'Print', 'PrnFlags', PrnFlags );
+EnvCOM.SetParam ( 'Settings', 'Flags', Flags );
+var Lang = EnvCOM.GetParam ( 'Print', 'Lang', '0' );
+if ( Lang == '0' ) { Lang = EnvCOM.GetParam ( 'Settings', 'Lang', 'EN' ); }
+document.frames('PrintBody').navigate ( GetAbsPath ( Lang + '\\Support\\PrintP.htm' ));
+"@
+    for ($i = 0; $i -lt 600; $i++) {
+        Start-Sleep -Milliseconds 50
+        # An empty frame reports readyState 'complete' too, so check the URL as
+        # well - otherwise the first poll always passes. And the print element
+        # existing is not the same as its COM behaviour being attached, which
+        # lags on the first print of a process: ask it something. Skipping this
+        # loses exactly one run per MACS+ instance, silently.
+        Invoke-Js @"
+var s = '';
+try {
+  var f = document.frames('PrintBody');
+  var ready = 'notag';
+  try { ready = f.document.all.PrintMasterTag.GetVersion() ? 'live' : 'notag'; } catch(e2) { ready = 'attaching'; }
+  s = ('' + f.document.location) + '|' + f.document.readyState + '|' + ready;
+} catch(e) { s = 'err:' + e.message; }
+document.documentElement.setAttribute('__pp', s);
+"@
+        if ((Get-Attr '__pp') -match 'PrintP\.htm.*\|complete\|live') { return }
+    }
+    throw "the print page never finished rendering ($(Get-Attr '__pp'))"
+}
+
+# Step 3. Print it.
+function Invoke-SilentPrint {
+    # MACS's print page edits itself immediately *after* it calls Print - it
+    # hides the "Section size:" label and reveals the cellular-beam rows. The
+    # dialog route never shows those edits, because the page is captured at the
+    # moment Print is called. A print issued afterwards does show them, and the
+    # visible symptom is a report missing a field label. Put the page back the
+    # way its HTML declares it so both routes produce the same document.
+    Invoke-Js @"
+document.documentElement.setAttribute('__fix','');
+try {
+  var pd = document.frames('PrintBody').document;
+  if (!pd.all.Unprdim) { throw new Error('Unprdim missing - MACS version changed?'); }
+  pd.all.Unprdim.style.display = '';
+  var hide = ['UCellDiam','UTopT','UBotT','UBotDim'];
+  for (var i = 0; i < hide.length; i++) {
+    if (pd.all [hide[i]]) { pd.all [hide[i]].style.display = 'none'; }
+  }
+  // Reading the text forces the layout those style changes invalidated. The
+  // frame is hidden, so its height is always 0 - the text is the signal that
+  // there is a report here at all.
+  document.documentElement.setAttribute('__fix','ok:' + pd.body.innerText.length);
+} catch(e) { document.documentElement.setAttribute('__fix','err:' + e.message); }
+"@
+    $fix = Get-Attr '__fix'
+    if ($fix -notmatch '^ok:[1-9]\d*$') { throw "the report has no text to print: $fix" }
+
+    # Ask PrintMaster which printer it is about to use. Worth asserting on its
+    # own - the wrong answer means a batch going to paper - and it is also what
+    # binds the device: without this read, the first print in a process reports
+    # success and spools nothing, costing one run per MACS+ instance.
+    Invoke-Js @"
+var s = '';
+try {
+  var pm = document.frames('PrintBody').document.all.PrintMaster;
+  s = '' + pm.GetVersion() + '|' + pm.DefaultPrinter;
+} catch(e) { s = 'err:' + e.message; }
+document.documentElement.setAttribute('__pr', s);
+"@
+    $pm = Get-Attr '__pr'
+    if ($pm -notmatch '^(?<ver>[^|]+)\|(?<printer>.*)$') {
+        throw "PrintMaster did not answer: $pm"
+    }
+    if ($Matches.printer -ne $PrinterName) {
+        throw "PrintMaster would print to '$($Matches.printer)', not '$PrinterName'"
+    }
+
+    # Same template and preview flag MACS passes; only the prompt differs.
+    # Deferred through setTimeout because Print blocks the script engine until
+    # the spooler has the document, and a blocked engine blocks execScript too.
+    Invoke-Js @"
+document.documentElement.setAttribute('__sp','');
+window.setTimeout(function(){
+  try {
+    var pf  = document.frames('PrintBody');
+    var tpl = (( pf.TopWin.PrnFlags & pf.PRN_MSIETEMPLATE ) ? '' : pf.TopWin.GetAbsPath ( 'Support\\PrintPreview.htm ' ));
+    document.documentElement.setAttribute('__sp', 'ret=' + pf.document.all.PrintMasterTag.Print ( tpl, false, false ));
+  } catch(e) { document.documentElement.setAttribute('__sp','err:' + e.message); }
+}, 10);
+"@
+}
 
 function Invoke-Run($entry) {
     $target = Join-Path $OutDir "$($entry.name).pdf"
@@ -200,6 +424,30 @@ function Invoke-Run($entry) {
         if ([math]::Abs($got - [double]$entry.expect.qf) -gt 0.001) {
             throw "loaded qf $got but expected $($entry.expect.qf)"
         }
+    }
+
+    if (-not $UseDialog) {
+        # No dialog on this path, so nothing to park and no focus to give back.
+        Invoke-Calc
+        Show-PrintPage
+
+        # The first print of a MACS+ process is not trustworthy: it arrives late
+        # or not at all, and when it does arrive it carries the page as it was
+        # before the layout was put back - a report quietly missing a field
+        # label. Spend it on purpose and bin the output. Costs ~1.5 s per
+        # instance; not doing it costs one wrong PDF per instance.
+        if (-not $script:warm) {
+            Invoke-SilentPrint
+            Clear-Spool | Out-Null
+            $script:warm = $true
+        }
+
+        if (Test-Path $script:spool) { [System.IO.File]::Delete($script:spool) }
+        Invoke-SilentPrint
+        # Deliberately not reporting what Print returned on failure: reading it
+        # back would block for as long as a wedged print does, turning a run
+        # that fails in 40 s into a batch that hangs.
+        return (Complete-Print $target)
     }
 
     # Whatever the user is typing into, captured before the print dialog exists.
@@ -258,23 +506,7 @@ function Invoke-Run($entry) {
     # Invoking can re-activate the dialog, and it activates again as it closes.
     Restore-Foreground $userWindow
 
-    for ($i = 0; $i -lt 400; $i++) {
-        Start-Sleep -Milliseconds 100
-        if (Test-Path $script:spool) {
-            if ((Wait-FileReady $script:spool) -eq 0) { throw "spool never released" }
-            # The spooler can hold the handle briefly after the last byte, and
-            # a non-terminating Move-Item failure would log this run as "ok"
-            # with nothing behind it.
-            for ($m = 0; $m -lt 25; $m++) {
-                try { Move-Item $script:spool $target -Force -ErrorAction Stop; break }
-                catch { Start-Sleep -Milliseconds 200 }
-            }
-            if (-not (Test-Path $target)) { throw "could not move the spooled file" }
-            if ((Get-Item $target).Length -lt 1000) { throw "spooled file is empty" }
-            return (Get-Item $target).Length
-        }
-    }
-    throw "no PDF appeared"
+    return (Complete-Print $target)
 }
 
 # ------------------------------------------------------------------- main ---
@@ -310,7 +542,7 @@ if ($prevDefault -eq $PrinterName) { $prevDefault = "Microsoft Print to PDF" }
     Invoke-CimMethod -MethodName SetDefaultPrinter | Out-Null
 
 $seed = $mf.runs[0].frc
-$script:app = Start-MacsInstance $seed
+$script:app = Start-MacsInstance $seed; $script:warm = $false
 Write-Host "MACS+ up; replaying $($mf.runs.Count) runs from batch $($mf.batch_id)"
 
 $done = 0; $failed = 0; $skipped = 0; $restarts = 0; $stopped = $false
@@ -337,7 +569,7 @@ try {
         # Recycling early turns that into a planned few seconds.
         if ($RecycleEvery -gt 0 -and $sinceStart -ge $RecycleEvery) {
             Write-Host "  recycling MACS+ after $sinceStart runs"
-            $script:app = Start-MacsInstance $seed
+            $script:app = Start-MacsInstance $seed; $script:warm = $false
             $sinceStart = 0
             $recycles++
         }
@@ -355,7 +587,7 @@ try {
                 $restarts++
                 Write-Warning "$($entry.name): $first - restarting MACS+ (restart $restarts/$MaxRestarts)"
                 try {
-                    $script:app = Start-MacsInstance $seed
+                    $script:app = Start-MacsInstance $seed; $script:warm = $false
                     $sinceStart = 0
                     $bytes = Invoke-Run $entry
                     $sinceStart++

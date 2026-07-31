@@ -4,21 +4,33 @@ Produce one genuine MACS+ report PDF per run for a finished batch, so a 10,000-r
 job has vendor evidence on file. Output is indistinguishable from the reference
 corpus apart from `/Author` (the Windows username) and the timestamp.
 
-Roughly **4–5 s per run**, so a full 10k batch is ~11–14 hours and ~4.3 GB. i-macs
+Roughly **3.5 s per run**, so a full 10k batch is ~10 hours and ~4.2 GB. i-macs
 itself already produces the numbers in 1.3 s/run; this adds the vendor's
 presentation and an independent audit trail, not extra numerical authority.
 
-## Why a dedicated machine
+## It does not take the keyboard
 
-The replay needs an **interactive logged-on Windows session** — the print dialog is
-an `explorer.exe`-hosted window that does not exist in a service or SSH session. It
-can't be a background service, and it runs for hours. A machine that is free
-anytime (TinyBot) beats fitting it around someone's working day.
+No print dialog is ever raised. MACS's print page ends with
 
-It does **not** steal focus: the dialog is driven through UI Automation and parked
-off-screen, and Windows' foreground lock prevents a background process taking
-focus from whatever you are using. It does change the default printer for the
-duration, so anything printed meanwhile lands in the spool file.
+```js
+PrintMasterTag.Print ( template, /*preview*/ ..., /*prompt*/ true )
+```
+
+and that hardcoded `true` is the dialog. The runner reaches the same call with
+`false`, which prints straight to the default printer — nothing appears, and
+nothing is taken from whoever is using the machine. Getting there means doing
+the two things MACS's own `Print()` does on the way: run the analysis, then load
+the print page *without* `?Print=1` (which asks PrintMaster for a preview, and a
+preview with no host window is silent).
+
+`-UseDialog` restores the old route, which is slower and takes focus once per
+run. It is kept because the existing corpus was printed that way, so the two can
+be compared — see `--compare-to` below.
+
+The replay still wants a machine that is free for hours, and it changes the
+default printer for the duration, so anything printed meanwhile lands in the
+spool file. Whether it now also runs in a non-interactive session is untested;
+the dialog was the only thing that provably required one.
 
 ## Usage
 
@@ -36,35 +48,16 @@ python tools\macs_replay\export_batch.py --batch-id <id> --out export\
 
 # 4. Verify before anyone relies on it
 python tools\macs_replay\verify_replay.py --manifest export\manifest.json --pdfs pdfs\
+
+# 5. And, when a route changes, against PDFs printed the old way
+python tools\macs_replay\verify_replay.py --manifest export\manifest.json --pdfs pdfs\ ^
+       --compare-to old_pdfs\
 ```
 
-### It will take the keyboard occasionally
-
-The print dialog takes focus when it is *created*, once per run. Parking it
-off-screen is a visual fix only — moving a window does not hand focus back — so
-the runner captures the foreground window before printing and restores it as
-soon as the dialog appears. That cuts interference to roughly 3% of wall clock,
-which is noticeable if you are typing but not disruptive.
-
-**It cannot currently be reduced to zero on a machine you are using.** Two
-routes were tried and both are closed:
-
-- *Windows' foreground lock.* Already at maximum (`ForegroundLockTimeout` =
-  2147483647) and the dialog steals focus regardless — it is hosted by
-  explorer.exe, and the shell is exempt from those rules.
-- *An isolated desktop* (`CreateDesktop` + launching the runner there with
-  `STARTUPINFO.lpDesktop`). MACS+ itself starts and attaches fine on a created
-  desktop, so this looked promising. But the print dialog never appears there:
-  it is an explorer-hosted `ApplicationFrameWindow`, and explorer does not run
-  on a created desktop. Every run fails with `no print dialog`. Measured, not
-  assumed. Note `SetThreadDesktop` also cannot be used from PowerShell's own
-  thread — it fails with "the requested resource is in use" once a thread owns
-  windows, which the host thread does.
-
-So a long batch still wants a machine nobody is typing on. If someone finds a
-way to print without the dialog — a silent `ExecWB(OLECMDID_PRINT,
-DONTPROMPTUSER)` rather than `Print(105)` — the isolated desktop becomes viable
-and this whole problem goes away.
+`--compare-to` diffs the report text run by run, ignoring only the printed
+timestamp. It is how the silent route was accepted: over 120 consecutive runs,
+119 came out identical to the same runs printed through the dialog, and the one
+that differed was the *old* PDF being truncated.
 
 ### Pausing
 
@@ -112,6 +105,28 @@ something with no matching property in the seed, `export_batch.py` stops. Add th
 correct MACS property name to `COLUMN_ALIASES` — never drop it, or the PDFs will
 silently not reflect it.
 
+**The print page edits itself after it calls Print.** `OnInitPrintPage` hides the
+`Section size:` label (`Unprdim`) and reveals the cellular-beam rows *after*
+handing the page to PrintMaster. The dialog route never shows those edits,
+because the page is captured when Print is called; a print issued any later
+does. Symptom: a report identical to the corpus except for one missing field
+label. The runner puts those five elements back the way the HTML declares them
+before printing. `--compare-to` is what catches it.
+
+**The first print of a MACS+ process is not trustworthy.** It arrives late, or
+not at all, or carries the page as it was before those elements were fixed. The
+runner spends it deliberately and bins the output, once per instance, which
+costs a second or two. Without that you get one quietly wrong PDF per instance —
+and with recycling that is one per 60 runs.
+
+**The old dialog route truncated a PDF at every wedge point.** 8 of the first 755
+PDFs printed that way are 1 or 3 pages instead of 4, at runs 94, 181, 268, 355,
+502, 589, 676 and 762 — ~87 apart, which is the interval at which an instance
+wedges. They were logged `ok` because a file appeared and was over 1 kB. Only
+`verify_replay.py` catches this, which is why it is step 4 and not optional.
+Silent printing does not wedge: 120 consecutive runs in one instance, no
+recycling, no failures.
+
 **`AppSupport.dll` must be registered.** The installer's `RegisterDLL.exe` only runs
 RegAsm on FRACOF, so on some installs MACS+ exits 0 with no window and no error
 because it cannot create `ECSuite.EnvCOM`. `Test-ReplayHost.ps1 -Fix` registers it
@@ -124,7 +139,7 @@ because it cannot create `ECSuite.EnvCOM`. `Test-ReplayHost.ps1 -Fix` registers 
 | `Test-ReplayHost.ps1` | host preflight: session, install, COM registration, DPI, printer, disk |
 | `export_batch.py` | batch → per-run `.frc` + `manifest.json`, with the seed and parameter checks |
 | `Invoke-MacsReplay.ps1` | drives MACS+: `LoadJob` → `Print` → parked dialog → PDF. Resumable, restarts a dead instance |
-| `verify_replay.py` | structure, input round-trip, off-by-one, chart geometry. `--self-test <pdf>` for the scaling check alone |
+| `verify_replay.py` | structure, input round-trip, off-by-one, chart geometry. `--self-test <pdf>` for the scaling check alone, `--compare-to <dir>` to diff against PDFs printed another way |
 | `MacsDom.ps1` | cross-process DOM attach helpers |
 
 `build_replay_frc` lives in `macs_automation/replay_frc.py` (tested in
@@ -140,9 +155,11 @@ real global scope. The replay calls MACS's own `LoadJob(path)` to re-seed a runn
 instance per run — so every input comes from the file and any varying parameter is
 covered without mapping parameters onto form controls.
 
-Printing goes through MACS's own `Print(105)`, which validates, runs the analysis,
-and only prints once `CALCSUCCESS` is set — so a PDF appearing is itself evidence
-the calculation succeeded. Output is silent because the printer is bound to a file
-port.
+`-UseDialog` prints through MACS's own `Print(105)`, which validates, runs the
+analysis, and only prints once `CALCSUCCESS` is set — so a PDF appearing is itself
+evidence the calculation succeeded. The default route does those steps separately
+— MACS's `Calc.htm`, then the print page, then `PrintMaster.Print` — so it asserts
+`CALCSUCCESS` outright rather than inferring it. Output lands in a file because
+the printer is bound to a file port.
 
 No MACS source is copied here; the scripts only call into a licensed local install.
