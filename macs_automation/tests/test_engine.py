@@ -165,6 +165,43 @@ class TestSetInputs:
         assert mock_engine.engine._props["uSecDiam"] == 0
 
 
+class TestReadOutputs:
+    """_read_outputs() reads scalar outputs off the live COM engine.
+
+    Regression coverage for mb1_reqd/mb2_reqd: the real FRACOF property names
+    are Mb1_Reqd_1 / Mb2_Reqd_1 (confirmed by enumerating the live COM
+    interface's ITypeInfo) — the FillPerim1Beam report table in MACS+'s own
+    PrintP.js reads the same two properties to derive each perimeter side's
+    "Required moment resistance" and "Line load in fire situation".
+    """
+
+    @pytest.fixture
+    def mock_engine(self):
+        eng = MACSEngine.__new__(MACSEngine)  # skip __init__
+        eng.engine = FakeCOMProxy()
+        eng.engine_version = None
+        eng.engine.COMPFAILURE = 0
+        eng.engine.time_intervals_count = 0
+        for side in ("A", "B", "C", "D"):
+            setattr(eng.engine, f"Side{side}LoadRatio", 0.0)
+            setattr(eng.engine, f"Side{side}CriticalTemp", 0.0)
+        return eng
+
+    def test_mb1_reqd_reads_the_real_com_property(self, mock_engine):
+        mock_engine.engine.Mb1_Reqd_1 = 167.61
+        result = mock_engine._read_outputs()
+        assert result["mb1_reqd"] == pytest.approx(167.61)
+
+    def test_mb2_reqd_reads_the_real_com_property(self, mock_engine):
+        mock_engine.engine.Mb2_Reqd_1 = 105.06
+        result = mock_engine._read_outputs()
+        assert result["mb2_reqd"] == pytest.approx(105.06)
+
+    def test_mb1_reqd_defaults_to_zero_when_absent(self, mock_engine):
+        result = mock_engine._read_outputs()
+        assert result["mb1_reqd"] == 0.0
+
+
 class TestComRunnerIsolation:
     """run_one_com spawns com_runner as a subprocess so a FRACOF/COM crash
     or any unhandled exception inside _run_one() can't take down the parent

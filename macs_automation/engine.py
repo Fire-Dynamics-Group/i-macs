@@ -314,8 +314,8 @@ class MACSEngine:
 
         # Summary outputs (Calc.js lines 343-349); try name variants for MACS+ version differences
         result["comp_failure"] = int(eng.COMPFAILURE)
-        result["mb1_reqd"] = self._get_output("Mb1_Reqd", "Mb1Reqd", "mb1_reqd")
-        result["mb2_reqd"] = self._get_output("Mb2_Reqd", "Mb2Reqd", "mb2_reqd")
+        result["mb1_reqd"] = self._get_output("Mb1_Reqd_1", "Mb1_Reqd", "Mb1Reqd", "mb1_reqd")
+        result["mb2_reqd"] = self._get_output("Mb2_Reqd_1", "Mb2_Reqd", "Mb2Reqd", "mb2_reqd")
         result["factored_hot"] = self._get_output("factored_hot", "Factored_hot")
 
         # Perimeter beam results (Calc.js lines 407-414)
