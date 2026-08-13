@@ -4,6 +4,7 @@ import { useQuery } from "@tanstack/react-query";
 
 import { getRun, getRunTimeseries, type Run, type TimeSeriesRow } from "../api/client";
 import { CheckBreakdown } from "../components/CheckBreakdown";
+import { GoverningCriticalTempCard } from "../components/GoverningCriticalTempCard";
 import { PerimeterBeamCheck } from "../components/PerimeterBeamCheck";
 import { RunSetupPanel } from "../components/BatchSetupPanel";
 import { frcLabel } from "../lib/batchLabel";
@@ -60,6 +61,9 @@ export default function RunDetailPage() {
       {runQuery.data && <RunSummary run={runQuery.data} />}
       {runQuery.data && !runQuery.data.error && (
         <CheckBreakdown checks={runQuery.data.checks ?? []} />
+      )}
+      {runQuery.data && !runQuery.data.error && (
+        <GoverningCriticalTempCard run={runQuery.data} />
       )}
       {runQuery.data && !runQuery.data.error && (
         <PerimeterBeamCheck run={runQuery.data} />
