@@ -1583,7 +1583,20 @@ def main(argv: Optional[list[str]] = None) -> None:
     parser = argparse.ArgumentParser(prog="macs_automation", description="MACS+ Automation sidecar")
     parser.add_argument("--port", type=int, default=8000, help="HTTP port to bind")
     parser.add_argument("--log-dir", type=str, default=None, help="Directory for sidecar.log (rotating, 5 MB × 5)")
+    parser.add_argument(
+        "--worker",
+        action="store_true",
+        help="Headless worker mode: poll/claim macs-batch jobs (requires "
+             "MACS_JOBS_URL and MACS_JOBS_TOKEN). Same as MACS_WORKER=1.",
+    )
     args = parser.parse_args(argv)
+
+    if args.worker or os.environ.get("MACS_WORKER") == "1":
+        # Headless worker mode (issue #44). The GUI sidecar never sets this;
+        # an always-on box starts the same exe with --worker.
+        from macs_automation.worker.cli import main as worker_main
+        worker_main()
+        return
 
     if args.log_dir:
         _configure_file_logging(args.log_dir)

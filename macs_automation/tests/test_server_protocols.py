@@ -19,6 +19,7 @@ import macs_automation.app as app_module
 
 def test_uvicorn_runs_with_explicit_protocols(monkeypatch):
     captured = {}
+    monkeypatch.delenv("MACS_WORKER", raising=False)
 
     def fake_run(app, **kwargs):
         captured.update(kwargs)
@@ -31,3 +32,45 @@ def test_uvicorn_runs_with_explicit_protocols(monkeypatch):
     assert captured["http"] == "h11"
     assert captured["ws"] == "none"
     assert captured["port"] == 8123
+
+
+def test_worker_flag_starts_headless_worker_not_uvicorn(monkeypatch):
+    """`--worker` is the sidecar's headless mode (issue #44)."""
+    captured = {}
+
+    def fake_run(*args, **kwargs):
+        captured["uvicorn"] = True
+
+    def fake_worker_main():
+        captured["worker"] = True
+
+    import uvicorn
+    import macs_automation.worker.cli as worker_cli
+
+    monkeypatch.setattr(uvicorn, "run", fake_run)
+    monkeypatch.setattr(worker_cli, "main", fake_worker_main)
+    app_module.main(["--worker"])
+
+    assert captured.get("worker") is True
+    assert "uvicorn" not in captured
+
+
+def test_macs_worker_env_starts_headless_worker_not_uvicorn(monkeypatch):
+    captured = {}
+
+    def fake_run(*args, **kwargs):
+        captured["uvicorn"] = True
+
+    def fake_worker_main():
+        captured["worker"] = True
+
+    import uvicorn
+    import macs_automation.worker.cli as worker_cli
+
+    monkeypatch.setenv("MACS_WORKER", "1")
+    monkeypatch.setattr(uvicorn, "run", fake_run)
+    monkeypatch.setattr(worker_cli, "main", fake_worker_main)
+    app_module.main(["--port", "8123"])
+
+    assert captured.get("worker") is True
+    assert "uvicorn" not in captured
