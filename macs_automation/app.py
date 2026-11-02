@@ -113,6 +113,9 @@ app.add_middleware(
     expose_headers=["Content-Disposition"],
 )
 
+from macs_automation.upload_canvas_router import router as upload_canvas_router
+app.include_router(upload_canvas_router)
+
 # ─── Reference data (loaded once at startup) ─────────────────────────────────
 _ref_data: Optional[dict] = None
 

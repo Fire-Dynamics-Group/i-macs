@@ -1,0 +1,120 @@
+import { describe, it, expect, vi, beforeEach } from "vitest";
+import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { UploadCanvasPanel } from "./UploadCanvasPanel";
+import * as client from "../api/client";
+
+vi.mock("../api/client", async () => {
+  const actual = await vi.importActual("../api/client");
+  return {
+    ...actual,
+    getUploadCanvasSummary: vi.fn(),
+    createUploadCanvasHandoff: vi.fn(),
+    searchUploadCanvasProjects: vi.fn(),
+    linkUploadCanvasProject: vi.fn(),
+    unlinkUploadCanvasProject: vi.fn(),
+    pushUploadCanvasRun: vi.fn(),
+  };
+});
+
+// Mock window.open / opener
+vi.stubGlobal("open", vi.fn());
+
+function renderPanel(jobId = "batch-100") {
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  });
+  return render(
+    <QueryClientProvider client={queryClient}>
+      <UploadCanvasPanel jobId={jobId} />
+    </QueryClientProvider>,
+  );
+}
+
+describe("UploadCanvasPanel", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("renders 'Open in Upload Canvas' when unlinked and opens chooser modal", async () => {
+    vi.mocked(client.getUploadCanvasSummary).mockResolvedValue({
+      job_id: "batch-100",
+      imacs_job_id: "imacs-uuid-1",
+      summary: null,
+    });
+
+    renderPanel("batch-100");
+
+    await waitFor(() => {
+      expect(
+        screen.getByRole("button", { name: /Open in Upload Canvas/i }),
+      ).toBeInTheDocument();
+    });
+
+    // Click button to open chooser modal
+    fireEvent.click(
+      screen.getByRole("button", { name: /Open in Upload Canvas/i }),
+    );
+
+    expect(screen.getByText(/Create new project/i)).toBeInTheDocument();
+    expect(screen.getByText(/Link to existing project/i)).toBeInTheDocument();
+  });
+
+  it("handles new project handoff creation", async () => {
+    vi.mocked(client.getUploadCanvasSummary).mockResolvedValue({
+      job_id: "batch-100",
+      imacs_job_id: "imacs-uuid-1",
+      summary: null,
+    });
+    vi.mocked(client.createUploadCanvasHandoff).mockResolvedValue({
+      handoff_id: "h-xyz",
+      url: "http://localhost:3000/?handoff=h-xyz",
+    });
+
+    renderPanel("batch-100");
+
+    await waitFor(() => {
+      expect(
+        screen.getByRole("button", { name: /Open in Upload Canvas/i }),
+      ).toBeInTheDocument();
+    });
+
+    fireEvent.click(
+      screen.getByRole("button", { name: /Open in Upload Canvas/i }),
+    );
+
+    const newProjBtn = screen.getByRole("button", {
+      name: /Create new project/i,
+    });
+    fireEvent.click(newProjBtn);
+
+    await waitFor(() => {
+      expect(client.createUploadCanvasHandoff).toHaveBeenCalledWith(
+        "batch-100",
+      );
+    });
+  });
+
+  it("renders linked project summary and 'Open project' button when linked", async () => {
+    vi.mocked(client.getUploadCanvasSummary).mockResolvedValue({
+      job_id: "batch-100",
+      imacs_job_id: "imacs-uuid-1",
+      summary: {
+        project_id: "p-abc",
+        project_name: "Birmingham Depot TEQ",
+        last_sent_at: "2026-11-02T14:30:00Z",
+        outcome: null,
+      },
+    });
+
+    renderPanel("batch-100");
+
+    await waitFor(() => {
+      expect(screen.getByText("Birmingham Depot TEQ")).toBeInTheDocument();
+      expect(screen.getByText(/No time-eq run yet/i)).toBeInTheDocument();
+      expect(
+        screen.getByRole("button", { name: /Open project/i }),
+      ).toBeInTheDocument();
+    });
+  });
+});

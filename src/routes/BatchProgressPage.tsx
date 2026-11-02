@@ -23,6 +23,7 @@ const EXPORT_HINTS: Record<ExportMode, string> = {
 };
 import { BatchHeading } from "../components/BatchHeading";
 import { BatchSetupPanel } from "../components/BatchSetupPanel";
+import { UploadCanvasPanel } from "../components/UploadCanvasPanel";
 import PdfEvidencePanel from "../components/PdfEvidencePanel";
 import { batchLabel } from "../lib/batchLabel";
 import { governingCriticalTemp } from "../lib/governingCriticalTemp";
@@ -349,6 +350,8 @@ function AnalyticalView({ batch }: { batch: BatchSummary }) {
       ) : null}
 
       <BatchSetupPanel batchId={batch.batch_id} />
+
+      <UploadCanvasPanel jobId={batch.batch_id} />
 
       <ShearConnectionPanel batchId={batch.batch_id} />
 
