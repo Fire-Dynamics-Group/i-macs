@@ -31,7 +31,12 @@ def _get_client(db: ResultsDB = Depends(_get_db)) -> UploadCanvasClient:
 
 def _get_latest_run_for_job(db: ResultsDB, job_id: str) -> dict:
     # First try batch_id
-    runs = db.get_runs_for_batch(job_id)
+    if hasattr(db, "get_batch_runs"):
+        runs = db.get_batch_runs(job_id)
+    elif hasattr(db, "get_runs_for_batch"):
+        runs = db.get_runs_for_batch(job_id)
+    else:
+        runs = []
     if runs:
         # Get the latest completed run without error, or simply the last run
         completed = [r for r in runs if not r.get("error")]
