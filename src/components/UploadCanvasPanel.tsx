@@ -105,9 +105,31 @@ export function UploadCanvasPanel({ jobId }: UploadCanvasPanelProps) {
 
   const formatOutcome = (outcome: Record<string, unknown> | null) => {
     if (!outcome) return "No time-eq run yet";
-    const status = outcome.status || (outcome.overall_pass ? "Pass" : "Fail");
-    const teq = outcome.teq !== undefined ? `${outcome.teq} min` : "";
-    return `${status}${teq ? ` (${teq})` : ""}`;
+    if (typeof outcome.reliabilityPercent === "number") {
+      const fr = outcome.frPeriod
+        ? ` (FR ${outcome.frPeriod} min)`
+        : outcome.unprotected
+          ? " (unprotected)"
+          : "";
+      return `${outcome.reliabilityPercent}% reliability${fr}`;
+    }
+    if (typeof outcome.reliability === "number") {
+      const pct = Math.round(outcome.reliability * 100);
+      const fr = outcome.frPeriod
+        ? ` (FR ${outcome.frPeriod} min)`
+        : outcome.unprotected
+          ? " (unprotected)"
+          : "";
+      return `${pct}% reliability${fr}`;
+    }
+    if (outcome.teq !== undefined) {
+      return `${outcome.teq} min`;
+    }
+    const status =
+      outcome.status ||
+      (outcome.overall_pass ? "Pass" : outcome.overall_pass === false ? "Fail" : null);
+    if (status) return String(status);
+    return "Completed";
   };
 
   return (

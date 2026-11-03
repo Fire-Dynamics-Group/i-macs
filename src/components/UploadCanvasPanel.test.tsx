@@ -117,4 +117,26 @@ describe("UploadCanvasPanel", () => {
       ).toBeInTheDocument();
     });
   });
+
+  it("renders formatted reliability outcome when completed", async () => {
+    vi.mocked(client.getUploadCanvasSummary).mockResolvedValue({
+      job_id: "batch-100",
+      imacs_job_id: "imacs-uuid-1",
+      summary: {
+        project_id: "p-abc",
+        project_name: "Birmingham Depot TEQ",
+        last_sent_at: "2026-11-02T14:30:00Z",
+        outcome: {
+          reliabilityPercent: 98.5,
+          frPeriod: 60,
+        },
+      },
+    });
+
+    renderPanel("batch-100");
+
+    await waitFor(() => {
+      expect(screen.getByText("98.5% reliability (FR 60 min)")).toBeInTheDocument();
+    });
+  });
 });

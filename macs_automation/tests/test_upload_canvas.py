@@ -161,8 +161,22 @@ def test_sidecar_handoff_and_link_endpoints():
         res_link = api.post("/api/imacs/jobs/batch-1/upload-canvas-link", json={"project_id": "p-1"})
         assert res_link.status_code == 200
         assert res_link.json()["status"] == "linked"
+        assert res_link.json()["url"] == "http://localhost:3000/?project=p-1"
 
-        # 4. Unlink project
+        # 4. Push run
+        with patch("macs_automation.upload_canvas.UploadCanvasClient.get_summary") as mock_summary:
+            mock_summary.return_value = {
+                "project_id": "p-1",
+                "project_name": "TimeEq Project 1",
+                "last_sent_at": None,
+                "outcome": None,
+            }
+            res_push = api.post("/api/imacs/jobs/batch-1/upload-canvas-push")
+            assert res_push.status_code == 200
+            assert res_push.json()["status"] == "pushed"
+            assert res_push.json()["url"] == "http://localhost:3000/?project=p-1"
+
+        # 5. Unlink project
         res_unlink = api.delete("/api/imacs/jobs/batch-1/upload-canvas-link")
         assert res_unlink.status_code == 200
         assert res_unlink.json()["status"] == "unlinked"

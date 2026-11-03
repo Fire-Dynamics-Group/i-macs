@@ -160,7 +160,7 @@ def link_project(
         return {
             "status": "linked",
             "project_id": body.project_id,
-            "url": f"{client.upload_canvas_url}/",
+            "url": f"{client.upload_canvas_url}/?project={body.project_id}",
         }
     except UploadCanvasError as e:
         raise HTTPException(status_code=e.status_code, detail=str(e))
@@ -204,7 +204,7 @@ def push_run(
         return {
             "status": "pushed",
             "project_id": project_id,
-            "url": f"{client.upload_canvas_url}/",
+            "url": f"{client.upload_canvas_url}/?project={project_id}",
         }
     except UploadCanvasError as e:
         raise HTTPException(status_code=e.status_code, detail=str(e))
