@@ -146,6 +146,7 @@ fn spawn_sidecar(
             &port.to_string(),
             "--log-dir",
             &log_dir_str,
+            "--reload",
         ])
         .env("MACS_APP_VERSION", &app_version)
         .current_dir(&project_root)

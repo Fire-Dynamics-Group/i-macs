@@ -258,6 +258,14 @@ def build_macs_batch_payload(db: ResultsDB, batch_id: str) -> Optional[dict[str,
     except Exception as e:
         print(f"Warning: failed to render batch charts: {e}")
 
+    summary = {
+        "total_runs": run_count,
+        "pass_count": pass_count,
+        "fail_count": fail_count,
+        "error_count": error_count,
+        "reliability_percent": reliability_percent,
+    }
+
     return {
         "batch_id": str(batch_id),
         "name": batch.get("name") or f"Batch {str(batch_id)[:8]}",
@@ -266,6 +274,7 @@ def build_macs_batch_payload(db: ResultsDB, batch_id: str) -> Optional[dict[str,
         "fail_count": fail_count,
         "error_count": error_count,
         "reliability_percent": reliability_percent,
+        "summary": summary,
         "setup": setup,
         "shear_check": shear_check,
         "charts": charts,
