@@ -89,8 +89,9 @@ def build_macs_run_payload(
     imacs_job_id: str,
     label: Optional[str] = None,
     version: Optional[str] = None,
+    db: Optional[ResultsDB] = None,
 ) -> dict[str, Any]:
-    """Build a validated fd-macs-reliability/1 dictionary from a local run row."""
+    """Build a validated fd-macs-reliability/2 dictionary from a local run row."""
     # Find governing perimeter beam side (lowest positive critical temp)
     sides = ["a", "b", "c", "d"]
     candidates = []
@@ -127,11 +128,55 @@ def build_macs_run_payload(
     inputs = {
         str(k): v
         for k, v in run_row.items()
-        if k not in ("time_series", "checks") and v is not None and isinstance(v, (int, float, str, bool))
+        if k not in ("time_series", "checks", "outputs") and v is not None and isinstance(v, (int, float, str, bool))
     }
 
+    # Summary outputs and perimeter beam results
+    outputs = {
+        "comp_failure": run_row.get("comp_failure"),
+        "mb1_reqd": run_row.get("mb1_reqd"),
+        "mb2_reqd": run_row.get("mb2_reqd"),
+        "factored_hot": run_row.get("factored_hot"),
+        "uf_max": run_row.get("uf_max"),
+        "max_temperature": run_row.get("max_temperature"),
+        "max_deflection": run_row.get("max_deflection"),
+        "max_slab_cap": run_row.get("max_slab_cap"),
+        "max_beam_cap": run_row.get("max_beam_cap"),
+        "max_total_cap": run_row.get("max_total_cap"),
+        "side_a_load_ratio": run_row.get("side_a_load_ratio"),
+        "side_a_critical_temp": run_row.get("side_a_critical_temp"),
+        "side_b_load_ratio": run_row.get("side_b_load_ratio"),
+        "side_b_critical_temp": run_row.get("side_b_critical_temp"),
+        "side_c_load_ratio": run_row.get("side_c_load_ratio"),
+        "side_c_critical_temp": run_row.get("side_c_critical_temp"),
+        "side_d_load_ratio": run_row.get("side_d_load_ratio"),
+        "side_d_critical_temp": run_row.get("side_d_critical_temp"),
+        "duration_ms": run_row.get("duration_ms"),
+        "engine_version": run_row.get("engine_version"),
+    }
+    if isinstance(run_row.get("outputs"), dict):
+        outputs.update(run_row["outputs"])
+
+    # Checks
+    checks = run_row.get("checks")
+    if not checks:
+        try:
+            from macs_automation.status import compute_status
+            st = compute_status(run_row)
+            checks = st.get("checks") or []
+        except Exception:
+            checks = []
+
+    # Time series
+    time_series = run_row.get("time_series") or []
+    if not time_series and db and run_row.get("id"):
+        try:
+            time_series = db.get_time_series(int(run_row["id"]))
+        except Exception:
+            time_series = []
+
     return {
-        "schema": "fd-macs-reliability/1",
+        "schema": "fd-macs-reliability/2",
         "critical_temp": float(critical_temp),
         "section_factor": float(sec_factor),
         "governing_side": governing_side_upper,
@@ -144,7 +189,86 @@ def build_macs_run_payload(
         "run_id": str(run_row.get("uuid") or run_row.get("id") or uuid.uuid4()),
         "label": label or run_row.get("name") or "MACS Run",
         "inputs": inputs,
+        "outputs": outputs,
+        "checks": checks,
+        "time_series": time_series,
         "imacs_job_id": str(imacs_job_id),
+    }
+
+
+def build_macs_batch_payload(db: ResultsDB, batch_id: str) -> Optional[dict[str, Any]]:
+    """Build a validated macs_batch payload containing summary, setup, shear check, and 4 charts."""
+    batches = db.get_batches()
+    batch = next((b for b in batches if str(b.get("batch_id")) == str(batch_id)), None)
+    if not batch:
+        return None
+
+    runs = db.get_batch_runs(batch_id)
+    if not runs:
+        return None
+
+    run_count = len(runs)
+    stats = db.get_batch_stats(batch_id) if hasattr(db, "get_batch_stats") else {}
+    pass_count = stats.get("pass_count", batch.get("pass_count", 0))
+    error_count = stats.get("errors", batch.get("error_count", 0))
+    fail_count = stats.get("fail_count", max(0, run_count - pass_count - error_count))
+    reliability_percent = round((pass_count / run_count) * 100.0, 2) if run_count > 0 else 0.0
+
+    from macs_automation.batch_setup import derive_setup
+    setup = derive_setup(runs)
+
+    from macs_automation.shear_check import flags_for_run
+    sub_limit = [
+        {"run_id": r.get("id"), "flags": flags}
+        for r in runs
+        if (flags := flags_for_run(r))
+    ]
+    shear_check = {
+        "batch_id": str(batch_id),
+        "checked": run_count,
+        "sub_limit_runs": sub_limit,
+    }
+
+    import base64
+    import tempfile
+    from pathlib import Path
+    from macs_automation.report import _render_house_charts
+
+    charts: dict[str, Optional[str]] = {
+        "scatter": None,
+        "totalCapacity": None,
+        "beamTemp": None,
+        "meshTemp": None,
+    }
+
+    try:
+        with tempfile.TemporaryDirectory(prefix="macs_batch_charts_") as tmp_dir_str:
+            tmp_dir = Path(tmp_dir_str)
+            _render_house_charts(db, batch_id, suffix="report", output_dir=tmp_dir)
+
+            chart_files = {
+                "scatter": tmp_dir / "scatter_fail_pass_report.png",
+                "totalCapacity": tmp_dir / "total_cap_graph_report.png",
+                "beamTemp": tmp_dir / "beam_temp_graph_report.png",
+                "meshTemp": tmp_dir / "mesh_temp_graph_report.png",
+            }
+            for k, p in chart_files.items():
+                if p.exists():
+                    charts[k] = base64.b64encode(p.read_bytes()).decode("ascii")
+    except Exception as e:
+        print(f"Warning: failed to render batch charts: {e}")
+
+    return {
+        "batch_id": str(batch_id),
+        "name": batch.get("name") or f"Batch {str(batch_id)[:8]}",
+        "run_count": run_count,
+        "pass_count": pass_count,
+        "fail_count": fail_count,
+        "error_count": error_count,
+        "reliability_percent": reliability_percent,
+        "setup": setup,
+        "shear_check": shear_check,
+        "charts": charts,
     }
 
 
@@ -169,7 +293,7 @@ class UploadCanvasClient:
         req = urllib.request.Request(url, data=data, headers=headers, method=method)
 
         try:
-            with urllib.request.urlopen(req, timeout=10) as resp:
+            with urllib.request.urlopen(req, timeout=30) as resp:
                 status = resp.status
                 if status == 204:
                     return None

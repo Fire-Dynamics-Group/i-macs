@@ -12,6 +12,7 @@ from macs_automation.upload_canvas import (
     UploadCanvasError,
     get_or_create_imacs_job_id,
     build_macs_run_payload,
+    build_macs_batch_payload,
 )
 
 router = APIRouter(prefix="/api/imacs", tags=["upload-canvas"])
@@ -116,7 +117,12 @@ def create_job_handoff(
     try:
         imacs_job_id = get_or_create_imacs_job_id(db, job_id)
         run_row = _get_latest_run_for_job(db, job_id)
-        payload = build_macs_run_payload(run_row, imacs_job_id=imacs_job_id)
+        payload = build_macs_run_payload(run_row, imacs_job_id=imacs_job_id, db=db)
+        batch_payload = build_macs_batch_payload(db, job_id)
+        if not batch_payload and run_row.get("batch_id"):
+            batch_payload = build_macs_batch_payload(db, str(run_row["batch_id"]))
+        if batch_payload:
+            payload["macs_batch"] = batch_payload
         handoff = client.create_handoff(payload)
         return handoff
     except UploadCanvasError as e:
@@ -150,7 +156,12 @@ def link_project(
     try:
         imacs_job_id = get_or_create_imacs_job_id(db, job_id)
         run_row = _get_latest_run_for_job(db, job_id)
-        payload = build_macs_run_payload(run_row, imacs_job_id=imacs_job_id)
+        payload = build_macs_run_payload(run_row, imacs_job_id=imacs_job_id, db=db)
+        batch_payload = build_macs_batch_payload(db, job_id)
+        if not batch_payload and run_row.get("batch_id"):
+            batch_payload = build_macs_batch_payload(db, str(run_row["batch_id"]))
+        if batch_payload:
+            payload["macs_batch"] = batch_payload
 
         # 1. Link job
         client.link_project(imacs_job_id, body.project_id)
@@ -198,7 +209,12 @@ def push_run(
 
         project_id = summary["project_id"]
         run_row = _get_latest_run_for_job(db, job_id)
-        payload = build_macs_run_payload(run_row, imacs_job_id=imacs_job_id)
+        payload = build_macs_run_payload(run_row, imacs_job_id=imacs_job_id, db=db)
+        batch_payload = build_macs_batch_payload(db, job_id)
+        if not batch_payload and run_row.get("batch_id"):
+            batch_payload = build_macs_batch_payload(db, str(run_row["batch_id"]))
+        if batch_payload:
+            payload["macs_batch"] = batch_payload
         client.push_run(project_id, payload)
 
         return {

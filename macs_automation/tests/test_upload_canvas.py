@@ -8,6 +8,7 @@ from macs_automation.db import ResultsDB
 from macs_automation.upload_canvas import (
     get_or_create_imacs_job_id,
     build_macs_run_payload,
+    build_macs_batch_payload,
     UploadCanvasClient,
     UploadCanvasError,
 )
@@ -51,7 +52,7 @@ def test_build_macs_run_payload():
         label="Test Batch",
         version="0.1.0-rc.17",
     )
-    assert payload["schema"] == "fd-macs-reliability/1"
+    assert payload["schema"] == "fd-macs-reliability/2"
     assert payload["critical_temp"] == 540.0
     assert payload["governing_side"] == "B"
     assert payload["section"] == "UB 457x191x82"
@@ -64,6 +65,9 @@ def test_build_macs_run_payload():
     assert "windows_user" in payload
     assert "machine_name" in payload
     assert "client_timestamp" in payload
+    assert "outputs" in payload
+    assert "checks" in payload
+    assert "time_series" in payload
 
 
 def test_client_error_handling_401():
@@ -180,3 +184,142 @@ def test_sidecar_handoff_and_link_endpoints():
         res_unlink = api.delete("/api/imacs/jobs/batch-1/upload-canvas-link")
         assert res_unlink.status_code == 200
         assert res_unlink.json()["status"] == "unlinked"
+
+
+def test_build_macs_batch_payload_not_found(mem_db):
+    assert build_macs_batch_payload(mem_db, "nonexistent-batch") is None
+
+
+def test_build_macs_batch_payload_success(mem_db):
+    import base64
+    batch_id = "test-batch-uuid-1"
+    mem_db.insert_batch(batch_id=batch_id, mode="mc", total_expected=2, name="Test Batch 1")
+
+    # Insert two runs
+    ts_data_1 = [
+        {"time_step": 0, "time_min": 0, "lofl_temp": 20.0, "mesh_temp": 20.0, "slabtop_temp": 20.0, "slabbot_temp": 20.0,
+         "beam_hot_capacity": 50.0, "deflection": 0.0, "slab_yield": 40.0, "enhancement": 1.0,
+         "slab_cap": 30.0, "total_plate_capacity": 80.0, "utilization_factor": 0.1},
+        {"time_step": 1, "time_min": 30, "lofl_temp": 500.0, "mesh_temp": 450.0, "slabtop_temp": 300.0, "slabbot_temp": 400.0,
+         "beam_hot_capacity": 30.0, "deflection": 15.0, "slab_yield": 25.0, "enhancement": 1.2,
+         "slab_cap": 20.0, "total_plate_capacity": 50.0, "utilization_factor": 0.8},
+    ]
+    ts_data_2 = [
+        {"time_step": 0, "time_min": 0, "lofl_temp": 20.0, "mesh_temp": 20.0, "slabtop_temp": 20.0, "slabbot_temp": 20.0,
+         "beam_hot_capacity": 50.0, "deflection": 0.0, "slab_yield": 40.0, "enhancement": 1.0,
+         "slab_cap": 30.0, "total_plate_capacity": 80.0, "utilization_factor": 0.1},
+        {"time_step": 1, "time_min": 30, "lofl_temp": 550.0, "mesh_temp": 480.0, "slabtop_temp": 320.0, "slabbot_temp": 420.0,
+         "beam_hot_capacity": 25.0, "deflection": 20.0, "slab_yield": 20.0, "enhancement": 1.1,
+         "slab_cap": 18.0, "total_plate_capacity": 43.0, "utilization_factor": 0.9},
+    ]
+
+    mem_db.insert_run(
+        params={
+            "_batch_id": batch_id,
+            "span1": 12.0, "span2": 9.0, "numbeam": 2,
+            "uSecSize": "UB 457x191x82", "fy5": 355, "ush_con": 80,
+            "qf": 400, "window_percent": 40,
+            "SideASecSize": "UB 457x191x82", "fy1": 355,
+        },
+        outputs={
+            "uf_max": 0.8,
+            "factored_hot": 4.5,
+            "side_a_critical_temp": 550.0,
+            "time_series": ts_data_1,
+        }
+    )
+    mem_db.insert_run(
+        params={
+            "_batch_id": batch_id,
+            "span1": 12.0, "span2": 9.0, "numbeam": 2,
+            "uSecSize": "UB 457x191x82", "fy5": 355, "ush_con": 80,
+            "qf": 600, "window_percent": 60,
+            "SideASecSize": "UB 457x191x82", "fy1": 355,
+        },
+        outputs={
+            "uf_max": 0.9,
+            "factored_hot": 4.5,
+            "side_a_critical_temp": 540.0,
+            "time_series": ts_data_2,
+        }
+    )
+
+    payload = build_macs_batch_payload(mem_db, batch_id)
+    assert payload is not None
+    assert payload["batch_id"] == batch_id
+    assert payload["name"] == "Test Batch 1"
+    assert payload["run_count"] == 2
+    assert payload["pass_count"] == 2
+    assert payload["fail_count"] == 0
+    assert payload["error_count"] == 0
+    assert payload["reliability_percent"] == 100.0
+    assert "setup" in payload
+    assert "groups" in payload["setup"]
+    assert "shear_check" in payload
+    assert payload["shear_check"]["batch_id"] == batch_id
+    assert payload["shear_check"]["checked"] == 2
+    assert isinstance(payload["shear_check"]["sub_limit_runs"], list)
+
+    charts = payload["charts"]
+    assert "scatter" in charts
+    assert "totalCapacity" in charts
+    assert "beamTemp" in charts
+    assert "meshTemp" in charts
+
+    png_magic = b"\x89PNG\r\n\x1a\n"
+    for key in ("scatter", "totalCapacity", "beamTemp", "meshTemp"):
+        chart_b64 = charts[key]
+        assert isinstance(chart_b64, str)
+        raw = base64.b64decode(chart_b64)
+        assert raw.startswith(png_magic)
+
+
+def test_client_request_timeout():
+    client = UploadCanvasClient()
+    with patch("urllib.request.urlopen") as mock_open:
+        mock_open.return_value.__enter__.return_value.status = 200
+        mock_open.return_value.__enter__.return_value.read.return_value = b'{"ok": true}'
+        client._request("GET", "/test")
+        assert mock_open.call_args[1].get("timeout") == 30
+
+
+def test_endpoints_attach_macs_batch(mem_db):
+    api = TestClient(app)
+    with patch("macs_automation.upload_canvas_router._get_db", return_value=mem_db), \
+         patch("macs_automation.upload_canvas_router._get_latest_run_for_job") as mock_run, \
+         patch("macs_automation.upload_canvas_router.build_macs_batch_payload") as mock_batch, \
+         patch("macs_automation.upload_canvas.UploadCanvasClient.create_handoff") as mock_handoff, \
+         patch("macs_automation.upload_canvas.UploadCanvasClient.link_project") as mock_link, \
+         patch("macs_automation.upload_canvas.UploadCanvasClient.push_run") as mock_push, \
+         patch("macs_automation.upload_canvas.UploadCanvasClient.get_summary") as mock_summary:
+
+        mock_run.return_value = {
+            "id": 10,
+            "side_a_critical_temp": 520.0,
+            "side_a_sec": "UB 457x191x82",
+            "u_sec_size": "UB 457x191x82",
+        }
+        mock_batch.return_value = {"batch_id": "b-1", "name": "Batch 1", "run_count": 100}
+        mock_handoff.return_value = {"handoff_id": "h-1", "url": "http://localhost:3000/?handoff=h-1"}
+        mock_summary.return_value = {"project_id": "p-1"}
+
+        # Handoff
+        res_ho = api.post("/api/imacs/jobs/b-1/upload-canvas-handoff")
+        assert res_ho.status_code == 200
+        sent_payload = mock_handoff.call_args[0][0]
+        assert "macs_batch" in sent_payload
+        assert sent_payload["macs_batch"]["batch_id"] == "b-1"
+
+        # Link
+        res_link = api.post("/api/imacs/jobs/b-1/upload-canvas-link", json={"project_id": "p-1"})
+        assert res_link.status_code == 200
+        sent_push = mock_push.call_args[0][1]
+        assert "macs_batch" in sent_push
+        assert sent_push["macs_batch"]["batch_id"] == "b-1"
+
+        # Push
+        res_push = api.post("/api/imacs/jobs/b-1/upload-canvas-push")
+        assert res_push.status_code == 200
+        sent_push_again = mock_push.call_args[0][1]
+        assert "macs_batch" in sent_push_again
+
