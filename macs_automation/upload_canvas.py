@@ -273,9 +273,27 @@ def build_macs_batch_payload(db: ResultsDB, batch_id: str) -> Optional[dict[str,
         "reliability_percent": reliability_percent,
     }
 
+    # Determine governing section, critical temp, and section factor across batch runs
+    gov_run = min(
+        (r for r in runs if isinstance(r.get("critical_temp"), (int, float)) and r["critical_temp"] > 0),
+        key=lambda r: r["critical_temp"],
+        default=(runs[0] if runs else None),
+    )
+    governing_section = None
+    critical_temp = None
+    section_factor = None
+    if gov_run:
+        governing_section = gov_run.get("section")
+        critical_temp = gov_run.get("critical_temp")
+        section_factor = gov_run.get("section_factor")
+
     return {
         "batch_id": str(batch_id),
         "name": batch.get("name") or f"Batch {str(batch_id)[:8]}",
+        "project_name": batch.get("project_name"),
+        "governing_section": governing_section,
+        "critical_temp": critical_temp,
+        "section_factor": section_factor,
         "run_count": run_count,
         "pass_count": pass_count,
         "fail_count": fail_count,

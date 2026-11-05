@@ -63,6 +63,32 @@ def _get_latest_run_for_job(db: ResultsDB, job_id: str) -> dict:
     raise HTTPException(status_code=404, detail=f"No runs found for job {job_id}")
 
 
+def _resolve_job_payload(db: ResultsDB, job_id: str, imacs_job_id: str) -> dict:
+    """Build a validated MACS run payload that inherits project name and batch metadata."""
+    run_row = _get_latest_run_for_job(db, job_id)
+    batch = None
+    if hasattr(db, "get_batches"):
+        batch = next((b for b in db.get_batches() if str(b.get("batch_id")) == str(job_id)), None)
+        if not batch and run_row.get("batch_id"):
+            batch = next((b for b in db.get_batches() if str(b.get("batch_id")) == str(run_row["batch_id"])), None)
+
+    project_name = (batch.get("project_name") or "").strip() if batch else ""
+    batch_name = (batch.get("name") or "").strip() if batch else ""
+    label = project_name or batch_name or run_row.get("name") or None
+
+    payload = build_macs_run_payload(run_row, imacs_job_id=imacs_job_id, label=label, db=db)
+    if project_name:
+        payload["project_name"] = project_name
+
+    batch_payload = build_macs_batch_payload(db, job_id)
+    if not batch_payload and run_row.get("batch_id"):
+        batch_payload = build_macs_batch_payload(db, str(run_row["batch_id"]))
+    if batch_payload:
+        payload["macs_batch"] = batch_payload
+
+    return payload
+
+
 class LinkProjectBody(BaseModel):
     project_id: str
 
@@ -127,13 +153,7 @@ def create_job_handoff(
 ):
     try:
         imacs_job_id = get_or_create_imacs_job_id(db, job_id)
-        run_row = _get_latest_run_for_job(db, job_id)
-        payload = build_macs_run_payload(run_row, imacs_job_id=imacs_job_id, db=db)
-        batch_payload = build_macs_batch_payload(db, job_id)
-        if not batch_payload and run_row.get("batch_id"):
-            batch_payload = build_macs_batch_payload(db, str(run_row["batch_id"]))
-        if batch_payload:
-            payload["macs_batch"] = batch_payload
+        payload = _resolve_job_payload(db, job_id, imacs_job_id)
         handoff = client.create_handoff(payload)
         if handoff and handoff.get("url"):
             _safe_open_browser(handoff["url"])
@@ -168,13 +188,7 @@ def link_project(
 ):
     try:
         imacs_job_id = get_or_create_imacs_job_id(db, job_id)
-        run_row = _get_latest_run_for_job(db, job_id)
-        payload = build_macs_run_payload(run_row, imacs_job_id=imacs_job_id, db=db)
-        batch_payload = build_macs_batch_payload(db, job_id)
-        if not batch_payload and run_row.get("batch_id"):
-            batch_payload = build_macs_batch_payload(db, str(run_row["batch_id"]))
-        if batch_payload:
-            payload["macs_batch"] = batch_payload
+        payload = _resolve_job_payload(db, job_id, imacs_job_id)
 
         # 1. Link job
         client.link_project(imacs_job_id, body.project_id)
@@ -223,13 +237,7 @@ def push_run(
             raise HTTPException(status_code=400, detail="Job is not linked to any project")
 
         project_id = summary["project_id"]
-        run_row = _get_latest_run_for_job(db, job_id)
-        payload = build_macs_run_payload(run_row, imacs_job_id=imacs_job_id, db=db)
-        batch_payload = build_macs_batch_payload(db, job_id)
-        if not batch_payload and run_row.get("batch_id"):
-            batch_payload = build_macs_batch_payload(db, str(run_row["batch_id"]))
-        if batch_payload:
-            payload["macs_batch"] = batch_payload
+        payload = _resolve_job_payload(db, job_id, imacs_job_id)
         client.push_run(project_id, payload)
 
         url = f"{client.upload_canvas_url}/structural-fire?project={project_id}"
