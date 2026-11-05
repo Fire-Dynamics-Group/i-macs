@@ -67,7 +67,7 @@ def _section_size(raw: str) -> str:
 # Per-side beam block on the tabular-results page: section, construction,
 # location, shear connection, degree of utilization, critical temperature.
 _SIDE_BLOCK = re.compile(
-    r"Side ([ABCD])\s+Beam type:[^\n]*?(Composite|Non-composite)"
+    r"Side ([ABCD])\s+Beam type:[^\n]*?(Composite|Non-composite)\s*"
     r"(Internal|Edge) beam\s*Section size:\s*(UB\s*[0-9x]+)"
     r".*?Shear connection:\s*([0-9]+)"
     r".*?Degree of utilization:\s*([0-9.]+)"

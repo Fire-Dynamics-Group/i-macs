@@ -113,6 +113,9 @@ app.add_middleware(
     expose_headers=["Content-Disposition"],
 )
 
+from macs_automation.upload_canvas_router import router as upload_canvas_router
+app.include_router(upload_canvas_router)
+
 # ─── Reference data (loaded once at startup) ─────────────────────────────────
 _ref_data: Optional[dict] = None
 
@@ -1583,6 +1586,7 @@ def main(argv: Optional[list[str]] = None) -> None:
     parser = argparse.ArgumentParser(prog="macs_automation", description="MACS+ Automation sidecar")
     parser.add_argument("--port", type=int, default=8000, help="HTTP port to bind")
     parser.add_argument("--log-dir", type=str, default=None, help="Directory for sidecar.log (rotating, 5 MB × 5)")
+    parser.add_argument("--reload", action="store_true", help="Enable uvicorn auto-reload on code changes (dev only)")
     args = parser.parse_args(argv)
 
     if args.log_dir:
@@ -1594,8 +1598,32 @@ def main(argv: Optional[list[str]] = None) -> None:
     # stale packages left behind by the NSIS overlay updater (rc.13 died at
     # boot exactly this way). h11 covers everything the sidecar serves —
     # plain HTTP on localhost, no websocket endpoints.
-    uvicorn.run(app, host="127.0.0.1", port=args.port, log_config=None,
-                http="h11", ws="none")
+    if args.reload:
+        if sys.platform == "win32":
+            # On Windows, uvicorn's default restart() uses os.kill(self.process.pid, signal.CTRL_C_EVENT).
+            # In the Windows console subsystem, GenerateConsoleCtrlEvent broadcasts CTRL_C_EVENT
+            # to all processes attached to the console/PTY (including parent agent CLI / terminal session).
+            # Calling self.process.terminate() terminates the child worker cleanly without broadcasting
+            # a kill signal to parent console processes.
+            import uvicorn.supervisors.basereload
+
+            def _safe_windows_restart(self):
+                self.is_restarting = True
+                if self.process and self.process.is_alive():
+                    self.process.terminate()
+                    self.process.join()
+                self.process = uvicorn.supervisors.basereload.get_subprocess(
+                    config=self.config, target=self.target, sockets=self.sockets
+                )
+                self.process.start()
+
+            uvicorn.supervisors.basereload.BaseReload.restart = _safe_windows_restart
+
+        uvicorn.run("macs_automation.app:app", host="127.0.0.1", port=args.port, log_config=None,
+                    http="h11", ws="none", reload=True, reload_dirs=[str(APP_DIR)])
+    else:
+        uvicorn.run(app, host="127.0.0.1", port=args.port, log_config=None,
+                    http="h11", ws="none")
 
 
 if __name__ == "__main__":

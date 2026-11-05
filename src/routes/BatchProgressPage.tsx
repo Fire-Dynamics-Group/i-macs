@@ -23,8 +23,10 @@ const EXPORT_HINTS: Record<ExportMode, string> = {
 };
 import { BatchHeading } from "../components/BatchHeading";
 import { BatchSetupPanel } from "../components/BatchSetupPanel";
+import { UploadCanvasPanel } from "../components/UploadCanvasPanel";
 import PdfEvidencePanel from "../components/PdfEvidencePanel";
 import { batchLabel } from "../lib/batchLabel";
+import { governingCriticalTemp } from "../lib/governingCriticalTemp";
 import { detectVaryingFields } from "../sweep/buildScatterTraces";
 import { DistributionChart } from "../sweep/DistributionChart";
 import { MacsScatter } from "../sweep/MacsScatter";
@@ -349,6 +351,8 @@ function AnalyticalView({ batch }: { batch: BatchSummary }) {
 
       <BatchSetupPanel batchId={batch.batch_id} />
 
+      <UploadCanvasPanel jobId={batch.batch_id} />
+
       <ShearConnectionPanel batchId={batch.batch_id} />
 
       {/* MACS+ Monte Carlo Simulation Output Summary — 4 charts. */}
@@ -449,6 +453,18 @@ function ShearConnectionPanel({ batchId }: { batchId: string }) {
   );
 }
 
+/** Governing (lowest) perimeter-beam critical temp with its side, e.g.
+ *  "690 (B)" — the per-run value the reliability study's override wants. */
+function GoverningTempCell({ run }: { run: Run }) {
+  const gov = governingCriticalTemp(run);
+  if (!gov) return <>—</>;
+  return (
+    <>
+      {gov.temp.toFixed(0)} ({gov.side})
+    </>
+  );
+}
+
 function BatchRunsTable({
   runs,
   varyingFields,
@@ -474,6 +490,12 @@ function BatchRunsTable({
           ))}
           <th className="px-4 py-2 text-left font-medium text-slate-700">
             UF max
+          </th>
+          <th
+            className="px-4 py-2 text-left font-medium text-slate-700"
+            title="Governing perimeter-beam critical temperature (side in brackets)"
+          >
+            Crit. temp (°C)
           </th>
           <th className="px-4 py-2 text-left font-medium text-slate-700">
             Status
@@ -503,6 +525,9 @@ function BatchRunsTable({
             ))}
             <td className="px-4 py-1 tabular-nums">
               {run.uf_max != null ? run.uf_max.toFixed(3) : "—"}
+            </td>
+            <td className="px-4 py-1 tabular-nums">
+              <GoverningTempCell run={run} />
             </td>
             <td className="px-4 py-1">
               {run.error ? (

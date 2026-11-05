@@ -146,6 +146,7 @@ fn spawn_sidecar(
             &port.to_string(),
             "--log-dir",
             &log_dir_str,
+            "--reload",
         ])
         .env("MACS_APP_VERSION", &app_version)
         .current_dir(&project_root)
@@ -416,6 +417,17 @@ fn shutdown_sidecar(state: State<SidecarState>) -> Result<(), String> {
     Ok(())
 }
 
+/// Open a URL in the user's default system browser.
+#[tauri::command]
+fn open_external_url(app_handle: AppHandle, url: String) -> Result<(), String> {
+    use tauri_plugin_opener::OpenerExt;
+    app_handle
+        .opener()
+        .open_url(&url, None::<&str>)
+        .map_err(|e| format!("failed to open URL: {e}"))
+}
+
+
 /// Bind the freshly spawned sidecar to a Job Object so it inherits this
 /// process's lifetime. KILL_ON_JOB_CLOSE means: when our last handle to the
 /// job closes (which happens when our process dies, however it dies), the
@@ -521,7 +533,8 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             get_sidecar_port,
             get_log_dir,
-            shutdown_sidecar
+            shutdown_sidecar,
+            open_external_url
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

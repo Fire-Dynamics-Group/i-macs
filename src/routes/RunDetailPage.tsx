@@ -4,8 +4,10 @@ import { useQuery } from "@tanstack/react-query";
 
 import { getRun, getRunTimeseries, type Run, type TimeSeriesRow } from "../api/client";
 import { CheckBreakdown } from "../components/CheckBreakdown";
+import { GoverningCriticalTempCard } from "../components/GoverningCriticalTempCard";
 import { PerimeterBeamCheck } from "../components/PerimeterBeamCheck";
 import { RunSetupPanel } from "../components/BatchSetupPanel";
+import { UploadCanvasPanel } from "../components/UploadCanvasPanel";
 import { frcLabel } from "../lib/batchLabel";
 import { RunTemperatureChart } from "../sweep/RunTemperatureChart";
 import { RunCapacityDeflectionChart } from "../sweep/RunCapacityDeflectionChart";
@@ -62,7 +64,13 @@ export default function RunDetailPage() {
         <CheckBreakdown checks={runQuery.data.checks ?? []} />
       )}
       {runQuery.data && !runQuery.data.error && (
+        <GoverningCriticalTempCard run={runQuery.data} />
+      )}
+      {runQuery.data && !runQuery.data.error && (
         <PerimeterBeamCheck run={runQuery.data} />
+      )}
+      {runQuery.data && !runQuery.data.error && (
+        <UploadCanvasPanel jobId={String(runId)} />
       )}
       {Number.isFinite(runId) && <RunSetupPanel runId={runId} />}
       {tsQuery.data && tsQuery.data.length > 0 && (

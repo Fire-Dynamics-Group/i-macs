@@ -1,6 +1,6 @@
 /** @jsxImportSource react */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
@@ -183,6 +183,37 @@ describe("BatchProgressPage — analytical view", () => {
     expect(screen.getByRole("link", { name: "#1" })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "#2" })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: /rerun batch/i })).toBeInTheDocument();
+  });
+
+  it("surfaces each run's governing critical temperature in the runs table", async () => {
+    mockResponses({
+      batch: COMPLETE_BATCH,
+      runs: [
+        {
+          id: 1,
+          qf: 400,
+          uf_max: 0.4,
+          error: null,
+          overall_pass: true,
+          checks: [],
+          side_a_critical_temp: 706.4,
+          side_b_critical_temp: 690.2,
+        },
+        // Errored run — no perimeter-beam outputs; must show a dash, not 0.
+        { id: 2, qf: 500, uf_max: null, error: "COMError: boom", overall_pass: false, checks: [] },
+      ],
+    });
+    renderPage();
+
+    // Settle on the analytical view first — the live view renders (and is
+    // torn down) while the batch metadata loads, so anything found before
+    // this anchor may be a detached node from the live-view table.
+    expect(await screen.findByRole("link", { name: /download report/i })).toBeInTheDocument();
+    expect(await screen.findByText(/crit\. temp/i)).toBeInTheDocument();
+    const okRow = screen.getByRole("link", { name: "#1" }).closest("tr")!;
+    expect(within(okRow).getByText("690 (B)")).toBeInTheDocument();
+    const erroredRow = screen.getByRole("link", { name: "#2" }).closest("tr")!;
+    expect(within(erroredRow).queryByText(/\(\w\)/)).not.toBeInTheDocument();
   });
 
   it("shows the shared setup for a batch that was never seeded from a .frc", async () => {

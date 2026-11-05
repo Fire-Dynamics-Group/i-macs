@@ -19,9 +19,15 @@ async function baseUrl(): Promise<string> {
   }).env?.VITE_SIDECAR_URL;
   if (envBase) {
     cachedBase = envBase.replace(/\/+$/, "");
+  } else if (typeof window !== "undefined" && Boolean((window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__)) {
+    try {
+      const port = await invoke<number>("get_sidecar_port");
+      cachedBase = `http://127.0.0.1:${port}`;
+    } catch {
+      cachedBase = "http://127.0.0.1:8765";
+    }
   } else {
-    const port = await invoke<number>("get_sidecar_port");
-    cachedBase = `http://127.0.0.1:${port}`;
+    cachedBase = "http://127.0.0.1:8765";
   }
   return cachedBase;
 }
@@ -640,4 +646,90 @@ export async function getPdfEvidenceStatus(
 export async function getEventsUrl(): Promise<string> {
   const base = await baseUrl();
   return `${base}/api/sweeps/events`;
+}
+
+// --- Upload Canvas Integration Types & API ---
+
+export interface UploadCanvasSummary {
+  project_id: string;
+  project_name: string;
+  last_sent_at: string | null;
+  outcome: Record<string, unknown> | null;
+}
+
+export interface UploadCanvasJobSummaryResponse {
+  job_id: string;
+  imacs_job_id: string;
+  summary: UploadCanvasSummary | null;
+}
+
+export interface UploadCanvasProject {
+  id: string;
+  name: string;
+  mode: string;
+  updated_at?: string | null;
+}
+
+export interface UploadCanvasHandoffResponse {
+  handoff_id: string;
+  url: string;
+  expires_at?: string;
+}
+
+export async function getUploadCanvasSummary(
+  jobId: string,
+): Promise<UploadCanvasJobSummaryResponse> {
+  return getJson<UploadCanvasJobSummaryResponse>(
+    `/api/imacs/jobs/${encodeURIComponent(jobId)}/upload-canvas-summary`,
+  );
+}
+
+export async function createUploadCanvasHandoff(
+  jobId: string,
+): Promise<UploadCanvasHandoffResponse> {
+  return postJson<UploadCanvasHandoffResponse>(
+    `/api/imacs/jobs/${encodeURIComponent(jobId)}/upload-canvas-handoff`,
+    {},
+  );
+}
+
+export async function searchUploadCanvasProjects(
+  q = "",
+): Promise<{ projects: UploadCanvasProject[] }> {
+  return getJson<{ projects: UploadCanvasProject[] }>(
+    `/api/imacs/upload-canvas-projects?q=${encodeURIComponent(q)}`,
+  );
+}
+
+export async function linkUploadCanvasProject(
+  jobId: string,
+  projectId: string,
+): Promise<{ status: string; project_id: string; url: string }> {
+  return postJson(
+    `/api/imacs/jobs/${encodeURIComponent(jobId)}/upload-canvas-link`,
+    { project_id: projectId },
+  );
+}
+
+export async function unlinkUploadCanvasProject(
+  jobId: string,
+): Promise<{ status: string }> {
+  const base = await baseUrl();
+  const resp = await fetch(
+    `${base}/api/imacs/jobs/${encodeURIComponent(jobId)}/upload-canvas-link`,
+    { method: "DELETE" },
+  );
+  if (!resp.ok) {
+    throw new Error(`DELETE unlink failed: ${resp.status}`);
+  }
+  return resp.json();
+}
+
+export async function pushUploadCanvasRun(
+  jobId: string,
+): Promise<{ status: string; project_id: string; url: string }> {
+  return postJson(
+    `/api/imacs/jobs/${encodeURIComponent(jobId)}/upload-canvas-push`,
+    {},
+  );
 }

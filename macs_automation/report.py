@@ -12,6 +12,7 @@ with those scripts, not an internal choice — see docs/data-export.md.
 
 import csv
 import io
+import math
 import tempfile
 import threading
 import zipfile
@@ -30,6 +31,24 @@ from macs_automation.db import ResultsDB
 # Reentrant because generate_plots() takes it and then calls _plot_timeseries(),
 # which takes it too.
 MPL_LOCK = threading.RLock()
+
+
+def _capacity_axis_top_and_step(max_val: float) -> tuple[float, int]:
+    """Calculate upper limit and tick step for capacity graphs so they
+    extend to the next tick above max y, providing clean headroom (e.g. 46.1 ->
+    includes 50 with max 60)."""
+    if max_val <= 0:
+        return 10.0, 5
+    if max_val <= 30:
+        step = 5
+    elif max_val <= 80:
+        step = 10
+    elif max_val <= 160:
+        step = 20
+    else:
+        step = 50
+    top = float(math.ceil(max_val / step + 1) * step)
+    return top, step
 
 
 def _runs_for(db: ResultsDB, batch_id: Optional[str]) -> list[dict]:
@@ -334,6 +353,14 @@ def _plot_timeseries_locked(
     ax.set_xlabel("Time (min)")
     ax.set_ylabel(ylabel)
     ax.set_title(title)
+    if column == "total_plate_capacity":
+        all_vals = [v for rid, data in by_run.items() for t, v in data if v is not None]
+        max_val = max(all_vals, default=0)
+        if hline_band is not None:
+            max_val = max(max_val, hline_band[1])
+        top, step = _capacity_axis_top_and_step(max_val)
+        ax.set_ylim(0, top)
+        ax.set_yticks(range(0, int(top) + 1, step))
     ax.legend()
     ax.grid(True, alpha=0.3)
 
@@ -698,7 +725,23 @@ def make_plot(stem, kind, ylabel, out_png, factored_load, tag):
 
         plt.ylabel(ylabel)
         plt.xlabel("Time (minutes)")
-        plt.ylim(bottom=0)
+        if kind == "capacity":
+            max_val = runs.max().max()
+            if factored_load is not None:
+                max_val = max(max_val, factored_load)
+            if max_val <= 30:
+                step = 5
+            elif max_val <= 80:
+                step = 10
+            elif max_val <= 160:
+                step = 20
+            else:
+                step = 50
+            top = int(math.ceil(max_val / step + 1) * step)
+            plt.ylim(0, top)
+            plt.yticks(range(0, top + 1, step))
+        else:
+            plt.ylim(bottom=0)
         # Time starts at zero; autoscale would pad into negative minutes.
         plt.xlim(left=0)
         plt.grid(True)
@@ -901,7 +944,15 @@ def _render_house_charts_locked(db: ResultsDB, batch_id: Optional[str],
 
             plt.ylabel(ylabel)
             plt.xlabel("Time (minutes)")
-            plt.ylim(bottom=0)
+            if column == "total_plate_capacity":
+                max_val = max((max(s) for s in series if s), default=0)
+                if draws_load and factored is not None:
+                    max_val = max(max_val, factored)
+                top, step = _capacity_axis_top_and_step(max_val)
+                plt.ylim(0, top)
+                plt.yticks(range(0, int(top) + 1, step))
+            else:
+                plt.ylim(bottom=0)
             # Time starts at zero. Autoscale pads into negative time, which is
             # meaningless here and detaches the curves from the origin.
             plt.xlim(left=0)

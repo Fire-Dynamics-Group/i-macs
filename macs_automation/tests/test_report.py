@@ -796,3 +796,18 @@ class TestBatchScoping:
         rows = list(csv.DictReader(
             io.StringIO(generate_summary_csv(two_batch_db, batch_id="nope"))))
         assert rows == []
+
+
+class TestCapacityAxisHeadroom:
+    def test_capacity_axis_top_and_step_headroom(self):
+        from macs_automation.report import _capacity_axis_top_and_step
+
+        top, step = _capacity_axis_top_and_step(46.1)
+        assert top == 60.0
+        assert step == 10
+
+        assert _capacity_axis_top_and_step(0.0) == (10.0, 5)
+        assert _capacity_axis_top_and_step(25.0) == (30.0, 5)
+        assert _capacity_axis_top_and_step(75.0) == (90.0, 10)
+        assert _capacity_axis_top_and_step(120.0) == (140.0, 20)
+        assert _capacity_axis_top_and_step(200.0) == (250.0, 50)
