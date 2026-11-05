@@ -50,7 +50,7 @@ def test_build_macs_run_payload():
         run_row=run_row,
         imacs_job_id="job-uuid-1",
         label="Test Batch",
-        version="0.1.0-rc.17",
+        version="0.1.0-rc.18",
     )
     assert payload["schema"] == "fd-macs-reliability/2"
     assert payload["critical_temp"] == 540.0
@@ -61,7 +61,7 @@ def test_build_macs_run_payload():
     assert payload["imacs_job_id"] == "job-uuid-1"
     assert payload["run_id"] == "run-uuid-42"
     assert payload["label"] == "Test Batch"
-    assert payload["client_version"] == "0.1.0-rc.17"
+    assert payload["client_version"] == "0.1.0-rc.18"
     assert "windows_user" in payload
     assert "machine_name" in payload
     assert "client_timestamp" in payload
