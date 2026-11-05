@@ -19,9 +19,15 @@ async function baseUrl(): Promise<string> {
   }).env?.VITE_SIDECAR_URL;
   if (envBase) {
     cachedBase = envBase.replace(/\/+$/, "");
+  } else if (typeof window !== "undefined" && Boolean((window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__)) {
+    try {
+      const port = await invoke<number>("get_sidecar_port");
+      cachedBase = `http://127.0.0.1:${port}`;
+    } catch {
+      cachedBase = "http://127.0.0.1:8765";
+    }
   } else {
-    const port = await invoke<number>("get_sidecar_port");
-    cachedBase = `http://127.0.0.1:${port}`;
+    cachedBase = "http://127.0.0.1:8765";
   }
   return cachedBase;
 }

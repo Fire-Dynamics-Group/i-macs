@@ -35,14 +35,16 @@ export function SidecarReadyGate({ children }: { children: ReactNode }) {
       if (!cancelled) setStatus({ kind: "ready" });
     };
 
-    // 1. Subscribe to the Tauri-side ready signal.
-    listen("sidecar-ready", markReady).then((u) => {
-      if (cancelled) {
-        u();
-      } else {
-        unlisten = u;
-      }
-    });
+    // 1. Subscribe to the Tauri-side ready signal (if in Tauri runtime).
+    if (typeof window !== "undefined" && Boolean((window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__)) {
+      listen("sidecar-ready", markReady).then((u) => {
+        if (cancelled) {
+          u();
+        } else {
+          unlisten = u;
+        }
+      }).catch(() => {});
+    }
 
     // 2. Poll /healthz ourselves so a missed event doesn't keep us stuck.
     (async () => {
