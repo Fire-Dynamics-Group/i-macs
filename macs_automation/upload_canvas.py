@@ -242,19 +242,26 @@ def build_macs_batch_payload(db: ResultsDB, batch_id: str) -> Optional[dict[str,
     }
 
     try:
-        with tempfile.TemporaryDirectory(prefix="macs_batch_charts_") as tmp_dir_str:
-            tmp_dir = Path(tmp_dir_str)
-            _render_house_charts(db, batch_id, suffix="report", output_dir=tmp_dir)
+        db_path_val = getattr(db, "db_path", None)
+        if db_path_val:
+            cache_dir = Path(db_path_val).resolve().parent / "cache_charts" / str(batch_id)
+        else:
+            cache_dir = Path(tempfile.gettempdir()) / "macs_cache_charts" / str(batch_id)
+        cache_dir.mkdir(parents=True, exist_ok=True)
 
-            chart_files = {
-                "scatter": tmp_dir / "scatter_fail_pass_report.png",
-                "totalCapacity": tmp_dir / "total_cap_graph_report.png",
-                "beamTemp": tmp_dir / "beam_temp_graph_report.png",
-                "meshTemp": tmp_dir / "mesh_temp_graph_report.png",
-            }
-            for k, p in chart_files.items():
-                if p.exists():
-                    charts[k] = base64.b64encode(p.read_bytes()).decode("ascii")
+        chart_files = {
+            "scatter": cache_dir / "scatter_fail_pass_report.png",
+            "totalCapacity": cache_dir / "total_cap_graph_report.png",
+            "beamTemp": cache_dir / "beam_temp_graph_report.png",
+            "meshTemp": cache_dir / "mesh_temp_graph_report.png",
+        }
+        all_exist = all(p.exists() and p.stat().st_size > 0 for p in chart_files.values())
+        if not all_exist:
+            _render_house_charts(db, batch_id, suffix="report", output_dir=cache_dir)
+
+        for k, p in chart_files.items():
+            if p.exists() and p.stat().st_size > 0:
+                charts[k] = base64.b64encode(p.read_bytes()).decode("ascii")
     except Exception as e:
         print(f"Warning: failed to render batch charts: {e}")
 

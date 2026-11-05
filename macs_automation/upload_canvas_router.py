@@ -30,6 +30,17 @@ def _get_client(db: ResultsDB = Depends(_get_db)) -> UploadCanvasClient:
     return UploadCanvasClient(backend_url=backend_url, upload_canvas_url=web_url, app_key=app_key)
 
 
+def _safe_open_browser(url: str) -> None:
+    """Best-effort launch of the default OS browser from the local sidecar."""
+    if not url:
+        return
+    try:
+        import webbrowser
+        webbrowser.open(url)
+    except Exception as e:
+        print(f"Warning: could not open browser for {url}: {e}")
+
+
 def _get_latest_run_for_job(db: ResultsDB, job_id: str) -> dict:
     # First try batch_id
     if hasattr(db, "get_batch_runs"):
@@ -124,6 +135,8 @@ def create_job_handoff(
         if batch_payload:
             payload["macs_batch"] = batch_payload
         handoff = client.create_handoff(payload)
+        if handoff and handoff.get("url"):
+            _safe_open_browser(handoff["url"])
         return handoff
     except UploadCanvasError as e:
         raise HTTPException(status_code=e.status_code, detail=str(e))
@@ -168,10 +181,12 @@ def link_project(
         # 2. Push run
         client.push_run(body.project_id, payload)
 
+        url = f"{client.upload_canvas_url}/structural-fire?project={body.project_id}"
+        _safe_open_browser(url)
         return {
             "status": "linked",
             "project_id": body.project_id,
-            "url": f"{client.upload_canvas_url}/?project={body.project_id}",
+            "url": url,
         }
     except UploadCanvasError as e:
         raise HTTPException(status_code=e.status_code, detail=str(e))
@@ -217,10 +232,12 @@ def push_run(
             payload["macs_batch"] = batch_payload
         client.push_run(project_id, payload)
 
+        url = f"{client.upload_canvas_url}/structural-fire?project={project_id}"
+        _safe_open_browser(url)
         return {
             "status": "pushed",
             "project_id": project_id,
-            "url": f"{client.upload_canvas_url}/?project={project_id}",
+            "url": url,
         }
     except UploadCanvasError as e:
         raise HTTPException(status_code=e.status_code, detail=str(e))

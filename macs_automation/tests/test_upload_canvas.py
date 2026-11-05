@@ -165,7 +165,7 @@ def test_sidecar_handoff_and_link_endpoints():
         res_link = api.post("/api/imacs/jobs/batch-1/upload-canvas-link", json={"project_id": "p-1"})
         assert res_link.status_code == 200
         assert res_link.json()["status"] == "linked"
-        assert res_link.json()["url"] == "http://localhost:3000/?project=p-1"
+        assert res_link.json()["url"] == "http://localhost:3000/structural-fire?project=p-1"
 
         # 4. Push run
         with patch("macs_automation.upload_canvas.UploadCanvasClient.get_summary") as mock_summary:
@@ -178,7 +178,7 @@ def test_sidecar_handoff_and_link_endpoints():
             res_push = api.post("/api/imacs/jobs/batch-1/upload-canvas-push")
             assert res_push.status_code == 200
             assert res_push.json()["status"] == "pushed"
-            assert res_push.json()["url"] == "http://localhost:3000/?project=p-1"
+            assert res_push.json()["url"] == "http://localhost:3000/structural-fire?project=p-1"
 
         # 5. Unlink project
         res_unlink = api.delete("/api/imacs/jobs/batch-1/upload-canvas-link")

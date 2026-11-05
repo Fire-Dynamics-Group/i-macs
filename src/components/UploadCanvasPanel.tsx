@@ -15,13 +15,27 @@ interface UploadCanvasPanelProps {
 }
 
 async function safeOpenUrl(url: string) {
+  // 1. Try Tauri invoke command open_external_url (native host OS opener)
+  try {
+    const { invoke } = await import("@tauri-apps/api/core");
+    await invoke("open_external_url", { url });
+    return;
+  } catch (err) {
+    console.warn("Tauri invoke open_external_url failed:", err);
+  }
+
+  // 2. Try Tauri plugin-opener
   try {
     const opener = await import("@tauri-apps/plugin-opener");
     if (opener?.openUrl) {
       await opener.openUrl(url);
       return;
     }
-  } catch (_) {}
+  } catch (err) {
+    console.warn("Tauri plugin-opener openUrl failed:", err);
+  }
+
+  // 3. Fallback to window.open
   if (typeof window !== "undefined") {
     window.open(url, "_blank");
   }
@@ -32,6 +46,7 @@ export function UploadCanvasPanel({ jobId }: UploadCanvasPanelProps) {
   const [showChooser, setShowChooser] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [openedUrl, setOpenedUrl] = useState<string | null>(null);
 
   const summaryQuery = useQuery({
     queryKey: ["upload-canvas-summary", jobId],
@@ -51,6 +66,7 @@ export function UploadCanvasPanel({ jobId }: UploadCanvasPanelProps) {
       setShowChooser(false);
       setErrorMessage(null);
       if (data?.url) {
+        setOpenedUrl(data.url);
         await safeOpenUrl(data.url);
       }
       queryClient.invalidateQueries({ queryKey: ["upload-canvas-summary", jobId] });
@@ -66,6 +82,7 @@ export function UploadCanvasPanel({ jobId }: UploadCanvasPanelProps) {
       setShowChooser(false);
       setErrorMessage(null);
       if (data?.url) {
+        setOpenedUrl(data.url);
         await safeOpenUrl(data.url);
       }
       queryClient.invalidateQueries({ queryKey: ["upload-canvas-summary", jobId] });
@@ -80,6 +97,7 @@ export function UploadCanvasPanel({ jobId }: UploadCanvasPanelProps) {
     onSuccess: async (data) => {
       setErrorMessage(null);
       if (data?.url) {
+        setOpenedUrl(data.url);
         await safeOpenUrl(data.url);
       }
       queryClient.invalidateQueries({ queryKey: ["upload-canvas-summary", jobId] });
@@ -168,6 +186,37 @@ export function UploadCanvasPanel({ jobId }: UploadCanvasPanelProps) {
           <span>{errorMessage}</span>
           <button type="button" onClick={() => setErrorMessage(null)} className="font-bold ml-2">
             ×
+          </button>
+        </div>
+      )}
+
+      {openedUrl && (
+        <div className="mt-3 rounded border border-blue-200 bg-blue-50 p-3 text-xs text-blue-900 flex items-center justify-between">
+          <div className="flex-1 mr-2">
+            <span className="font-semibold">Opened in browser:</span>{" "}
+            <a
+              href={openedUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              onClick={async (e) => {
+                e.preventDefault();
+                await safeOpenUrl(openedUrl);
+              }}
+              className="text-blue-700 underline font-medium hover:text-blue-900 break-all"
+            >
+              {openedUrl}
+            </a>
+          </div>
+          <button
+            type="button"
+            onClick={() => {
+              if (navigator.clipboard) {
+                navigator.clipboard.writeText(openedUrl);
+              }
+            }}
+            className="rounded bg-white px-2 py-1 text-xs border border-blue-300 text-blue-800 hover:bg-blue-100 whitespace-nowrap"
+          >
+            Copy link
           </button>
         </div>
       )}
