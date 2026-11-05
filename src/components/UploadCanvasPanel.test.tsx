@@ -139,4 +139,20 @@ describe("UploadCanvasPanel", () => {
       expect(screen.getByText("98.5% reliability (FR 60 min)")).toBeInTheDocument();
     });
   });
+
+  it("does not render an error banner when background summary query fails with 401 or network error", async () => {
+    vi.mocked(client.getUploadCanvasSummary).mockRejectedValue(
+      new Error("GET /api/imacs/jobs/.../upload-canvas-summary failed: 401 Unauthorized"),
+    );
+
+    renderPanel("batch-100");
+
+    await waitFor(() => {
+      expect(
+        screen.getByRole("button", { name: /Open in Upload Canvas/i }),
+      ).toBeInTheDocument();
+    });
+
+    expect(screen.queryByText(/401 Unauthorized/i)).not.toBeInTheDocument();
+  });
 });

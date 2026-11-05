@@ -221,12 +221,6 @@ export function UploadCanvasPanel({ jobId }: UploadCanvasPanelProps) {
         </div>
       )}
 
-      {summaryQuery.isError && (
-        <p className="mt-2 text-xs text-rose-600">
-          {(summaryQuery.error as Error).message}
-        </p>
-      )}
-
       {isLinked ? (
         <div className="mt-3">
           <div className="grid grid-cols-2 gap-4 text-sm">

@@ -27,6 +27,8 @@ def _get_client(db: ResultsDB = Depends(_get_db)) -> UploadCanvasClient:
     backend_url = db.get_setting("backend_base_url") or "http://127.0.0.1:8001"
     web_url = db.get_setting("upload_canvas_base_url") or "http://localhost:3000"
     app_key = db.get_setting("imacs_app_key")
+    if not app_key and ("127.0.0.1" in backend_url or "localhost" in backend_url):
+        app_key = "dev-imacs-local-key"
     return UploadCanvasClient(backend_url=backend_url, upload_canvas_url=web_url, app_key=app_key)
 
 
@@ -133,14 +135,17 @@ def get_job_summary(
 ):
     try:
         imacs_job_id = get_or_create_imacs_job_id(db, job_id)
-        summary = client.get_summary(imacs_job_id)
+        try:
+            summary = client.get_summary(imacs_job_id)
+        except UploadCanvasError:
+            # Backend not reachable or not yet configured: treat job as unlinked
+            # rather than failing with 401/500 and polluting the card UI.
+            summary = None
         return {
             "job_id": job_id,
             "imacs_job_id": imacs_job_id,
             "summary": summary,
         }
-    except UploadCanvasError as e:
-        raise HTTPException(status_code=e.status_code, detail=str(e))
     finally:
         db.close()
 

@@ -50,7 +50,7 @@ def test_build_macs_run_payload():
         run_row=run_row,
         imacs_job_id="job-uuid-1",
         label="Test Batch",
-        version="0.1.0-rc.18",
+        version="0.1.0-rc.19",
     )
     assert payload["schema"] == "fd-macs-reliability/2"
     assert payload["critical_temp"] == 540.0
@@ -61,7 +61,7 @@ def test_build_macs_run_payload():
     assert payload["imacs_job_id"] == "job-uuid-1"
     assert payload["run_id"] == "run-uuid-42"
     assert payload["label"] == "Test Batch"
-    assert payload["client_version"] == "0.1.0-rc.18"
+    assert payload["client_version"] == "0.1.0-rc.19"
     assert "windows_user" in payload
     assert "machine_name" in payload
     assert "client_timestamp" in payload
@@ -323,3 +323,20 @@ def test_endpoints_attach_macs_batch(mem_db):
         sent_push_again = mock_push.call_args[0][1]
         assert "macs_batch" in sent_push_again
 
+
+
+def test_sidecar_summary_endpoint_handles_unauthorized_gracefully():
+    api = TestClient(app)
+    with patch("macs_automation.upload_canvas.UploadCanvasClient.get_summary") as mock_summary:
+        mock_summary.side_effect = UploadCanvasError("Missing or invalid IMACS_APP_KEY", 401)
+        res = api.get("/api/imacs/jobs/batch-test-unauth/upload-canvas-summary")
+        assert res.status_code == 200
+        data = res.json()
+        assert data["summary"] is None
+
+
+def test_get_client_defaults_dev_key_for_localhost(tmp_path):
+    from macs_automation.upload_canvas_router import _get_client
+    db = ResultsDB(tmp_path / "fresh.db")
+    client = _get_client(db)
+    assert client.app_key == "dev-imacs-local-key"

@@ -185,7 +185,7 @@ def build_macs_run_payload(
         "windows_user": str(user),
         "machine_name": str(machine),
         "client_timestamp": now_iso,
-        "client_version": str(version or "0.1.0-rc.18"),
+        "client_version": str(version or "0.1.0-rc.19"),
         "run_id": str(run_row.get("uuid") or run_row.get("id") or uuid.uuid4()),
         "label": label or run_row.get("name") or "MACS Run",
         "inputs": inputs,
