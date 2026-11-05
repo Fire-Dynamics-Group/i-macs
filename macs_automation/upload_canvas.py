@@ -353,7 +353,7 @@ class UploadCanvasClient:
         handoff_id = data.get("handoff_id")
         return {
             "handoff_id": handoff_id,
-            "url": f"{self.upload_canvas_url}/?handoff={handoff_id}",
+            "url": f"{self.upload_canvas_url}/structural-fire?handoff={handoff_id}",
             "expires_at": data.get("expires_at"),
         }
 
