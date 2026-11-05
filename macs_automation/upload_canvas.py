@@ -274,18 +274,43 @@ def build_macs_batch_payload(db: ResultsDB, batch_id: str) -> Optional[dict[str,
     }
 
     # Determine governing section, critical temp, and section factor across batch runs
-    gov_run = min(
-        (r for r in runs if isinstance(r.get("critical_temp"), (int, float)) and r["critical_temp"] > 0),
-        key=lambda r: r["critical_temp"],
-        default=(runs[0] if runs else None),
-    )
     governing_section = None
     critical_temp = None
     section_factor = None
-    if gov_run:
-        governing_section = gov_run.get("section")
-        critical_temp = gov_run.get("critical_temp")
-        section_factor = gov_run.get("section_factor")
+
+    if runs:
+        # Check if runs have explicit critical_temp or need perimeter beam candidate resolution
+        def _get_run_crit_temp(r: dict) -> float:
+            if isinstance(r.get("critical_temp"), (int, float)) and r["critical_temp"] > 0:
+                return float(r["critical_temp"])
+            candidates = [
+                float(r[f"side_{s}_critical_temp"])
+                for s in ("a", "b", "c", "d")
+                if isinstance(r.get(f"side_{s}_critical_temp"), (int, float)) and r[f"side_{s}_critical_temp"] > 0
+            ]
+            return min(candidates) if candidates else float(r.get("max_temperature") or 9999.0)
+
+        gov_run = min(runs, key=_get_run_crit_temp)
+        # Extract section and temp from the governing run
+        candidates = []
+        for s in ("a", "b", "c", "d"):
+            val = gov_run.get(f"side_{s}_critical_temp")
+            if val is not None and isinstance(val, (int, float)) and val > 0:
+                candidates.append((s, float(val)))
+        if candidates:
+            gov_side, ct = min(candidates, key=lambda x: x[1])
+            critical_temp = ct
+            governing_section = (
+                gov_run.get(f"side_{gov_side}_sec")
+                or gov_run.get("u_sec_size")
+                or "UB 457x191x82"
+            )
+        else:
+            critical_temp = gov_run.get("critical_temp") or gov_run.get("max_temperature")
+            governing_section = gov_run.get("section") or gov_run.get("u_sec_size") or "UB 457x191x82"
+
+        if governing_section:
+            section_factor = compute_section_factor(governing_section, "3-sided")
 
     return {
         "batch_id": str(batch_id),
