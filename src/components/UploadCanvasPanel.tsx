@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   getUploadCanvasSummary,
@@ -13,6 +13,9 @@ import {
 interface UploadCanvasPanelProps {
   jobId: string;
 }
+
+/** How often to re-read the summary while a New project handoff is still unclaimed. */
+const CLAIM_POLL_MS = 400;
 
 async function safeOpenUrl(url: string) {
   // 1. Try Tauri invoke command open_external_url (native host OS opener)
@@ -47,11 +50,17 @@ export function UploadCanvasPanel({ jobId }: UploadCanvasPanelProps) {
   const [searchQuery, setSearchQuery] = useState("");
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [openedUrl, setOpenedUrl] = useState<string | null>(null);
+  const [awaitingClaim, setAwaitingClaim] = useState(false);
 
   const summaryQuery = useQuery({
     queryKey: ["upload-canvas-summary", jobId],
     queryFn: () => getUploadCanvasSummary(jobId),
     enabled: Boolean(jobId),
+    refetchInterval: (query) => {
+      if (!awaitingClaim) return false;
+      const projectId = query.state.data?.summary?.project_id;
+      return projectId ? false : CLAIM_POLL_MS;
+    },
   });
 
   const searchProjectsQuery = useQuery({
@@ -65,6 +74,9 @@ export function UploadCanvasPanel({ jobId }: UploadCanvasPanelProps) {
     onSuccess: async (data) => {
       setShowChooser(false);
       setErrorMessage(null);
+      // The browser claims the handoff after this response. A null summary
+      // until then is waiting, not a failure.
+      setAwaitingClaim(true);
       if (data?.url) {
         setOpenedUrl(data.url);
         await safeOpenUrl(data.url);
@@ -120,6 +132,10 @@ export function UploadCanvasPanel({ jobId }: UploadCanvasPanelProps) {
 
   const summary = summaryQuery.data?.summary;
   const isLinked = Boolean(summary?.project_id);
+
+  useEffect(() => {
+    if (isLinked) setAwaitingClaim(false);
+  }, [isLinked]);
 
   const formatOutcome = (outcome: Record<string, unknown> | null) => {
     if (!outcome) return "No time-eq run yet";
