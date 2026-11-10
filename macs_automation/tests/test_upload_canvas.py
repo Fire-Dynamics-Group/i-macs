@@ -335,8 +335,108 @@ def test_sidecar_summary_endpoint_handles_unauthorized_gracefully():
         assert data["summary"] is None
 
 
-def test_get_client_defaults_dev_key_for_localhost(tmp_path):
+def _clear_upload_canvas_env(monkeypatch):
+    for name in (
+        "MACS_PACKAGED",
+        "IMACS_APP_KEY",
+        "IMACS_BACKEND_BASE_URL",
+        "UPLOAD_CANVAS_BASE_URL",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+
+def test_get_client_defaults_dev_key_for_localhost(tmp_path, monkeypatch):
+    """Local dev with nothing configured still talks to localhost with the dev key."""
+    _clear_upload_canvas_env(monkeypatch)
     from macs_automation.upload_canvas_router import _get_client
     db = ResultsDB(tmp_path / "fresh.db")
     client = _get_client(db)
+    assert client.backend_url == "http://127.0.0.1:8001"
+    assert client.upload_canvas_url == "http://localhost:3000"
     assert client.app_key == "dev-imacs-local-key"
+    db.close()
+
+
+def test_localhost_fallback_does_not_override_a_set_key(tmp_path, monkeypatch):
+    """A key in the environment or in settings wins over the localhost dev key."""
+    _clear_upload_canvas_env(monkeypatch)
+    monkeypatch.setenv("IMACS_APP_KEY", "env-key-from-test")
+    from macs_automation.upload_canvas_router import _get_client
+
+    db = ResultsDB(tmp_path / "env-key.db")
+    client = _get_client(db)
+    assert client.app_key == "env-key-from-test"
+    assert client.app_key != "dev-imacs-local-key"
+
+    db.set_setting("imacs_app_key", "settings-key-from-test")
+    monkeypatch.setenv("IMACS_APP_KEY", "env-key-from-test")
+    client = _get_client(db)
+    assert client.app_key == "settings-key-from-test"
+    db.close()
+
+
+def test_configured_env_urls_are_used(tmp_path, monkeypatch):
+    _clear_upload_canvas_env(monkeypatch)
+    monkeypatch.setenv("IMACS_BACKEND_BASE_URL", "https://api.example.test")
+    monkeypatch.setenv("UPLOAD_CANVAS_BASE_URL", "https://canvas.example.test/")
+    monkeypatch.setenv("IMACS_APP_KEY", "env-key-from-test")
+    from macs_automation.upload_canvas_router import _get_client
+
+    db = ResultsDB(tmp_path / "env-urls.db")
+    client = _get_client(db)
+    assert client.backend_url == "https://api.example.test"
+    assert client.upload_canvas_url == "https://canvas.example.test"
+    assert client.app_key == "env-key-from-test"
+    db.close()
+
+
+def test_packaged_unset_urls_say_link_is_not_configured(tmp_path, monkeypatch):
+    _clear_upload_canvas_env(monkeypatch)
+    monkeypatch.setenv("MACS_PACKAGED", "1")
+    from fastapi import HTTPException
+    from macs_automation.upload_canvas_router import _get_client, get_config
+
+    db = ResultsDB(tmp_path / "packaged.db")
+    with pytest.raises(HTTPException) as exc:
+        _get_client(db)
+    assert exc.value.status_code == 503
+    assert "not configured" in str(exc.value.detail).lower()
+
+    with pytest.raises(HTTPException) as config_exc:
+        get_config(db)
+    assert config_exc.value.status_code == 503
+    assert "not configured" in str(config_exc.value.detail).lower()
+
+
+def test_settings_urls_and_key_win_over_env(tmp_path, monkeypatch):
+    _clear_upload_canvas_env(monkeypatch)
+    monkeypatch.setenv("IMACS_BACKEND_BASE_URL", "https://env.example.test")
+    monkeypatch.setenv("UPLOAD_CANVAS_BASE_URL", "https://env-canvas.example.test")
+    monkeypatch.setenv("IMACS_APP_KEY", "env-key-from-test")
+    from macs_automation.upload_canvas_router import _get_client
+
+    db = ResultsDB(tmp_path / "settings-win.db")
+    db.set_setting("backend_base_url", "https://settings.example.test")
+    db.set_setting("upload_canvas_base_url", "https://settings-canvas.example.test/")
+    db.set_setting("imacs_app_key", "settings-key-from-test")
+    client = _get_client(db)
+    assert client.backend_url == "https://settings.example.test"
+    assert client.upload_canvas_url == "https://settings-canvas.example.test"
+    assert client.app_key == "settings-key-from-test"
+    db.close()
+
+
+def test_packaged_app_uses_env_urls_and_key(tmp_path, monkeypatch):
+    _clear_upload_canvas_env(monkeypatch)
+    monkeypatch.setenv("MACS_PACKAGED", "1")
+    monkeypatch.setenv("IMACS_BACKEND_BASE_URL", "http://127.0.0.1:8001")
+    monkeypatch.setenv("UPLOAD_CANVAS_BASE_URL", "http://localhost:3000")
+    monkeypatch.setenv("IMACS_APP_KEY", "env-key-from-test")
+    from macs_automation.upload_canvas_router import _get_client
+
+    db = ResultsDB(tmp_path / "packaged-env.db")
+    client = _get_client(db)
+    assert client.backend_url == "http://127.0.0.1:8001"
+    assert client.upload_canvas_url == "http://localhost:3000"
+    assert client.app_key == "env-key-from-test"
+    db.close()

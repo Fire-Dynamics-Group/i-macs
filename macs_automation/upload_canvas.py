@@ -340,7 +340,12 @@ class UploadCanvasClient:
     ):
         self.backend_url = backend_url.rstrip("/")
         self.upload_canvas_url = upload_canvas_url.rstrip("/")
-        self.app_key = app_key or os.environ.get("IMACS_APP_KEY", "")
+        # None means "read IMACS_APP_KEY". An explicit string, including "",
+        # is the caller's decision — the localhost dev key must not be
+        # substituted again here and hide a key the router already resolved.
+        if app_key is None:
+            app_key = os.environ.get("IMACS_APP_KEY", "")
+        self.app_key = app_key
 
     def _request(self, method: str, path: str, body: Optional[dict] = None) -> Any:
         url = f"{self.backend_url}{path}"
