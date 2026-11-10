@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
-import { RunSummary, TimeSeriesTable } from "./RunDetailPage";
+import { RunSummary, TimeSeriesTable, uploadCanvasJobId } from "./RunDetailPage";
 import type { Run, TimeSeriesRow } from "../api/client";
 
 function makeRun(overrides: Partial<Run> = {}): Run {
@@ -18,6 +18,18 @@ function makeRun(overrides: Partial<Run> = {}): Run {
     ...overrides,
   } as Run;
 }
+
+describe("uploadCanvasJobId", () => {
+  it("uses the batch id when the run belongs to a batch", () => {
+    expect(uploadCanvasJobId(42, "batch-share-1")).toBe("batch-share-1");
+  });
+
+  it("keeps the run id when the run is not in a batch", () => {
+    expect(uploadCanvasJobId(42, null)).toBe("42");
+    expect(uploadCanvasJobId(42, "")).toBe("42");
+    expect(uploadCanvasJobId(42, "   ")).toBe("42");
+  });
+});
 
 describe("RunSummary", () => {
   it("shows which FRACOF engine version produced the run", () => {

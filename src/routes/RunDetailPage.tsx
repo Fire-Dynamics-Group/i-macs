@@ -12,6 +12,13 @@ import { frcLabel } from "../lib/batchLabel";
 import { RunTemperatureChart } from "../sweep/RunTemperatureChart";
 import { RunCapacityDeflectionChart } from "../sweep/RunCapacityDeflectionChart";
 
+/** A run inside a batch is the same Upload Canvas job as that batch. */
+export function uploadCanvasJobId(runId: number, batchId: unknown): string {
+  if (typeof batchId === "string" && batchId.trim()) return batchId.trim();
+  if (typeof batchId === "number" && Number.isFinite(batchId)) return String(batchId);
+  return String(runId);
+}
+
 export default function RunDetailPage() {
   const { id } = useParams<{ id: string }>();
   const runId = Number(id);
@@ -70,7 +77,7 @@ export default function RunDetailPage() {
         <PerimeterBeamCheck run={runQuery.data} />
       )}
       {runQuery.data && !runQuery.data.error && (
-        <UploadCanvasPanel jobId={String(runId)} />
+        <UploadCanvasPanel jobId={uploadCanvasJobId(runId, runQuery.data.batch_id)} />
       )}
       {Number.isFinite(runId) && <RunSetupPanel runId={runId} />}
       {tsQuery.data && tsQuery.data.length > 0 && (

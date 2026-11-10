@@ -11,6 +11,7 @@ from macs_automation.upload_canvas import (
     UploadCanvasClient,
     UploadCanvasError,
     get_or_create_imacs_job_id,
+    resolve_local_job_id,
     build_macs_run_payload,
     build_macs_batch_payload,
 )
@@ -134,7 +135,8 @@ def get_job_summary(
     client: UploadCanvasClient = Depends(_get_client),
 ):
     try:
-        imacs_job_id = get_or_create_imacs_job_id(db, job_id)
+        local_id = resolve_local_job_id(db, job_id)
+        imacs_job_id = get_or_create_imacs_job_id(db, local_id)
         try:
             summary = client.get_summary(imacs_job_id)
         except UploadCanvasError:
@@ -157,8 +159,9 @@ def create_job_handoff(
     client: UploadCanvasClient = Depends(_get_client),
 ):
     try:
-        imacs_job_id = get_or_create_imacs_job_id(db, job_id)
-        payload = _resolve_job_payload(db, job_id, imacs_job_id)
+        local_id = resolve_local_job_id(db, job_id)
+        imacs_job_id = get_or_create_imacs_job_id(db, local_id)
+        payload = _resolve_job_payload(db, local_id, imacs_job_id)
         handoff = client.create_handoff(payload)
         if handoff and handoff.get("url"):
             _safe_open_browser(handoff["url"])
@@ -192,8 +195,9 @@ def link_project(
     client: UploadCanvasClient = Depends(_get_client),
 ):
     try:
-        imacs_job_id = get_or_create_imacs_job_id(db, job_id)
-        payload = _resolve_job_payload(db, job_id, imacs_job_id)
+        local_id = resolve_local_job_id(db, job_id)
+        imacs_job_id = get_or_create_imacs_job_id(db, local_id)
+        payload = _resolve_job_payload(db, local_id, imacs_job_id)
 
         # 1. Link job
         client.link_project(imacs_job_id, body.project_id)
@@ -220,7 +224,8 @@ def unlink_project(
     client: UploadCanvasClient = Depends(_get_client),
 ):
     try:
-        imacs_job_id = get_or_create_imacs_job_id(db, job_id)
+        local_id = resolve_local_job_id(db, job_id)
+        imacs_job_id = get_or_create_imacs_job_id(db, local_id)
         res = client.unlink_project(imacs_job_id)
         return {"status": "unlinked", "result": res}
     except UploadCanvasError as e:
@@ -236,13 +241,14 @@ def push_run(
     client: UploadCanvasClient = Depends(_get_client),
 ):
     try:
-        imacs_job_id = get_or_create_imacs_job_id(db, job_id)
+        local_id = resolve_local_job_id(db, job_id)
+        imacs_job_id = get_or_create_imacs_job_id(db, local_id)
         summary = client.get_summary(imacs_job_id)
         if not summary or not summary.get("project_id"):
             raise HTTPException(status_code=400, detail="Job is not linked to any project")
 
         project_id = summary["project_id"]
-        payload = _resolve_job_payload(db, job_id, imacs_job_id)
+        payload = _resolve_job_payload(db, local_id, imacs_job_id)
         client.push_run(project_id, payload)
 
         url = f"{client.upload_canvas_url}/structural-fire?project={project_id}"

@@ -22,6 +22,27 @@ class UploadCanvasError(Exception):
         self.status_code = status_code
 
 
+def resolve_local_job_id(db: ResultsDB, job_id: str) -> str:
+    """A run that belongs to a batch uses that batch's local job id.
+
+    An explicit batch id is left as-is, including when it is numeric.
+    A standalone run keeps its own id.
+    """
+    job_id = str(job_id)
+    batch = db.conn.execute(
+        "SELECT 1 FROM batches WHERE batch_id = ?",
+        (job_id,),
+    ).fetchone()
+    if batch:
+        return job_id
+    if job_id.isdigit():
+        run = db.get_run(int(job_id))
+        batch_id = run.get("batch_id") if run else None
+        if batch_id:
+            return str(batch_id)
+    return job_id
+
+
 def get_or_create_imacs_job_id(db: ResultsDB, local_job_id: str) -> str:
     """Return the stable client-generated imacs_job_id for a local job/batch, creating if missing."""
     db.conn.execute(

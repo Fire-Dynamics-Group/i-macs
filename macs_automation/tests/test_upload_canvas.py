@@ -335,6 +335,118 @@ def test_sidecar_summary_endpoint_handles_unauthorized_gracefully():
         assert data["summary"] is None
 
 
+def test_run_in_a_batch_shares_that_batch_imacs_job_id(tmp_path):
+    path = tmp_path / "share.db"
+    db = ResultsDB(path, check_same_thread=False)
+    batch_id = "batch-share-1"
+    db.insert_batch(batch_id=batch_id, mode="single", total_expected=2)
+    first = db.insert_run(
+        {"_batch_id": batch_id, "span1": 9.0, "span2": 9.0, "numbeam": 2},
+        {"comp_failure": 0, "time_series": []},
+    )
+    second = db.insert_run(
+        {"_batch_id": batch_id, "span1": 9.0, "span2": 9.0, "numbeam": 2},
+        {"comp_failure": 0, "time_series": []},
+    )
+    db.close()
+
+    from macs_automation.upload_canvas_router import _get_db
+
+    app.dependency_overrides[_get_db] = lambda: ResultsDB(path, check_same_thread=False)
+    api = TestClient(app)
+    try:
+        with patch("macs_automation.upload_canvas.UploadCanvasClient.get_summary", return_value=None):
+            by_first = api.get(f"/api/imacs/jobs/{first}/upload-canvas-summary")
+            by_second = api.get(f"/api/imacs/jobs/{second}/upload-canvas-summary")
+            by_batch = api.get(f"/api/imacs/jobs/{batch_id}/upload-canvas-summary")
+    finally:
+        app.dependency_overrides.pop(_get_db, None)
+
+    assert by_first.status_code == 200
+    assert by_second.status_code == 200
+    assert by_batch.status_code == 200
+    shared = by_batch.json()["imacs_job_id"]
+    assert by_first.json()["imacs_job_id"] == shared
+    assert by_second.json()["imacs_job_id"] == shared
+
+
+def test_standalone_run_keeps_its_own_imacs_job_id(tmp_path):
+    path = tmp_path / "solo.db"
+    db = ResultsDB(path, check_same_thread=False)
+    run_id = db.insert_run(
+        {"span1": 9.0, "span2": 9.0, "numbeam": 2},
+        {"comp_failure": 0, "time_series": []},
+    )
+    db.close()
+
+    from macs_automation.upload_canvas_router import _get_db
+
+    app.dependency_overrides[_get_db] = lambda: ResultsDB(path, check_same_thread=False)
+    api = TestClient(app)
+    try:
+        with patch("macs_automation.upload_canvas.UploadCanvasClient.get_summary", return_value=None):
+            by_run = api.get(f"/api/imacs/jobs/{run_id}/upload-canvas-summary")
+            by_other = api.get("/api/imacs/jobs/other-batch/upload-canvas-summary")
+    finally:
+        app.dependency_overrides.pop(_get_db, None)
+
+    assert by_run.json()["imacs_job_id"] != by_other.json()["imacs_job_id"]
+
+
+def test_pre_49_sqlite_opens_and_first_call_creates_local_job_links(tmp_path):
+    import sqlite3
+
+    legacy = tmp_path / "pre49.db"
+    conn = sqlite3.connect(legacy)
+    conn.execute("CREATE TABLE runs (id INTEGER PRIMARY KEY, uuid TEXT, batch_id TEXT)")
+    conn.execute("INSERT INTO runs (id, uuid, batch_id) VALUES (1, 'run-kept', NULL)")
+    conn.commit()
+    conn.close()
+
+    db = ResultsDB(legacy)
+    tables_after_open = {
+        row[0]
+        for row in db.conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
+    }
+    assert "local_job_links" not in tables_after_open
+    assert db.conn.execute("SELECT id, uuid FROM runs WHERE id = 1").fetchone() == (1, "run-kept")
+    run_cols = {row[1] for row in db.conn.execute("PRAGMA table_info(runs)")}
+    assert "imacs_job_id" not in run_cols
+
+    job_id = get_or_create_imacs_job_id(db, "batch-legacy")
+    assert len(job_id) == 36
+    tables_after_call = {
+        row[0]
+        for row in db.conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
+    }
+    assert "local_job_links" in tables_after_call
+    assert db.conn.execute("SELECT id, uuid FROM runs WHERE id = 1").fetchone() == (1, "run-kept")
+    db.close()
+
+
+def test_payload_does_not_upload_the_database_file(tmp_path):
+    import base64
+    import json
+
+    db_path = tmp_path / "results.db"
+    db = ResultsDB(db_path)
+    run_id = db.insert_run(
+        {"span1": 9.0, "span2": 9.0, "numbeam": 2, "uSecSize": "UB 457x191x82"},
+        {"comp_failure": 0, "side_a_critical_temp": 620.0, "time_series": []},
+    )
+    run = db.get_run(run_id)
+    payload = build_macs_run_payload(run, "job-1", version="0.1.0-rc.19", db=db)
+    blob = json.dumps(payload)
+    raw = db_path.read_bytes()
+    db.close()
+
+    assert b"SQLite format 3" not in blob.encode("utf-8")
+    assert base64.b64encode(raw).decode("ascii") not in blob
+    assert "results.db" not in blob
+    assert "database" not in payload
+    assert "sqlite" not in payload
+
+
 def test_get_client_defaults_dev_key_for_localhost(tmp_path):
     from macs_automation.upload_canvas_router import _get_client
     db = ResultsDB(tmp_path / "fresh.db")
