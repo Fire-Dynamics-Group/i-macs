@@ -137,10 +137,10 @@ def get_job_summary(
         imacs_job_id = get_or_create_imacs_job_id(db, job_id)
         try:
             summary = client.get_summary(imacs_job_id)
-        except UploadCanvasError:
-            # Backend not reachable or not yet configured: treat job as unlinked
-            # rather than failing with 401/500 and polluting the card UI.
-            summary = None
+        except UploadCanvasError as e:
+            # 401/403/503 (and other backend failures) must reach the card.
+            # A not-linked job is get_summary returning None, not this branch.
+            raise HTTPException(status_code=e.status_code, detail=str(e))
         return {
             "job_id": job_id,
             "imacs_job_id": imacs_job_id,

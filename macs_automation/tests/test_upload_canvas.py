@@ -325,14 +325,115 @@ def test_endpoints_attach_macs_batch(mem_db):
 
 
 
-def test_sidecar_summary_endpoint_handles_unauthorized_gracefully():
+@pytest.mark.parametrize(
+    "code,detail",
+    [
+        (401, "Missing or invalid IMACS_APP_KEY"),
+        (403, "IMACS_APP_KEY is rejected (wrong key)"),
+        (503, "Service unavailable (backend IMACS_APP_KEY unset or offline)."),
+    ],
+)
+def test_summary_401_403_503_are_not_an_unlinked_job(code, detail):
     api = TestClient(app)
     with patch("macs_automation.upload_canvas.UploadCanvasClient.get_summary") as mock_summary:
-        mock_summary.side_effect = UploadCanvasError("Missing or invalid IMACS_APP_KEY", 401)
+        mock_summary.side_effect = UploadCanvasError(detail, code)
         res = api.get("/api/imacs/jobs/batch-test-unauth/upload-canvas-summary")
-        assert res.status_code == 200
-        data = res.json()
-        assert data["summary"] is None
+    assert res.status_code == code
+    assert res.json().get("summary") is not None or "summary" not in res.json()
+    assert detail in res.json()["detail"]
+
+
+def _http_error(code: int):
+    import urllib.error
+    return urllib.error.HTTPError(
+        url="http://127.0.0.1:8001/imacs/x",
+        code=code,
+        msg="error",
+        hdrs={},
+        fp=None,
+    )
+
+
+def test_client_error_handling_403():
+    client = UploadCanvasClient(
+        backend_url="http://test-backend",
+        upload_canvas_url="http://test-web",
+        app_key="dummy-key",
+    )
+    with patch("urllib.request.urlopen", side_effect=_http_error(403)):
+        with pytest.raises(UploadCanvasError) as exc_info:
+            client.create_handoff({"schema": "fd-macs-reliability/2"})
+    assert exc_info.value.status_code == 403
+    assert "wrong key" in str(exc_info.value)
+
+
+def test_summary_404_stays_unlinked():
+    client = UploadCanvasClient(
+        backend_url="http://test-backend",
+        upload_canvas_url="http://test-web",
+        app_key="dummy-key",
+    )
+    with patch("urllib.request.urlopen", side_effect=_http_error(404)):
+        assert client.get_summary("job-missing") is None
+
+
+def test_link_404_is_not_success_and_does_not_open_browser():
+    api = TestClient(app)
+    with patch(
+        "macs_automation.upload_canvas_router._get_latest_run_for_job",
+        return_value={
+            "id": 10,
+            "side_a_critical_temp": 520.0,
+            "side_a_sec": "UB 457x191x82",
+        },
+    ), patch("macs_automation.upload_canvas_router._safe_open_browser") as mock_open, patch(
+        "urllib.request.urlopen", side_effect=_http_error(404)
+    ):
+        res = api.post(
+            "/api/imacs/jobs/batch-404/upload-canvas-link",
+            json={"project_id": "missing-project"},
+        )
+    assert res.status_code == 404
+    assert res.json().get("status") != "linked"
+    mock_open.assert_not_called()
+
+
+def test_push_404_is_not_success_and_does_not_open_browser():
+    class _Ok:
+        status = 200
+
+        def read(self):
+            return (
+                b'{"project_id":"p-1","project_name":"Site Plan Time Eq",'
+                b'"last_sent_at":null,"outcome":null}'
+            )
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+    def urlopen(req, timeout=30):
+        if getattr(req, "method", "GET") == "GET":
+            return _Ok()
+        raise _http_error(404)
+
+    api = TestClient(app)
+    with patch(
+        "macs_automation.upload_canvas_router._get_latest_run_for_job",
+        return_value={
+            "id": 10,
+            "side_a_critical_temp": 520.0,
+            "side_a_sec": "UB 457x191x82",
+        },
+    ), patch("macs_automation.upload_canvas_router._safe_open_browser") as mock_open, patch(
+        "urllib.request.urlopen", side_effect=urlopen
+    ):
+        res = api.post("/api/imacs/jobs/batch-404/upload-canvas-push")
+    assert res.status_code == 404
+    assert res.json().get("status") != "pushed"
+    mock_open.assert_not_called()
 
 
 def test_get_client_defaults_dev_key_for_localhost(tmp_path):

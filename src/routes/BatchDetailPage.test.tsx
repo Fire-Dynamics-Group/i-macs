@@ -140,6 +140,15 @@ function mockResponses(opts: {
     if (url.includes("/api/runs?batch_id=")) {
       return Promise.resolve(jsonResponse({ runs: opts.runs ?? TWO_RUNS, stats: {} }));
     }
+    if (url.includes("/upload-canvas-summary")) {
+      return Promise.resolve(
+        jsonResponse({
+          job_id: "BATCH123",
+          imacs_job_id: "imacs-uuid",
+          summary: null,
+        }),
+      );
+    }
     return Promise.resolve(jsonResponse({ detail: "not mocked" }, 404));
   });
 }

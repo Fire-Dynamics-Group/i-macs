@@ -140,19 +140,22 @@ describe("UploadCanvasPanel", () => {
     });
   });
 
-  it("does not render an error banner when background summary query fails with 401 or network error", async () => {
-    vi.mocked(client.getUploadCanvasSummary).mockRejectedValue(
-      new Error("GET /api/imacs/jobs/.../upload-canvas-summary failed: 401 Unauthorized"),
-    );
+  it.each([401, 403, 503])(
+    "shows summary %s on the card instead of the unlinked button",
+    async (status) => {
+      vi.mocked(client.getUploadCanvasSummary).mockRejectedValue(
+        new Error(
+          `GET /api/imacs/jobs/batch-100/upload-canvas-summary failed: ${status} backend refused`,
+        ),
+      );
 
-    renderPanel("batch-100");
+      renderPanel("batch-100");
 
-    await waitFor(() => {
+      const alert = await screen.findByRole("alert");
+      expect(alert).toHaveTextContent(String(status));
       expect(
-        screen.getByRole("button", { name: /Open in Upload Canvas/i }),
-      ).toBeInTheDocument();
-    });
-
-    expect(screen.queryByText(/401 Unauthorized/i)).not.toBeInTheDocument();
-  });
+        screen.queryByRole("button", { name: /Open in Upload Canvas/i }),
+      ).not.toBeInTheDocument();
+    },
+  );
 });
