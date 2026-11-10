@@ -41,7 +41,15 @@ async function getJson<T>(path: string): Promise<T> {
   const base = await baseUrl();
   const resp = await fetch(`${base}${path}`);
   if (!resp.ok) {
-    throw new Error(`GET ${path} failed: ${resp.status} ${resp.statusText}`);
+    let detail = resp.statusText;
+    try {
+      const err = await resp.json();
+      const fromBody = err?.detail ?? err?.error;
+      if (typeof fromBody === "string" && fromBody.trim()) detail = fromBody;
+    } catch {
+      /* status text is enough when the body is not JSON */
+    }
+    throw new Error(`GET ${path} failed: ${resp.status} ${detail}`);
   }
   return (await resp.json()) as T;
 }

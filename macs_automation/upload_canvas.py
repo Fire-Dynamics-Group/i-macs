@@ -391,7 +391,10 @@ class UploadCanvasClient:
                     status_code=503,
                 )
             elif code == 404:
-                return None
+                raise UploadCanvasError(
+                    detail_msg or "Upload Canvas resource was not found.",
+                    status_code=404,
+                )
             else:
                 raise UploadCanvasError(
                     detail_msg or f"Backend request failed with status {code}",
@@ -413,8 +416,16 @@ class UploadCanvasClient:
         }
 
     def get_summary(self, imacs_job_id: str) -> Optional[dict[str, Any]]:
-        """GET /imacs/jobs/{imacs_job_id}/summary -> returns summary or None."""
-        return self._request("GET", f"/imacs/jobs/{urllib.parse.quote(imacs_job_id)}/summary")
+        """GET /imacs/jobs/{imacs_job_id}/summary -> returns summary or None.
+
+        404 means the job is not linked yet. Auth and availability errors propagate.
+        """
+        try:
+            return self._request("GET", f"/imacs/jobs/{urllib.parse.quote(imacs_job_id)}/summary")
+        except UploadCanvasError as exc:
+            if exc.status_code == 404:
+                return None
+            raise
 
     def search_projects(self, q: str = "") -> list[dict[str, Any]]:
         """GET /imacs/projects?mode=timeEq&q={q}."""
