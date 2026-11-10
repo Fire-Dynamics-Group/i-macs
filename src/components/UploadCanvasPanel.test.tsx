@@ -95,6 +95,74 @@ describe("UploadCanvasPanel", () => {
     });
   });
 
+  it("shows the linked project after New project once the claim exists", async () => {
+    let handoffDone = false;
+    let fetchesAfterHandoff = 0;
+    vi.mocked(client.getUploadCanvasSummary).mockImplementation(async () => {
+      if (!handoffDone || fetchesAfterHandoff < 1) {
+        if (handoffDone) fetchesAfterHandoff += 1;
+        return {
+          job_id: "batch-100",
+          imacs_job_id: "imacs-uuid-1",
+          summary: null,
+        };
+      }
+      fetchesAfterHandoff += 1;
+      return {
+        job_id: "batch-100",
+        imacs_job_id: "imacs-uuid-1",
+        summary: {
+          project_id: "42625cdb-d3bb-49ff-a0d2-9d023a866519",
+          project_name: "Site Plan Time Eq",
+          last_sent_at: "2026-11-10T10:19:02.000Z",
+          outcome: null,
+        },
+      };
+    });
+    vi.mocked(client.createUploadCanvasHandoff).mockImplementation(async () => {
+      handoffDone = true;
+      return {
+        handoff_id: "h-xyz",
+        url: "http://localhost:3000/structural-fire?handoff=h-xyz",
+      };
+    });
+
+    renderPanel("batch-100");
+
+    await waitFor(() => {
+      expect(
+        screen.getByRole("button", { name: /Open in Upload Canvas/i }),
+      ).toBeInTheDocument();
+    });
+
+    fireEvent.click(
+      screen.getByRole("button", { name: /Open in Upload Canvas/i }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: /Create new project/i }));
+
+    await waitFor(() => {
+      expect(client.createUploadCanvasHandoff).toHaveBeenCalledWith("batch-100");
+    });
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(screen.queryByText(/failed/i)).not.toBeInTheDocument();
+
+    await waitFor(
+      () => {
+        expect(screen.getByText("Site Plan Time Eq")).toBeInTheDocument();
+      },
+      { timeout: 2000 },
+    );
+    expect(screen.getByText(/No time-eq run yet/i)).toBeInTheDocument();
+    expect(screen.getByText("Last Sent")).toBeInTheDocument();
+    expect(screen.queryByText("Never")).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /Open project/i }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /Open in Upload Canvas/i }),
+    ).not.toBeInTheDocument();
+  });
+
   it("renders linked project summary and 'Open project' button when linked", async () => {
     vi.mocked(client.getUploadCanvasSummary).mockResolvedValue({
       job_id: "batch-100",
