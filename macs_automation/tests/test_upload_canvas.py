@@ -9,6 +9,7 @@ from macs_automation.upload_canvas import (
     get_or_create_imacs_job_id,
     build_macs_run_payload,
     build_macs_batch_payload,
+    compute_section_factor,
     UploadCanvasClient,
     UploadCanvasError,
 )
@@ -43,6 +44,7 @@ def test_build_macs_run_payload():
         "side_c_critical_temp": 600.0,
         "side_d_critical_temp": 620.0,
         "side_b_sec": "UB 457x191x82",
+        "exposure": "4-sided",
         "span1": 12.0,
         "span2": 9.0,
     }
@@ -56,8 +58,8 @@ def test_build_macs_run_payload():
     assert payload["critical_temp"] == 540.0
     assert payload["governing_side"] == "B"
     assert payload["section"] == "UB 457x191x82"
-    assert payload["exposure"] in ("3-sided", "4-sided")
-    assert payload["section_factor"] > 0
+    assert payload["exposure"] == "4-sided"
+    assert payload["section_factor"] == 159.4
     assert payload["imacs_job_id"] == "job-uuid-1"
     assert payload["run_id"] == "run-uuid-42"
     assert payload["label"] == "Test Batch"
@@ -68,6 +70,76 @@ def test_build_macs_run_payload():
     assert "outputs" in payload
     assert "checks" in payload
     assert "time_series" in payload
+
+
+def test_section_factor_uses_blue_book_not_140():
+    """UB_SECTIONS keys are lowercase. Both spellings are the same real factor."""
+    assert compute_section_factor("UB 457x191x82", "3-sided") == 138.1
+    assert compute_section_factor("457x191x82", "3-sided") == 138.1
+    assert compute_section_factor("ub 457x191x82", "4-sided") == 159.4
+
+
+def test_unknown_section_does_not_invent_section_factor_140():
+    with pytest.raises(UploadCanvasError) as exc:
+        compute_section_factor("NOT-A-SECTION", "3-sided")
+    assert "140" in str(exc.value)
+
+
+def test_payload_fails_when_critical_temp_section_or_exposure_is_missing():
+    base = {
+        "id": 7,
+        "uuid": "run-7",
+        "side_a_critical_temp": 620.0,
+        "side_a_sec": "UB 305x165x40",
+        "exposure": "3-sided",
+        "max_temperature": 800.0,
+    }
+    missing_temp = {k: v for k, v in base.items() if k != "side_a_critical_temp"}
+    with pytest.raises(UploadCanvasError) as exc:
+        build_macs_run_payload(missing_temp, "job", version="0.1.0-rc.19")
+    assert "550" in str(exc.value)
+
+    missing_section = {k: v for k, v in base.items() if k != "side_a_sec"}
+    with pytest.raises(UploadCanvasError) as exc:
+        build_macs_run_payload(missing_section, "job", version="0.1.0-rc.19")
+    assert "UB 457x191x82" in str(exc.value)
+
+    missing_exposure = {k: v for k, v in base.items() if k != "exposure"}
+    with pytest.raises(UploadCanvasError) as exc:
+        build_macs_run_payload(missing_exposure, "job", version="0.1.0-rc.19")
+    assert "3-sided" in str(exc.value)
+
+
+def test_client_version_comes_from_macs_app_version(monkeypatch):
+    monkeypatch.setenv("MACS_APP_VERSION", "9.9.9-test")
+    payload = build_macs_run_payload(
+        {
+            "id": 7,
+            "uuid": "run-7",
+            "side_b_critical_temp": 540.0,
+            "side_b_sec": "UB 457x191x82",
+            "exposure": "3-sided",
+        },
+        "job-uuid-1",
+    )
+    assert payload["schema"] == "fd-macs-reliability/2"
+    assert payload["client_version"] == "9.9.9-test"
+    assert payload["client_version"] != "0.1.0-rc.19"
+    assert payload["section_factor"] == 138.1
+
+
+def test_client_version_fails_when_unset(monkeypatch):
+    monkeypatch.delenv("MACS_APP_VERSION", raising=False)
+    with pytest.raises(UploadCanvasError) as exc:
+        build_macs_run_payload(
+            {
+                "side_a_critical_temp": 500.0,
+                "side_a_sec": "UB 457x191x82",
+                "exposure": "3-sided",
+            },
+            "job",
+        )
+    assert "MACS_APP_VERSION" in str(exc.value)
 
 
 def test_client_error_handling_401():
@@ -127,7 +199,8 @@ def test_sidecar_summary_endpoint():
         assert data["summary"]["project_name"] == "Warehouse A"
 
 
-def test_sidecar_handoff_and_link_endpoints():
+def test_sidecar_handoff_and_link_endpoints(monkeypatch):
+    monkeypatch.setenv("MACS_APP_VERSION", "0.1.0-rc.19")
     api = TestClient(app)
     with patch("macs_automation.upload_canvas_router._get_latest_run_for_job") as mock_run, \
          patch("macs_automation.upload_canvas.UploadCanvasClient.create_handoff") as mock_handoff, \
@@ -141,6 +214,7 @@ def test_sidecar_handoff_and_link_endpoints():
             "side_a_critical_temp": 520.0,
             "side_a_sec": "UB 457x191x82",
             "u_sec_size": "UB 457x191x82",
+            "exposure": "3-sided",
         }
         mock_handoff.return_value = {
             "handoff_id": "h-abc",
@@ -259,6 +333,11 @@ def test_build_macs_batch_payload_success(mem_db):
     assert payload["shear_check"]["batch_id"] == batch_id
     assert payload["shear_check"]["checked"] == 2
     assert isinstance(payload["shear_check"]["sub_limit_runs"], list)
+    # The seeded runs have a real section and critical temperature, and no
+    # exposure. The factor must not fall back to 140 or an assumed 3-sided.
+    assert payload["governing_section"] == "UB 457x191x82"
+    assert payload["critical_temp"] == 540.0
+    assert payload["section_factor"] is None
 
     charts = payload["charts"]
     assert "scatter" in charts
@@ -283,7 +362,8 @@ def test_client_request_timeout():
         assert mock_open.call_args[1].get("timeout") == 30
 
 
-def test_endpoints_attach_macs_batch(mem_db):
+def test_endpoints_attach_macs_batch(mem_db, monkeypatch):
+    monkeypatch.setenv("MACS_APP_VERSION", "0.1.0-rc.19")
     api = TestClient(app)
     with patch("macs_automation.upload_canvas_router._get_db", return_value=mem_db), \
          patch("macs_automation.upload_canvas_router._get_latest_run_for_job") as mock_run, \
@@ -298,6 +378,7 @@ def test_endpoints_attach_macs_batch(mem_db):
             "side_a_critical_temp": 520.0,
             "side_a_sec": "UB 457x191x82",
             "u_sec_size": "UB 457x191x82",
+            "exposure": "3-sided",
         }
         mock_batch.return_value = {"batch_id": "b-1", "name": "Batch 1", "run_count": 100}
         mock_handoff.return_value = {"handoff_id": "h-1", "url": "http://localhost:3000/?handoff=h-1"}
@@ -325,14 +406,22 @@ def test_endpoints_attach_macs_batch(mem_db):
 
 
 
-def test_sidecar_summary_endpoint_handles_unauthorized_gracefully():
+@pytest.mark.parametrize(
+    "code,detail",
+    [
+        (401, "Missing or invalid IMACS_APP_KEY"),
+        (403, "IMACS_APP_KEY is rejected (wrong key)"),
+        (503, "Service unavailable (backend IMACS_APP_KEY unset or offline)."),
+    ],
+)
+def test_summary_401_403_503_are_not_an_unlinked_job(code, detail):
     api = TestClient(app)
     with patch("macs_automation.upload_canvas.UploadCanvasClient.get_summary") as mock_summary:
-        mock_summary.side_effect = UploadCanvasError("Missing or invalid IMACS_APP_KEY", 401)
+        mock_summary.side_effect = UploadCanvasError(detail, code)
         res = api.get("/api/imacs/jobs/batch-test-unauth/upload-canvas-summary")
-        assert res.status_code == 200
-        data = res.json()
-        assert data["summary"] is None
+    assert res.status_code == code
+    assert res.json().get("summary") is not None or "summary" not in res.json()
+    assert detail in res.json()["detail"]
 
 
 def test_run_in_a_batch_shares_that_batch_imacs_job_id(tmp_path):
@@ -435,6 +524,7 @@ def test_payload_does_not_upload_the_database_file(tmp_path):
         {"comp_failure": 0, "side_a_critical_temp": 620.0, "time_series": []},
     )
     run = db.get_run(run_id)
+    run["exposure"] = "3-sided"
     payload = build_macs_run_payload(run, "job-1", version="0.1.0-rc.19", db=db)
     blob = json.dumps(payload)
     raw = db_path.read_bytes()
@@ -447,8 +537,201 @@ def test_payload_does_not_upload_the_database_file(tmp_path):
     assert "sqlite" not in payload
 
 
-def test_get_client_defaults_dev_key_for_localhost(tmp_path):
+def _http_error(code: int):
+    import urllib.error
+    return urllib.error.HTTPError(
+        url="http://127.0.0.1:8001/imacs/x",
+        code=code,
+        msg="error",
+        hdrs={},
+        fp=None,
+    )
+
+
+def test_client_error_handling_403():
+    client = UploadCanvasClient(
+        backend_url="http://test-backend",
+        upload_canvas_url="http://test-web",
+        app_key="dummy-key",
+    )
+    with patch("urllib.request.urlopen", side_effect=_http_error(403)):
+        with pytest.raises(UploadCanvasError) as exc_info:
+            client.create_handoff({"schema": "fd-macs-reliability/2"})
+    assert exc_info.value.status_code == 403
+    assert "wrong key" in str(exc_info.value)
+
+
+def test_summary_404_stays_unlinked():
+    client = UploadCanvasClient(
+        backend_url="http://test-backend",
+        upload_canvas_url="http://test-web",
+        app_key="dummy-key",
+    )
+    with patch("urllib.request.urlopen", side_effect=_http_error(404)):
+        assert client.get_summary("job-missing") is None
+
+
+def test_link_404_is_not_success_and_does_not_open_browser():
+    api = TestClient(app)
+    with patch(
+        "macs_automation.upload_canvas_router._get_latest_run_for_job",
+        return_value={
+            "id": 10,
+            "side_a_critical_temp": 520.0,
+            "side_a_sec": "UB 457x191x82",
+        },
+    ), patch("macs_automation.upload_canvas_router._safe_open_browser") as mock_open, patch(
+        "urllib.request.urlopen", side_effect=_http_error(404)
+    ):
+        res = api.post(
+            "/api/imacs/jobs/batch-404/upload-canvas-link",
+            json={"project_id": "missing-project"},
+        )
+    assert res.status_code == 404
+    assert res.json().get("status") != "linked"
+    mock_open.assert_not_called()
+
+
+def test_push_404_is_not_success_and_does_not_open_browser():
+    class _Ok:
+        status = 200
+
+        def read(self):
+            return (
+                b'{"project_id":"p-1","project_name":"Site Plan Time Eq",'
+                b'"last_sent_at":null,"outcome":null}'
+            )
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+    def urlopen(req, timeout=30):
+        if getattr(req, "method", "GET") == "GET":
+            return _Ok()
+        raise _http_error(404)
+
+    api = TestClient(app)
+    with patch(
+        "macs_automation.upload_canvas_router._get_latest_run_for_job",
+        return_value={
+            "id": 10,
+            "side_a_critical_temp": 520.0,
+            "side_a_sec": "UB 457x191x82",
+        },
+    ), patch("macs_automation.upload_canvas_router._safe_open_browser") as mock_open, patch(
+        "urllib.request.urlopen", side_effect=urlopen
+    ):
+        res = api.post("/api/imacs/jobs/batch-404/upload-canvas-push")
+    assert res.status_code == 404
+    assert res.json().get("status") != "pushed"
+    mock_open.assert_not_called()
+
+
+def _clear_upload_canvas_env(monkeypatch):
+    for name in (
+        "MACS_PACKAGED",
+        "IMACS_APP_KEY",
+        "IMACS_BACKEND_BASE_URL",
+        "UPLOAD_CANVAS_BASE_URL",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+
+def test_get_client_defaults_dev_key_for_localhost(tmp_path, monkeypatch):
+    """Local dev with nothing configured still talks to localhost with the dev key."""
+    _clear_upload_canvas_env(monkeypatch)
     from macs_automation.upload_canvas_router import _get_client
     db = ResultsDB(tmp_path / "fresh.db")
     client = _get_client(db)
+    assert client.backend_url == "http://127.0.0.1:8001"
+    assert client.upload_canvas_url == "http://localhost:3000"
     assert client.app_key == "dev-imacs-local-key"
+    db.close()
+
+
+def test_localhost_fallback_does_not_override_a_set_key(tmp_path, monkeypatch):
+    """A key in the environment or in settings wins over the localhost dev key."""
+    _clear_upload_canvas_env(monkeypatch)
+    monkeypatch.setenv("IMACS_APP_KEY", "env-key-from-test")
+    from macs_automation.upload_canvas_router import _get_client
+
+    db = ResultsDB(tmp_path / "env-key.db")
+    client = _get_client(db)
+    assert client.app_key == "env-key-from-test"
+    assert client.app_key != "dev-imacs-local-key"
+
+    db.set_setting("imacs_app_key", "settings-key-from-test")
+    monkeypatch.setenv("IMACS_APP_KEY", "env-key-from-test")
+    client = _get_client(db)
+    assert client.app_key == "settings-key-from-test"
+    db.close()
+
+
+def test_configured_env_urls_are_used(tmp_path, monkeypatch):
+    _clear_upload_canvas_env(monkeypatch)
+    monkeypatch.setenv("IMACS_BACKEND_BASE_URL", "https://api.example.test")
+    monkeypatch.setenv("UPLOAD_CANVAS_BASE_URL", "https://canvas.example.test/")
+    monkeypatch.setenv("IMACS_APP_KEY", "env-key-from-test")
+    from macs_automation.upload_canvas_router import _get_client
+
+    db = ResultsDB(tmp_path / "env-urls.db")
+    client = _get_client(db)
+    assert client.backend_url == "https://api.example.test"
+    assert client.upload_canvas_url == "https://canvas.example.test"
+    assert client.app_key == "env-key-from-test"
+    db.close()
+
+
+def test_packaged_unset_urls_say_link_is_not_configured(tmp_path, monkeypatch):
+    _clear_upload_canvas_env(monkeypatch)
+    monkeypatch.setenv("MACS_PACKAGED", "1")
+    from fastapi import HTTPException
+    from macs_automation.upload_canvas_router import _get_client, get_config
+
+    db = ResultsDB(tmp_path / "packaged.db")
+    with pytest.raises(HTTPException) as exc:
+        _get_client(db)
+    assert exc.value.status_code == 503
+    assert "not configured" in str(exc.value.detail).lower()
+
+    with pytest.raises(HTTPException) as config_exc:
+        get_config(db)
+    assert config_exc.value.status_code == 503
+    assert "not configured" in str(config_exc.value.detail).lower()
+
+
+def test_settings_urls_and_key_win_over_env(tmp_path, monkeypatch):
+    _clear_upload_canvas_env(monkeypatch)
+    monkeypatch.setenv("IMACS_BACKEND_BASE_URL", "https://env.example.test")
+    monkeypatch.setenv("UPLOAD_CANVAS_BASE_URL", "https://env-canvas.example.test")
+    monkeypatch.setenv("IMACS_APP_KEY", "env-key-from-test")
+    from macs_automation.upload_canvas_router import _get_client
+
+    db = ResultsDB(tmp_path / "settings-win.db")
+    db.set_setting("backend_base_url", "https://settings.example.test")
+    db.set_setting("upload_canvas_base_url", "https://settings-canvas.example.test/")
+    db.set_setting("imacs_app_key", "settings-key-from-test")
+    client = _get_client(db)
+    assert client.backend_url == "https://settings.example.test"
+    assert client.upload_canvas_url == "https://settings-canvas.example.test"
+    assert client.app_key == "settings-key-from-test"
+    db.close()
+
+
+def test_packaged_app_uses_env_urls_and_key(tmp_path, monkeypatch):
+    _clear_upload_canvas_env(monkeypatch)
+    monkeypatch.setenv("MACS_PACKAGED", "1")
+    monkeypatch.setenv("IMACS_BACKEND_BASE_URL", "http://127.0.0.1:8001")
+    monkeypatch.setenv("UPLOAD_CANVAS_BASE_URL", "http://localhost:3000")
+    monkeypatch.setenv("IMACS_APP_KEY", "env-key-from-test")
+    from macs_automation.upload_canvas_router import _get_client
+
+    db = ResultsDB(tmp_path / "packaged-env.db")
+    client = _get_client(db)
+    assert client.backend_url == "http://127.0.0.1:8001"
+    assert client.upload_canvas_url == "http://localhost:3000"
+    assert client.app_key == "env-key-from-test"
+    db.close()

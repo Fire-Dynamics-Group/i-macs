@@ -72,37 +72,99 @@ def get_or_create_imacs_job_id(db: ResultsDB, local_job_id: str) -> str:
     return new_job_id
 
 
-def compute_section_factor(section_name: str, exposure: str = "3-sided") -> float:
-    """Calculate section factor Ap/V (1/m) for a UB section."""
-    clean = section_name.strip().upper().replace("UB", "").replace(" ", "")
-    info = UB_SECTIONS.get(clean)
-    if not info:
-        for k, v in UB_SECTIONS.items():
-            if k in clean or clean in k:
-                info = v
-                break
+_EXPOSURES = {"3-sided", "4-sided"}
 
+
+def _catalog_key(section_name: str) -> str:
+    """Blue Book keys are lowercase serial sizes, without a UB prefix."""
+    text = section_name.strip().lower()
+    if text.startswith("ub"):
+        text = text[2:]
+    return text.replace(" ", "")
+
+
+def compute_section_factor(section_name: str, exposure: str) -> float:
+    """Section factor Ap/V (1/m) from Blue Book dimensions and a real exposure.
+
+    Unknown sections raise. The old 140 fallback was what the canvas stored
+    for UB 457x191x82, because the lookup uppercased a lowercase key.
+    """
+    if exposure not in _EXPOSURES:
+        raise UploadCanvasError(
+            "Exposure must be 3-sided or 4-sided. Refusing to invent 3-sided.",
+            status_code=422,
+        )
+    if not isinstance(section_name, str) or not section_name.strip():
+        raise UploadCanvasError(
+            "Run has no section. Refusing to invent UB 457x191x82.",
+            status_code=422,
+        )
+    info = UB_SECTIONS.get(_catalog_key(section_name))
     if not info:
-        return 140.0  # sensible default Ap/V for typical mid-range UB
+        raise UploadCanvasError(
+            f"No Blue Book dimensions for section {section_name!r}. "
+            "Refusing to invent section factor 140.",
+            status_code=422,
+        )
 
     h = info["h"] / 1000.0
     b = info["b"] / 1000.0
     tw = info["tw"] / 1000.0
     tf = info["tf"] / 1000.0
-    mass_per_m = info["mass_per_m"]
+    area = info["mass_per_m"] / 7850.0
 
-    # Area A = mass / density steel (7850 kg/m3)
-    area = mass_per_m / 7850.0
-
-    # Heated perimeter Hp
     if exposure == "3-sided":
         hp = 3 * b + 2 * h - 2 * tw - 2 * tf
     else:
         hp = 4 * b + 2 * h - 2 * tw
 
-    if area > 0:
-        return round(hp / area, 1)
-    return 140.0
+    if area <= 0 or hp <= 0:
+        raise UploadCanvasError(
+            f"Section factor for {section_name!r} could not be calculated. "
+            "Refusing to invent section factor 140.",
+            status_code=422,
+        )
+    return round(hp / area, 1)
+
+
+def _governing_beam(run_row: dict[str, Any]) -> tuple[str, float]:
+    """Lowest positive perimeter-beam critical temperature. Ties keep A→D order."""
+    candidates: list[tuple[str, float]] = []
+    for side in ("a", "b", "c", "d"):
+        val = run_row.get(f"side_{side}_critical_temp")
+        if isinstance(val, bool) or not isinstance(val, (int, float)):
+            continue
+        if val > 0:
+            candidates.append((side, float(val)))
+    if not candidates:
+        raise UploadCanvasError(
+            "Run has no positive perimeter-beam critical temperature. "
+            "Refusing to invent 550.",
+            status_code=422,
+        )
+    return min(candidates, key=lambda item: (item[1], item[0]))
+
+
+def _section_name(run_row: dict[str, Any], side: str) -> str:
+    for key in (f"side_{side}_sec", "u_sec_size", "section"):
+        raw = run_row.get(key)
+        if isinstance(raw, str) and raw.strip():
+            return raw.strip()
+    raise UploadCanvasError(
+        "Run has no section. Refusing to invent UB 457x191x82.",
+        status_code=422,
+    )
+
+
+def _exposure_name(run_row: dict[str, Any], side: str) -> str:
+    for key in ("exposure", f"side_{side}_exposure"):
+        raw = run_row.get(key)
+        if isinstance(raw, str) and raw.strip().lower() in _EXPOSURES:
+            return raw.strip().lower()
+    raise UploadCanvasError(
+        "Run has no exposure. Refusing to invent 3-sided.",
+        status_code=422,
+    )
 
 
 def build_macs_run_payload(
@@ -113,29 +175,17 @@ def build_macs_run_payload(
     db: Optional[ResultsDB] = None,
 ) -> dict[str, Any]:
     """Build a validated fd-macs-reliability/2 dictionary from a local run row."""
-    # Find governing perimeter beam side (lowest positive critical temp)
-    sides = ["a", "b", "c", "d"]
-    candidates = []
-    for s in sides:
-        val = run_row.get(f"side_{s}_critical_temp")
-        if val is not None and isinstance(val, (int, float)) and val > 0:
-            candidates.append((s, float(val)))
-
-    if candidates:
-        governing_side, critical_temp = min(candidates, key=lambda x: x[1])
-        governing_side_upper = governing_side.upper()
-        section = (
-            run_row.get(f"side_{governing_side}_sec")
-            or run_row.get("u_sec_size")
-            or "UB 457x191x82"
-        )
-    else:
-        governing_side_upper = "A"
-        critical_temp = float(run_row.get("max_temperature") or 550.0)
-        section = run_row.get("u_sec_size") or "UB 457x191x82"
-
-    exposure = "3-sided"
+    governing_side, critical_temp = _governing_beam(run_row)
+    governing_side_upper = governing_side.upper()
+    section = _section_name(run_row, governing_side)
+    exposure = _exposure_name(run_row, governing_side)
     sec_factor = compute_section_factor(section, exposure)
+    resolved_version = str(version or os.environ.get("MACS_APP_VERSION") or "").strip()
+    if not resolved_version:
+        raise UploadCanvasError(
+            "MACS_APP_VERSION is not set.",
+            status_code=422,
+        )
 
     try:
         user = os.getlogin()
@@ -206,7 +256,7 @@ def build_macs_run_payload(
         "windows_user": str(user),
         "machine_name": str(machine),
         "client_timestamp": now_iso,
-        "client_version": str(version or "0.1.0-rc.19"),
+        "client_version": resolved_version,
         "run_id": str(run_row.get("uuid") or run_row.get("id") or uuid.uuid4()),
         "label": label or run_row.get("name") or "MACS Run",
         "inputs": inputs,
@@ -294,44 +344,36 @@ def build_macs_batch_payload(db: ResultsDB, batch_id: str) -> Optional[dict[str,
         "reliability_percent": reliability_percent,
     }
 
-    # Determine governing section, critical temp, and section factor across batch runs
+    # Real governing values only. A missing piece stays null rather than
+    # 550, UB 457x191x82, 3-sided, or section factor 140.
     governing_section = None
     critical_temp = None
     section_factor = None
 
     if runs:
-        # Check if runs have explicit critical_temp or need perimeter beam candidate resolution
-        def _get_run_crit_temp(r: dict) -> float:
-            if isinstance(r.get("critical_temp"), (int, float)) and r["critical_temp"] > 0:
-                return float(r["critical_temp"])
-            candidates = [
-                float(r[f"side_{s}_critical_temp"])
-                for s in ("a", "b", "c", "d")
-                if isinstance(r.get(f"side_{s}_critical_temp"), (int, float)) and r[f"side_{s}_critical_temp"] > 0
-            ]
-            return min(candidates) if candidates else float(r.get("max_temperature") or 9999.0)
+        def _sort_temp(r: dict) -> float:
+            try:
+                return _governing_beam(r)[1]
+            except UploadCanvasError:
+                return 9999.0
 
-        gov_run = min(runs, key=_get_run_crit_temp)
-        # Extract section and temp from the governing run
-        candidates = []
-        for s in ("a", "b", "c", "d"):
-            val = gov_run.get(f"side_{s}_critical_temp")
-            if val is not None and isinstance(val, (int, float)) and val > 0:
-                candidates.append((s, float(val)))
-        if candidates:
-            gov_side, ct = min(candidates, key=lambda x: x[1])
-            critical_temp = ct
-            governing_section = (
-                gov_run.get(f"side_{gov_side}_sec")
-                or gov_run.get("u_sec_size")
-                or "UB 457x191x82"
-            )
-        else:
-            critical_temp = gov_run.get("critical_temp") or gov_run.get("max_temperature")
-            governing_section = gov_run.get("section") or gov_run.get("u_sec_size") or "UB 457x191x82"
-
-        if governing_section:
-            section_factor = compute_section_factor(governing_section, "3-sided")
+        gov_run = min(runs, key=_sort_temp)
+        try:
+            gov_side, critical_temp = _governing_beam(gov_run)
+        except UploadCanvasError:
+            gov_side = None
+            critical_temp = None
+        if gov_side:
+            try:
+                governing_section = _section_name(gov_run, gov_side)
+            except UploadCanvasError:
+                governing_section = None
+            try:
+                exposure = _exposure_name(gov_run, gov_side)
+                if governing_section:
+                    section_factor = compute_section_factor(governing_section, exposure)
+            except UploadCanvasError:
+                section_factor = None
 
     return {
         "batch_id": str(batch_id),
@@ -361,7 +403,12 @@ class UploadCanvasClient:
     ):
         self.backend_url = backend_url.rstrip("/")
         self.upload_canvas_url = upload_canvas_url.rstrip("/")
-        self.app_key = app_key or os.environ.get("IMACS_APP_KEY", "")
+        # None means "read IMACS_APP_KEY". An explicit string, including "",
+        # is the caller's decision — the localhost dev key must not be
+        # substituted again here and hide a key the router already resolved.
+        if app_key is None:
+            app_key = os.environ.get("IMACS_APP_KEY", "")
+        self.app_key = app_key
 
     def _request(self, method: str, path: str, body: Optional[dict] = None) -> Any:
         url = f"{self.backend_url}{path}"
@@ -407,7 +454,10 @@ class UploadCanvasClient:
                     status_code=503,
                 )
             elif code == 404:
-                return None
+                raise UploadCanvasError(
+                    detail_msg or "Upload Canvas resource was not found.",
+                    status_code=404,
+                )
             else:
                 raise UploadCanvasError(
                     detail_msg or f"Backend request failed with status {code}",
@@ -429,8 +479,16 @@ class UploadCanvasClient:
         }
 
     def get_summary(self, imacs_job_id: str) -> Optional[dict[str, Any]]:
-        """GET /imacs/jobs/{imacs_job_id}/summary -> returns summary or None."""
-        return self._request("GET", f"/imacs/jobs/{urllib.parse.quote(imacs_job_id)}/summary")
+        """GET /imacs/jobs/{imacs_job_id}/summary -> returns summary or None.
+
+        404 means the job is not linked yet. Auth and availability errors propagate.
+        """
+        try:
+            return self._request("GET", f"/imacs/jobs/{urllib.parse.quote(imacs_job_id)}/summary")
+        except UploadCanvasError as exc:
+            if exc.status_code == 404:
+                return None
+            raise
 
     def search_projects(self, q: str = "") -> list[dict[str, Any]]:
         """GET /imacs/projects?mode=timeEq&q={q}."""

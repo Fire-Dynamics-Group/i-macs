@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+import urllib.parse
 from typing import Optional
 from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
@@ -24,13 +26,58 @@ def _get_db() -> ResultsDB:
     return ResultsDB(DB_PATH)
 
 
+_LOCAL_BACKEND_URL = "http://127.0.0.1:8001"
+_LOCAL_WEB_URL = "http://localhost:3000"
+_LOCAL_DEV_KEY = "dev-imacs-local-key"
+_NOT_CONFIGURED = "Upload Canvas link is not configured."
+
+
+def _nonempty(value: Optional[str]) -> Optional[str]:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _is_loopback(url: str) -> bool:
+    host = (urllib.parse.urlparse(url).hostname or "").lower()
+    return host in {"127.0.0.1", "localhost", "::1"}
+
+
+def resolve_upload_canvas_config(db: ResultsDB) -> tuple[str, str, str]:
+    """Settings, then environment, then local-dev defaults.
+
+    A key already stored in settings or ``IMACS_APP_KEY`` is never replaced
+    by the localhost dev key. A packaged app (``MACS_PACKAGED=1``) with either
+    URL unset fails closed instead of calling loopback.
+    """
+    backend = _nonempty(db.get_setting("backend_base_url")) or _nonempty(
+        os.environ.get("IMACS_BACKEND_BASE_URL")
+    )
+    web = _nonempty(db.get_setting("upload_canvas_base_url")) or _nonempty(
+        os.environ.get("UPLOAD_CANVAS_BASE_URL")
+    )
+    key = _nonempty(db.get_setting("imacs_app_key"))
+    if key is None:
+        key = _nonempty(os.environ.get("IMACS_APP_KEY"))
+
+    if os.environ.get("MACS_PACKAGED") == "1" and (not backend or not web):
+        raise HTTPException(status_code=503, detail=_NOT_CONFIGURED)
+
+    backend = backend or _LOCAL_BACKEND_URL
+    web = web or _LOCAL_WEB_URL
+    if not key and _is_loopback(backend):
+        key = _LOCAL_DEV_KEY
+    return backend, web, key or ""
+
+
 def _get_client(db: ResultsDB = Depends(_get_db)) -> UploadCanvasClient:
-    backend_url = db.get_setting("backend_base_url") or "http://127.0.0.1:8001"
-    web_url = db.get_setting("upload_canvas_base_url") or "http://localhost:3000"
-    app_key = db.get_setting("imacs_app_key")
-    if not app_key and ("127.0.0.1" in backend_url or "localhost" in backend_url):
-        app_key = "dev-imacs-local-key"
-    return UploadCanvasClient(backend_url=backend_url, upload_canvas_url=web_url, app_key=app_key)
+    backend_url, web_url, app_key = resolve_upload_canvas_config(db)
+    return UploadCanvasClient(
+        backend_url=backend_url,
+        upload_canvas_url=web_url,
+        app_key=app_key,
+    )
 
 
 def _safe_open_browser(url: str) -> None:
@@ -105,10 +152,11 @@ class ConfigBody(BaseModel):
 @router.get("/config")
 def get_config(db: ResultsDB = Depends(_get_db)):
     try:
+        backend_url, web_url, _app_key = resolve_upload_canvas_config(db)
         return {
-            "backend_base_url": db.get_setting("backend_base_url") or "http://127.0.0.1:8001",
-            "upload_canvas_base_url": db.get_setting("upload_canvas_base_url") or "http://localhost:3000",
-            "has_app_key": bool(db.get_setting("imacs_app_key")),
+            "backend_base_url": backend_url,
+            "upload_canvas_base_url": web_url,
+            "has_app_key": bool(_nonempty(db.get_setting("imacs_app_key"))),
         }
     finally:
         db.close()
@@ -139,10 +187,10 @@ def get_job_summary(
         imacs_job_id = get_or_create_imacs_job_id(db, local_id)
         try:
             summary = client.get_summary(imacs_job_id)
-        except UploadCanvasError:
-            # Backend not reachable or not yet configured: treat job as unlinked
-            # rather than failing with 401/500 and polluting the card UI.
-            summary = None
+        except UploadCanvasError as e:
+            # 401/403/503 (and other backend failures) must reach the card.
+            # A not-linked job is get_summary returning None, not this branch.
+            raise HTTPException(status_code=e.status_code, detail=str(e))
         return {
             "job_id": job_id,
             "imacs_job_id": imacs_job_id,

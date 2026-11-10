@@ -97,6 +97,44 @@ fn read_setting_from_db(db_path: &Path, key: &str) -> Option<String> {
 /// project root (one level above `src-tauri/`). Prefers the 32-bit venv-32
 /// interpreter so FRACOF COM is reachable without extra setup.
 ///
+const UPLOAD_CANVAS_ENV_KEYS: [&str; 3] = [
+    "IMACS_APP_KEY",
+    "IMACS_BACKEND_BASE_URL",
+    "UPLOAD_CANVAS_BASE_URL",
+];
+
+/// Env pairs the sidecar should see for the Upload Canvas link.
+///
+/// `packaged` sets `MACS_PACKAGED=1`. A blank value is not forwarded, so an
+/// empty key cannot mask a later lookup. This function does not invent URLs
+/// or a key.
+fn upload_canvas_env_pairs(
+    packaged: bool,
+    lookup: impl Fn(&str) -> Option<String>,
+) -> Vec<(String, String)> {
+    let mut pairs = Vec::new();
+    if packaged {
+        pairs.push(("MACS_PACKAGED".to_string(), "1".to_string()));
+    }
+    for key in UPLOAD_CANVAS_ENV_KEYS {
+        if let Some(value) = lookup(key) {
+            if !value.trim().is_empty() {
+                pairs.push((key.to_string(), value));
+            }
+        }
+    }
+    pairs
+}
+
+fn apply_upload_canvas_env(cmd: &mut Command, packaged: bool) {
+    if !packaged {
+        cmd.env_remove("MACS_PACKAGED");
+    }
+    for (key, value) in upload_canvas_env_pairs(packaged, |key| std::env::var(key).ok()) {
+        cmd.env(key, value);
+    }
+}
+
 /// Prod (release builds): runs the PyInstaller-produced onedir bundle shipped
 /// via Tauri's `bundle.resources`. The exe lives at
 /// `<Resource>/binaries/i-macs-sidecar-x86_64-pc-windows-msvc/i-macs-sidecar.exe`;
@@ -152,6 +190,8 @@ fn spawn_sidecar(
         .current_dir(&project_root)
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit());
+        // Dev stays unpackaged so an unset URL still falls back to localhost.
+        apply_upload_canvas_env(&mut cmd, false);
         if let Some(macs_data_path) = read_setting_from_db(&dev_db, "macs_data_path") {
             println!("[tauri] (dev) injecting MACS_DATA_PATH from settings: {macs_data_path}");
             cmd.env("MACS_DATA_PATH", macs_data_path);
@@ -207,6 +247,10 @@ fn spawn_sidecar(
         .current_dir(&sidecar_dir)
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit());
+    // Packaged installs have no settings screen for these. Forward whatever
+    // the user launched the app with, and tell the sidecar not to invent
+    // localhost when a URL is missing.
+    apply_upload_canvas_env(&mut cmd, true);
 
     // Read the user's persisted MACS+ install-location override (#23).
     // The sidecar's data_loader checks `MACS_DATA_PATH` as the first
@@ -588,5 +632,40 @@ mod tests {
 
         let _ = child.kill();
         panic!("child still alive after job dropped — KILL_ON_JOB_CLOSE did not fire");
+    }
+}
+
+#[cfg(test)]
+mod upload_canvas_env_tests {
+    use super::upload_canvas_env_pairs;
+
+    #[test]
+    fn packaged_forwards_set_key_and_urls() {
+        let pairs = upload_canvas_env_pairs(true, |key| match key {
+            "IMACS_APP_KEY" => Some("env-key-from-test".to_string()),
+            "IMACS_BACKEND_BASE_URL" => Some("https://api.example.test".to_string()),
+            "UPLOAD_CANVAS_BASE_URL" => Some("https://canvas.example.test".to_string()),
+            _ => None,
+        });
+        assert!(pairs.contains(&("MACS_PACKAGED".into(), "1".into())));
+        assert!(pairs.contains(&("IMACS_APP_KEY".into(), "env-key-from-test".into())));
+        assert!(pairs.contains(&("IMACS_BACKEND_BASE_URL".into(), "https://api.example.test".into())));
+        assert!(pairs.contains(&("UPLOAD_CANVAS_BASE_URL".into(), "https://canvas.example.test".into())));
+    }
+
+    #[test]
+    fn blank_key_is_not_forwarded() {
+        let pairs = upload_canvas_env_pairs(true, |key| match key {
+            "IMACS_APP_KEY" => Some("   ".to_string()),
+            _ => None,
+        });
+        assert!(!pairs.iter().any(|(key, _)| key == "IMACS_APP_KEY"));
+        assert!(pairs.contains(&("MACS_PACKAGED".into(), "1".into())));
+    }
+
+    #[test]
+    fn dev_does_not_mark_the_process_packaged() {
+        let pairs = upload_canvas_env_pairs(false, |_| None);
+        assert!(pairs.is_empty());
     }
 }
