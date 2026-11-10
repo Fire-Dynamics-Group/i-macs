@@ -9,6 +9,7 @@ from macs_automation.upload_canvas import (
     get_or_create_imacs_job_id,
     build_macs_run_payload,
     build_macs_batch_payload,
+    compute_section_factor,
     UploadCanvasClient,
     UploadCanvasError,
 )
@@ -43,6 +44,7 @@ def test_build_macs_run_payload():
         "side_c_critical_temp": 600.0,
         "side_d_critical_temp": 620.0,
         "side_b_sec": "UB 457x191x82",
+        "exposure": "4-sided",
         "span1": 12.0,
         "span2": 9.0,
     }
@@ -56,8 +58,8 @@ def test_build_macs_run_payload():
     assert payload["critical_temp"] == 540.0
     assert payload["governing_side"] == "B"
     assert payload["section"] == "UB 457x191x82"
-    assert payload["exposure"] in ("3-sided", "4-sided")
-    assert payload["section_factor"] > 0
+    assert payload["exposure"] == "4-sided"
+    assert payload["section_factor"] == 159.4
     assert payload["imacs_job_id"] == "job-uuid-1"
     assert payload["run_id"] == "run-uuid-42"
     assert payload["label"] == "Test Batch"
@@ -68,6 +70,76 @@ def test_build_macs_run_payload():
     assert "outputs" in payload
     assert "checks" in payload
     assert "time_series" in payload
+
+
+def test_section_factor_uses_blue_book_not_140():
+    """UB_SECTIONS keys are lowercase. Both spellings are the same real factor."""
+    assert compute_section_factor("UB 457x191x82", "3-sided") == 138.1
+    assert compute_section_factor("457x191x82", "3-sided") == 138.1
+    assert compute_section_factor("ub 457x191x82", "4-sided") == 159.4
+
+
+def test_unknown_section_does_not_invent_section_factor_140():
+    with pytest.raises(UploadCanvasError) as exc:
+        compute_section_factor("NOT-A-SECTION", "3-sided")
+    assert "140" in str(exc.value)
+
+
+def test_payload_fails_when_critical_temp_section_or_exposure_is_missing():
+    base = {
+        "id": 7,
+        "uuid": "run-7",
+        "side_a_critical_temp": 620.0,
+        "side_a_sec": "UB 305x165x40",
+        "exposure": "3-sided",
+        "max_temperature": 800.0,
+    }
+    missing_temp = {k: v for k, v in base.items() if k != "side_a_critical_temp"}
+    with pytest.raises(UploadCanvasError) as exc:
+        build_macs_run_payload(missing_temp, "job", version="0.1.0-rc.19")
+    assert "550" in str(exc.value)
+
+    missing_section = {k: v for k, v in base.items() if k != "side_a_sec"}
+    with pytest.raises(UploadCanvasError) as exc:
+        build_macs_run_payload(missing_section, "job", version="0.1.0-rc.19")
+    assert "UB 457x191x82" in str(exc.value)
+
+    missing_exposure = {k: v for k, v in base.items() if k != "exposure"}
+    with pytest.raises(UploadCanvasError) as exc:
+        build_macs_run_payload(missing_exposure, "job", version="0.1.0-rc.19")
+    assert "3-sided" in str(exc.value)
+
+
+def test_client_version_comes_from_macs_app_version(monkeypatch):
+    monkeypatch.setenv("MACS_APP_VERSION", "9.9.9-test")
+    payload = build_macs_run_payload(
+        {
+            "id": 7,
+            "uuid": "run-7",
+            "side_b_critical_temp": 540.0,
+            "side_b_sec": "UB 457x191x82",
+            "exposure": "3-sided",
+        },
+        "job-uuid-1",
+    )
+    assert payload["schema"] == "fd-macs-reliability/2"
+    assert payload["client_version"] == "9.9.9-test"
+    assert payload["client_version"] != "0.1.0-rc.19"
+    assert payload["section_factor"] == 138.1
+
+
+def test_client_version_fails_when_unset(monkeypatch):
+    monkeypatch.delenv("MACS_APP_VERSION", raising=False)
+    with pytest.raises(UploadCanvasError) as exc:
+        build_macs_run_payload(
+            {
+                "side_a_critical_temp": 500.0,
+                "side_a_sec": "UB 457x191x82",
+                "exposure": "3-sided",
+            },
+            "job",
+        )
+    assert "MACS_APP_VERSION" in str(exc.value)
 
 
 def test_client_error_handling_401():
@@ -127,7 +199,8 @@ def test_sidecar_summary_endpoint():
         assert data["summary"]["project_name"] == "Warehouse A"
 
 
-def test_sidecar_handoff_and_link_endpoints():
+def test_sidecar_handoff_and_link_endpoints(monkeypatch):
+    monkeypatch.setenv("MACS_APP_VERSION", "0.1.0-rc.19")
     api = TestClient(app)
     with patch("macs_automation.upload_canvas_router._get_latest_run_for_job") as mock_run, \
          patch("macs_automation.upload_canvas.UploadCanvasClient.create_handoff") as mock_handoff, \
@@ -141,6 +214,7 @@ def test_sidecar_handoff_and_link_endpoints():
             "side_a_critical_temp": 520.0,
             "side_a_sec": "UB 457x191x82",
             "u_sec_size": "UB 457x191x82",
+            "exposure": "3-sided",
         }
         mock_handoff.return_value = {
             "handoff_id": "h-abc",
@@ -259,6 +333,11 @@ def test_build_macs_batch_payload_success(mem_db):
     assert payload["shear_check"]["batch_id"] == batch_id
     assert payload["shear_check"]["checked"] == 2
     assert isinstance(payload["shear_check"]["sub_limit_runs"], list)
+    # The seeded runs have a real section and critical temperature, and no
+    # exposure. The factor must not fall back to 140 or an assumed 3-sided.
+    assert payload["governing_section"] == "UB 457x191x82"
+    assert payload["critical_temp"] == 540.0
+    assert payload["section_factor"] is None
 
     charts = payload["charts"]
     assert "scatter" in charts
@@ -283,7 +362,8 @@ def test_client_request_timeout():
         assert mock_open.call_args[1].get("timeout") == 30
 
 
-def test_endpoints_attach_macs_batch(mem_db):
+def test_endpoints_attach_macs_batch(mem_db, monkeypatch):
+    monkeypatch.setenv("MACS_APP_VERSION", "0.1.0-rc.19")
     api = TestClient(app)
     with patch("macs_automation.upload_canvas_router._get_db", return_value=mem_db), \
          patch("macs_automation.upload_canvas_router._get_latest_run_for_job") as mock_run, \
@@ -298,6 +378,7 @@ def test_endpoints_attach_macs_batch(mem_db):
             "side_a_critical_temp": 520.0,
             "side_a_sec": "UB 457x191x82",
             "u_sec_size": "UB 457x191x82",
+            "exposure": "3-sided",
         }
         mock_batch.return_value = {"batch_id": "b-1", "name": "Batch 1", "run_count": 100}
         mock_handoff.return_value = {"handoff_id": "h-1", "url": "http://localhost:3000/?handoff=h-1"}
