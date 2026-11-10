@@ -247,9 +247,10 @@ fn spawn_sidecar(
         .current_dir(&sidecar_dir)
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit());
-    // Packaged installs have no settings screen for these. Forward whatever
-    // the user launched the app with, and tell the sidecar not to invent
-    // localhost when a URL is missing.
+    // Packaged installs have no settings screen for these. Forward any
+    // explicit URL or app key the user launched with. When those are unset,
+    // MACS_PACKAGED=1 tells the sidecar to use its production URL literals
+    // rather than loopback. This function does not invent a key.
     apply_upload_canvas_env(&mut cmd, true);
 
     // Read the user's persisted MACS+ install-location override (#23).

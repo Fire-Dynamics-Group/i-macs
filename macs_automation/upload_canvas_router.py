@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import sys
 import urllib.parse
 from typing import Optional
 from fastapi import APIRouter, HTTPException, Depends
@@ -26,10 +27,15 @@ def _get_db() -> ResultsDB:
     return ResultsDB(DB_PATH)
 
 
+# Production hosts are string literals so PyInstaller freezes them into the
+# sidecar. Do not read these through os.environ: a fresh install has no
+# override, and a missing env var would leave the loopback fallback in the
+# build the same way a bundler drops a non-literal env read.
+_PROD_BACKEND_URL = "https://backendfornextapp-production.up.railway.app"
+_PROD_WEB_URL = "https://upload-canvas.vercel.app"
 _LOCAL_BACKEND_URL = "http://127.0.0.1:8001"
 _LOCAL_WEB_URL = "http://localhost:3000"
 _LOCAL_DEV_KEY = "dev-imacs-local-key"
-_NOT_CONFIGURED = "Upload Canvas link is not configured."
 
 
 def _nonempty(value: Optional[str]) -> Optional[str]:
@@ -44,12 +50,29 @@ def _is_loopback(url: str) -> bool:
     return host in {"127.0.0.1", "localhost", "::1"}
 
 
-def resolve_upload_canvas_config(db: ResultsDB) -> tuple[str, str, str]:
-    """Settings, then environment, then local-dev defaults.
+def _packaged_install() -> bool:
+    """True when this process is a shipped install.
 
-    A key already stored in settings or ``IMACS_APP_KEY`` is never replaced
-    by the localhost dev key. A packaged app (``MACS_PACKAGED=1``) with either
-    URL unset fails closed instead of calling loopback.
+    The Tauri shell sets ``MACS_PACKAGED=1``. PyInstaller also sets
+    ``sys.frozen`` on the sidecar exe, so a fresh install still targets
+    production if that env var is missing.
+    """
+    if os.environ.get("MACS_PACKAGED") == "1":
+        return True
+    return bool(getattr(sys, "frozen", False))
+
+
+def resolve_upload_canvas_config(db: ResultsDB) -> tuple[str, str, str]:
+    """Settings, then environment, then install defaults.
+
+    A packaged or frozen install with nothing configured uses the production
+    Upload Canvas URLs. Dev (not packaged, not frozen) still defaults to
+    localhost. A settings value or env var always wins, so either build can
+    be pointed at the other environment.
+
+    The app key is never invented for production. It comes from settings or
+    ``IMACS_APP_KEY``. The localhost dev key is used only when the resolved
+    backend is loopback and no key was configured.
     """
     backend = _nonempty(db.get_setting("backend_base_url")) or _nonempty(
         os.environ.get("IMACS_BACKEND_BASE_URL")
@@ -61,11 +84,12 @@ def resolve_upload_canvas_config(db: ResultsDB) -> tuple[str, str, str]:
     if key is None:
         key = _nonempty(os.environ.get("IMACS_APP_KEY"))
 
-    if os.environ.get("MACS_PACKAGED") == "1" and (not backend or not web):
-        raise HTTPException(status_code=503, detail=_NOT_CONFIGURED)
-
-    backend = backend or _LOCAL_BACKEND_URL
-    web = web or _LOCAL_WEB_URL
+    if _packaged_install():
+        backend = backend or _PROD_BACKEND_URL
+        web = web or _PROD_WEB_URL
+    else:
+        backend = backend or _LOCAL_BACKEND_URL
+        web = web or _LOCAL_WEB_URL
     if not key and _is_loopback(backend):
         key = _LOCAL_DEV_KEY
     return backend, web, key or ""

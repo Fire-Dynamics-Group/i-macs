@@ -571,7 +571,8 @@ def test_summary_404_stays_unlinked():
         assert client.get_summary("job-missing") is None
 
 
-def test_link_404_is_not_success_and_does_not_open_browser():
+def test_link_404_is_not_success_and_does_not_open_browser(monkeypatch):
+    monkeypatch.setenv("MACS_APP_VERSION", "0.1.0-rc.20")
     api = TestClient(app)
     with patch(
         "macs_automation.upload_canvas_router._get_latest_run_for_job",
@@ -579,6 +580,7 @@ def test_link_404_is_not_success_and_does_not_open_browser():
             "id": 10,
             "side_a_critical_temp": 520.0,
             "side_a_sec": "UB 457x191x82",
+            "exposure": "3-sided",
         },
     ), patch("macs_automation.upload_canvas_router._safe_open_browser") as mock_open, patch(
         "urllib.request.urlopen", side_effect=_http_error(404)
@@ -592,7 +594,8 @@ def test_link_404_is_not_success_and_does_not_open_browser():
     mock_open.assert_not_called()
 
 
-def test_push_404_is_not_success_and_does_not_open_browser():
+def test_push_404_is_not_success_and_does_not_open_browser(monkeypatch):
+    monkeypatch.setenv("MACS_APP_VERSION", "0.1.0-rc.20")
     class _Ok:
         status = 200
 
@@ -620,6 +623,7 @@ def test_push_404_is_not_success_and_does_not_open_browser():
             "id": 10,
             "side_a_critical_temp": 520.0,
             "side_a_sec": "UB 457x191x82",
+            "exposure": "3-sided",
         },
     ), patch("macs_automation.upload_canvas_router._safe_open_browser") as mock_open, patch(
         "urllib.request.urlopen", side_effect=urlopen
@@ -685,22 +689,122 @@ def test_configured_env_urls_are_used(tmp_path, monkeypatch):
     db.close()
 
 
-def test_packaged_unset_urls_say_link_is_not_configured(tmp_path, monkeypatch):
+_PROD_BACKEND = "https://backendfornextapp-production.up.railway.app"
+_PROD_WEB = "https://upload-canvas.vercel.app"
+
+
+def _string_literals(code):
+    found = []
+    for const in code.co_consts:
+        if isinstance(const, str):
+            found.append(const)
+        elif hasattr(const, "co_consts"):
+            found.extend(_string_literals(const))
+    return found
+
+
+def test_production_urls_are_compile_time_string_literals():
+    """PyInstaller freezes this module. The production hosts have to be
+    literals in that bytecode, not an os.environ lookup that is empty on a
+    fresh install and falls back to loopback.
+    """
+    from pathlib import Path
+    import macs_automation.upload_canvas_router as router_mod
+
+    source_path = Path(router_mod.__file__)
+    if source_path.suffix != ".py":
+        source_path = source_path.with_suffix(".py")
+    code = compile(source_path.read_text(encoding="utf-8"), str(source_path), "exec")
+    literals = _string_literals(code)
+    assert _PROD_BACKEND in literals
+    assert _PROD_WEB in literals
+
+
+def test_packaged_fresh_install_defaults_to_production(tmp_path, monkeypatch):
+    """A shipped install with no settings and no env talks to production.
+
+    The app key is not invented. It stays empty until settings or
+    IMACS_APP_KEY provides one.
+    """
     _clear_upload_canvas_env(monkeypatch)
     monkeypatch.setenv("MACS_PACKAGED", "1")
-    from fastapi import HTTPException
     from macs_automation.upload_canvas_router import _get_client, get_config
 
     db = ResultsDB(tmp_path / "packaged.db")
-    with pytest.raises(HTTPException) as exc:
-        _get_client(db)
-    assert exc.value.status_code == 503
-    assert "not configured" in str(exc.value.detail).lower()
+    client = _get_client(db)
+    assert client.backend_url == _PROD_BACKEND
+    assert client.upload_canvas_url == _PROD_WEB
+    assert client.app_key == ""
+    assert client.app_key != "dev-imacs-local-key"
 
-    with pytest.raises(HTTPException) as config_exc:
-        get_config(db)
-    assert config_exc.value.status_code == 503
-    assert "not configured" in str(config_exc.value.detail).lower()
+    config = get_config(db)
+    assert config["backend_base_url"] == _PROD_BACKEND
+    assert config["upload_canvas_base_url"] == _PROD_WEB
+    assert config["has_app_key"] is False
+    db.close()
+
+
+def test_frozen_sidecar_defaults_to_production_without_env(tmp_path, monkeypatch):
+    """The PyInstaller exe sets sys.frozen even if Tauri forgot MACS_PACKAGED."""
+    import sys
+
+    _clear_upload_canvas_env(monkeypatch)
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    from macs_automation.upload_canvas_router import _get_client
+
+    db = ResultsDB(tmp_path / "frozen.db")
+    client = _get_client(db)
+    assert client.backend_url == _PROD_BACKEND
+    assert client.upload_canvas_url == _PROD_WEB
+    assert client.app_key == ""
+    db.close()
+
+
+def test_packaged_uses_configured_key_with_production_urls(tmp_path, monkeypatch):
+    _clear_upload_canvas_env(monkeypatch)
+    monkeypatch.setenv("MACS_PACKAGED", "1")
+    monkeypatch.setenv("IMACS_APP_KEY", "env-key-from-test")
+    from macs_automation.upload_canvas_router import _get_client
+
+    db = ResultsDB(tmp_path / "packaged-key.db")
+    client = _get_client(db)
+    assert client.backend_url == _PROD_BACKEND
+    assert client.upload_canvas_url == _PROD_WEB
+    assert client.app_key == "env-key-from-test"
+    db.close()
+
+
+def test_packaged_local_settings_override_production_defaults(tmp_path, monkeypatch):
+    """A developer-configured local pair still wins on a packaged build."""
+    _clear_upload_canvas_env(monkeypatch)
+    monkeypatch.setenv("MACS_PACKAGED", "1")
+    from macs_automation.upload_canvas_router import _get_client
+
+    db = ResultsDB(tmp_path / "packaged-local.db")
+    db.set_setting("backend_base_url", "http://127.0.0.1:8001")
+    db.set_setting("upload_canvas_base_url", "http://localhost:3000")
+    db.set_setting("imacs_app_key", "settings-key-from-test")
+    client = _get_client(db)
+    assert client.backend_url == "http://127.0.0.1:8001"
+    assert client.upload_canvas_url == "http://localhost:3000"
+    assert client.app_key == "settings-key-from-test"
+    db.close()
+
+
+def test_packaged_localhost_env_override_uses_dev_key(tmp_path, monkeypatch):
+    """Pointing a packaged build at loopback keeps the local dev key path."""
+    _clear_upload_canvas_env(monkeypatch)
+    monkeypatch.setenv("MACS_PACKAGED", "1")
+    monkeypatch.setenv("IMACS_BACKEND_BASE_URL", "http://127.0.0.1:8001")
+    monkeypatch.setenv("UPLOAD_CANVAS_BASE_URL", "http://localhost:3000")
+    from macs_automation.upload_canvas_router import _get_client
+
+    db = ResultsDB(tmp_path / "packaged-loopback.db")
+    client = _get_client(db)
+    assert client.backend_url == "http://127.0.0.1:8001"
+    assert client.upload_canvas_url == "http://localhost:3000"
+    assert client.app_key == "dev-imacs-local-key"
+    db.close()
 
 
 def test_settings_urls_and_key_win_over_env(tmp_path, monkeypatch):
