@@ -92,3 +92,46 @@ jobs:
           name: playwright-report
           path: playwright-report/
           retention-days: 14
+
+  sidecar-freeze:
+    # Same install the release uses: 32-bit Python, the pinned lock, wheels
+    # only, then a frozen boot. rc.20's pytest job was green because
+    # requirements.txt has msal; the release venv does not see that file.
+    name: sidecar freeze (Windows, 32-bit Python 3.10)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up 32-bit Python 3.10
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+          architecture: "x86"
+
+      - name: Verify Python is 32-bit
+        shell: pwsh
+        run: |
+          $bits = python -c "import struct; print(struct.calcsize('P')*8)"
+          if ($bits -ne '32') {
+              Write-Error "Python is $bits-bit; needed 32-bit. setup-python's architecture: x86 didn't take."
+              exit 1
+          }
+
+      - name: Install sidecar Python deps (locked, wheels only)
+        run: |
+          python -m venv venv-32
+          venv-32\Scripts\python -m pip install --upgrade pip
+          venv-32\Scripts\pip install --only-binary=:all: -r requirements-sidecar.lock
+          venv-32\Scripts\pip install --no-deps -e .
+
+      - name: Import entra_sign_in in the release venv
+        # Fails in seconds if the lock dropped msal, before PyInstaller.
+        run: venv-32\Scripts\python -c "import macs_automation.entra_sign_in; import msal; print('venv import ok', macs_automation.entra_sign_in.__name__)"
+
+      - name: Build sidecar (PyInstaller)
+        shell: pwsh
+        run: ./scripts/build-sidecar.ps1
+
+      - name: Verify the frozen sidecar imports entra_sign_in and answers /healthz
+        shell: pwsh
+        run: ./scripts/verify-sidecar-bundle.ps1

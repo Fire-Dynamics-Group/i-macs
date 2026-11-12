@@ -47,3 +47,9 @@ python-multipart>=0.0.9
 matplotlib==3.7.5
 kiwisolver==1.4.7
 python-docx>=1.1
+# Microsoft sign-in. entra_sign_in.py imports msal while the process is
+# starting, so a frozen sidecar without it exits before /healthz. msal
+# pulls requests, PyJWT, and cryptography. The lock pins those, and each
+# one has to keep a win32 cp310 wheel: the release install is
+# --only-binary=:all:.
+msal>=1.31

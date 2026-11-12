@@ -60,62 +60,12 @@ jobs:
         run: ./scripts/build-sidecar.ps1
 
       - name: Verify the sidecar bundle can actually render
-        # A release once shipped a sidecar with no matplotlib in it. Nothing
-        # failed at build time — the modules are imported lazily inside the
-        # endpoint handlers, so the omission only surfaced as a 500 on a user's
-        # machine. Check the bundle, then boot it and confirm it answers.
+        # A release once shipped a sidecar with no matplotlib in it, and
+        # v0.1.0-rc.20 shipped one with no msal. Nothing failed at build
+        # time. Boot the frozen exe: entra_sign_in imports msal before
+        # /healthz can answer.
         shell: pwsh
-        run: |
-          $bundle = "src-tauri/binaries/i-macs-sidecar-x86_64-pc-windows-msvc"
-          foreach ($pkg in 'matplotlib', 'numpy', 'docx') {
-              if (-not (Test-Path "$bundle/_internal/$pkg")) {
-                  Write-Error "$pkg is missing from the frozen bundle — charts and reports would 500 at runtime."
-                  exit 1
-              }
-              Write-Host "  ok  $pkg present"
-          }
-
-          # Longest path in the bundle + a generous install-prefix budget must
-          # clear MAX_PATH (260): the app installs per-user under a path like
-          # C:\Users\<name>\AppData\Local\MACS+ Automation\binaries\<triple>\,
-          # and a dep that starts shipping deeper trees would otherwise only
-          # fail on a user's machine at install time.
-          $prefixBudget = 130
-          $longest = Get-ChildItem -Recurse -File $bundle |
-              ForEach-Object { $_.FullName.Substring((Resolve-Path $bundle).Path.Length + 1) } |
-              Sort-Object Length -Descending | Select-Object -First 1
-          if ($prefixBudget + $longest.Length -gt 260) {
-              Write-Error "Bundle path too deep for MAX_PATH: '$longest' is $($longest.Length) chars; with a $prefixBudget-char install prefix that exceeds 260."
-              exit 1
-          }
-          Write-Host "  ok  longest bundle path is $($longest.Length) chars (budget $(260 - $prefixBudget))"
-
-          $exe = Resolve-Path "$bundle/i-macs-sidecar.exe"
-          $proc = Start-Process -FilePath $exe -ArgumentList '--port', '8199' -PassThru `
-              -RedirectStandardOutput sidecar-stdout.log -RedirectStandardError sidecar-stderr.log
-          try {
-              $alive = $false
-              foreach ($attempt in 1..90) {
-                  Start-Sleep -Seconds 1
-                  try {
-                      $r = Invoke-RestMethod -Uri 'http://127.0.0.1:8199/healthz' -TimeoutSec 2
-                      if ($r.sidecar -eq 'alive') { $alive = $true; break }
-                  } catch { }
-                  if ($proc.HasExited) { break }
-              }
-              if (-not $alive) {
-                  Write-Host "process exited: $($proc.HasExited) (code $($proc.ExitCode))"
-                  Write-Host '== sidecar stdout =='
-                  Get-Content sidecar-stdout.log -ErrorAction SilentlyContinue
-                  Write-Host '== sidecar stderr =='
-                  Get-Content sidecar-stderr.log -ErrorAction SilentlyContinue
-                  Write-Error "Frozen sidecar did not answer /healthz — the bundle is broken."
-                  exit 1
-              }
-              Write-Host "  ok  frozen sidecar booted and answered /healthz"
-          } finally {
-              if ($proc -and -not $proc.HasExited) { Stop-Process -Id $proc.Id -Force }
-          }
+        run: ./scripts/verify-sidecar-bundle.ps1
 
       - name: Verify the sidecar survives stale packages from older installs
         # The NSIS updater historically overlaid files without deleting
@@ -316,12 +266,13 @@ jobs:
           }
           Write-Host "  ok  installer signature verifies against tauri.conf.json pubkey"
 
-      - name: Publish (draft, upload verified assets, promote stable only)
-        # Assets are always uploaded to a draft first so /releases/latest
-        # cannot serve a half-published release. An -rc tag stays a draft
-        # pre-release and is not marked latest; promoting it is a separate
-        # approved step. A stable tag is undrafted and marked latest only
-        # after every asset is uploaded.
+      - name: Publish (draft, upload verified assets, promote)
+        # Draft-then-promote keeps the release invisible to the updater's
+        # /releases/latest endpoint until every asset — installer, signature,
+        # manifest — is uploaded. No half-published state can ever be served.
+        # An -rc tag is published and marked Latest, same as v0.1.0-rc.19.
+        # Leaving it as a draft prerelease would keep latest.json off
+        # /releases/latest, so installed copies would not auto-update.
         shell: pwsh
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -330,21 +281,11 @@ jobs:
           $tag = "${{ github.ref_name }}"
           $setup = Get-ChildItem "src-tauri/target/release/bundle/nsis/*-setup.exe" |
               Sort-Object LastWriteTime -Descending | Select-Object -First 1
-          $isReleaseCandidate = $tag -match '-rc(\.|$)'
-          if ($isReleaseCandidate) {
-              gh release create $tag --draft --prerelease `
-                  --title "MACS+ Automation $tag" `
-                  --notes "Release candidate. Not marked latest; existing installs will not auto-update until this is promoted." `
-                  $setup.FullName "$($setup.FullName).sig" latest.json
-              if ($LASTEXITCODE -ne 0) { Write-Error "draft pre-release creation failed"; exit 1 }
-              Write-Host "  ok  $tag left as a draft pre-release (not latest)"
-          } else {
-              gh release create $tag --draft `
-                  --title "MACS+ Automation $tag" `
-                  --notes "See the assets below to download and install. Already-installed copies will auto-update on next launch." `
-                  $setup.FullName "$($setup.FullName).sig" latest.json
-              if ($LASTEXITCODE -ne 0) { Write-Error "draft release creation failed"; exit 1 }
-              gh release edit $tag --draft=false --latest
-              if ($LASTEXITCODE -ne 0) { Write-Error "promoting the draft failed"; exit 1 }
-              Write-Host "  ok  $tag published as latest"
-          }
+          gh release create $tag --draft `
+              --title "MACS+ Automation $tag" `
+              --notes "See the assets below to download and install. Already-installed copies will auto-update on next launch." `
+              $setup.FullName "$($setup.FullName).sig" latest.json
+          if ($LASTEXITCODE -ne 0) { Write-Error "draft release creation failed"; exit 1 }
+          gh release edit $tag --draft=false --latest
+          if ($LASTEXITCODE -ne 0) { Write-Error "promoting the draft failed"; exit 1 }
+          Write-Host "  ok  $tag published"
