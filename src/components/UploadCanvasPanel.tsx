@@ -131,7 +131,12 @@ export function UploadCanvasPanel({ jobId }: UploadCanvasPanelProps) {
 
   useEffect(() => {
     if (signedIn) setAwaitingSignIn(false);
-  }, [signedIn]);
+    const signInError = configQuery.data?.sign_in_error;
+    if (signInError) {
+      setAwaitingSignIn(false);
+      setErrorMessage(signInError);
+    }
+  }, [signedIn, configQuery.data?.sign_in_error]);
 
   useEffect(() => {
     if (!configQuery.data || urlsFromConfig) return;

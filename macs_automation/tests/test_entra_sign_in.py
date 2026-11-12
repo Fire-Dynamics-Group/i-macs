@@ -7,6 +7,7 @@ as a bearer token. It is not returned by the config API and not logged.
 from __future__ import annotations
 
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 
@@ -42,6 +43,47 @@ def _clear_env(monkeypatch):
         "UPLOAD_CANVAS_BASE_URL",
     ):
         monkeypatch.delenv(name, raising=False)
+
+
+def test_rejected_redirect_is_reported_and_stores_no_token(tmp_path, monkeypatch):
+    db = ResultsDB(tmp_path / "rejected.db", check_same_thread=False)
+    session = SignInSession(port=0)
+    try:
+        session.start(db)
+        with pytest.raises(urllib.error.HTTPError) as exc:
+            urllib.request.urlopen(
+                f"http://127.0.0.1:{session.bound_port}/callback?error=access_denied",
+                timeout=5,
+            )
+        page = exc.value.read().decode("utf-8")
+        assert "access_denied" not in page
+        assert "could not be completed" in page
+        assert session.error
+        stored = ResultsDB(tmp_path / "rejected.db", check_same_thread=False)
+        assert stored.get_setting("entra_id_token") is None
+        stored.close()
+    finally:
+        session.close()
+        db.close()
+
+
+def test_config_surfaces_a_sign_in_failure(tmp_path, monkeypatch):
+    _clear_env(monkeypatch)
+    monkeypatch.setenv("MACS_PACKAGED", "1")
+    path = tmp_path / "err.db"
+    ResultsDB(path).close()
+    from macs_automation.entra_sign_in import sign_in_session
+
+    sign_in_session.error = "Microsoft sign-in could not be completed."
+    token = _use_db(path)
+    api = TestClient(app)
+    try:
+        body = api.get("/api/imacs/config").json()
+        assert body["signed_in"] is False
+        assert body["sign_in_error"] == "Microsoft sign-in could not be completed."
+    finally:
+        sign_in_session.error = None
+        app.dependency_overrides.pop(token, None)
 
 
 def test_authorize_url_uses_the_existing_fd_app():

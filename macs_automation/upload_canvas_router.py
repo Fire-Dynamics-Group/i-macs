@@ -211,6 +211,7 @@ def get_config(db: ResultsDB = Depends(_get_db)):
             "signed_in": view["signed_in"],
             "account_email": view["account_email"],
             "account_name": view["account_name"],
+            "sign_in_error": sign_in_session.error or "",
         }
     finally:
         db.close()
