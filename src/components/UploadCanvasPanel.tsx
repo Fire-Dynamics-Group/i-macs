@@ -4,6 +4,8 @@ import {
   getUploadCanvasSummary,
   getUploadCanvasConfig,
   putUploadCanvasConfig,
+  startUploadCanvasSignIn,
+  signOutUploadCanvas,
   createUploadCanvasHandoff,
   searchUploadCanvasProjects,
   linkUploadCanvasProject,
@@ -16,21 +18,28 @@ import {
 export const UPLOAD_CANVAS_PRODUCTION_BACKEND =
   "https://backendfornextapp-production.up.railway.app";
 export const UPLOAD_CANVAS_PRODUCTION_WEB = "https://upload-canvas.vercel.app";
-export const UPLOAD_CANVAS_KEY_MESSAGE =
-  "Upload Canvas key missing or invalid — open settings";
+export const UPLOAD_CANVAS_SIGN_IN_MESSAGE = "Sign in to Upload Canvas";
+export const UPLOAD_CANVAS_NOT_AUTHORISED_MESSAGE = "Not authorised";
 
 /** Map a failed project search onto the message the list should show. */
 export function uploadCanvasSearchMessage(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error ?? "");
   const lower = message.toLowerCase();
   if (
-    /\b401\b/.test(message) ||
     /\b403\b/.test(message) ||
+    /not authorised/.test(lower) ||
+    /not authorized/.test(lower)
+  ) {
+    return UPLOAD_CANVAS_NOT_AUTHORISED_MESSAGE;
+  }
+  if (
+    /\b401\b/.test(message) ||
+    /sign in/.test(lower) ||
     /not configured/.test(lower) ||
     /app key/.test(lower) ||
     /imacs_app_key/.test(lower)
   ) {
-    return UPLOAD_CANVAS_KEY_MESSAGE;
+    return UPLOAD_CANVAS_SIGN_IN_MESSAGE;
   }
   if (/\b404\b/.test(message) || /not found/.test(lower)) {
     return "Upload Canvas project search failed (not found).";
@@ -92,11 +101,10 @@ export function UploadCanvasPanel({ jobId }: UploadCanvasPanelProps) {
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [openedUrl, setOpenedUrl] = useState<string | null>(null);
   const [awaitingClaim, setAwaitingClaim] = useState(false);
-  const [appKey, setAppKey] = useState("");
   const [backendUrl, setBackendUrl] = useState(UPLOAD_CANVAS_PRODUCTION_BACKEND);
   const [webUrl, setWebUrl] = useState(UPLOAD_CANVAS_PRODUCTION_WEB);
   const [urlsFromConfig, setUrlsFromConfig] = useState(false);
-  const [keyJustSaved, setKeyJustSaved] = useState(false);
+  const [awaitingSignIn, setAwaitingSignIn] = useState(false);
   const [settingsNote, setSettingsNote] = useState<string | null>(null);
 
   const summaryQuery = useQuery({
@@ -113,10 +121,17 @@ export function UploadCanvasPanel({ jobId }: UploadCanvasPanelProps) {
   const configQuery = useQuery({
     queryKey: ["upload-canvas-config"],
     queryFn: () => getUploadCanvasConfig(),
+    refetchInterval: awaitingSignIn ? 500 : false,
   });
 
-  const hasAppKey = Boolean(configQuery.data?.has_app_key) || keyJustSaved;
-  const keyMissing = configQuery.isSuccess && !hasAppKey;
+  const signedIn = Boolean(configQuery.data?.signed_in);
+  const hasAppKey = Boolean(configQuery.data?.has_app_key);
+  const canUseUploadCanvas = signedIn || hasAppKey;
+  const needsSignIn = configQuery.isSuccess && !canUseUploadCanvas;
+
+  useEffect(() => {
+    if (signedIn) setAwaitingSignIn(false);
+  }, [signedIn]);
 
   useEffect(() => {
     if (!configQuery.data || urlsFromConfig) return;
@@ -128,14 +143,12 @@ export function UploadCanvasPanel({ jobId }: UploadCanvasPanelProps) {
   const searchProjectsQuery = useQuery({
     queryKey: ["upload-canvas-projects", searchQuery],
     queryFn: () => searchUploadCanvasProjects(searchQuery),
-    enabled: showChooser && hasAppKey,
+    enabled: showChooser && canUseUploadCanvas,
   });
 
   const saveConfig = useMutation({
     mutationFn: (body: UploadCanvasConfigUpdate) => putUploadCanvasConfig(body),
-    onSuccess: (_data, variables) => {
-      if (variables.imacs_app_key) setKeyJustSaved(true);
-      setAppKey("");
+    onSuccess: () => {
       setSettingsNote("Settings saved.");
       setErrorMessage(null);
       queryClient.invalidateQueries({ queryKey: ["upload-canvas-config"] });
@@ -143,6 +156,28 @@ export function UploadCanvasPanel({ jobId }: UploadCanvasPanelProps) {
     },
     onError: (err: Error) => {
       setSettingsNote(err.message || "Could not save settings");
+    },
+  });
+
+  const signInMutation = useMutation({
+    mutationFn: () => startUploadCanvasSignIn(),
+    onSuccess: async (data) => {
+      setAwaitingSignIn(true);
+      setErrorMessage(null);
+      if (data?.auth_url) await safeOpenUrl(data.auth_url);
+    },
+    onError: (err: Error) => {
+      setAwaitingSignIn(false);
+      setErrorMessage(err.message || UPLOAD_CANVAS_SIGN_IN_MESSAGE);
+    },
+  });
+
+  const signOutMutation = useMutation({
+    mutationFn: () => signOutUploadCanvas(),
+    onSuccess: () => {
+      setAwaitingSignIn(false);
+      queryClient.invalidateQueries({ queryKey: ["upload-canvas-config"] });
+      queryClient.invalidateQueries({ queryKey: ["upload-canvas-projects"] });
     },
   });
 
@@ -163,7 +198,7 @@ export function UploadCanvasPanel({ jobId }: UploadCanvasPanelProps) {
     onError: (err: Error) => {
       const message = uploadCanvasSearchMessage(err);
       setErrorMessage(message);
-      if (message === UPLOAD_CANVAS_KEY_MESSAGE) setShowSettings(true);
+      if (message === UPLOAD_CANVAS_SIGN_IN_MESSAGE) setAwaitingSignIn(false);
     },
   });
 
@@ -391,42 +426,52 @@ export function UploadCanvasPanel({ jobId }: UploadCanvasPanelProps) {
               </div>
             </div>
 
-            {(showSettings || keyMissing) && (
+            <div className="mt-4 rounded border border-slate-200 p-3">
+              {signedIn ? (
+                <div className="flex items-center justify-between gap-2">
+                  <p className="text-xs text-slate-700">
+                    Signed in as {configQuery.data?.account_name || configQuery.data?.account_email}
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => signOutMutation.mutate()}
+                    className="text-xs font-medium text-slate-600 hover:underline"
+                  >
+                    Sign out
+                  </button>
+                </div>
+              ) : (
+                <div>
+                  <p className="text-xs text-slate-600">
+                    Sign in with your FD Microsoft account. The app key is not entered here.
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => signInMutation.mutate()}
+                    disabled={signInMutation.isPending}
+                    className="mt-2 rounded bg-slate-800 px-3 py-1 text-xs font-medium text-white hover:bg-slate-900 disabled:opacity-50"
+                  >
+                    {signInMutation.isPending || awaitingSignIn
+                      ? "Waiting for Microsoft…"
+                      : "Sign in with Microsoft"}
+                  </button>
+                </div>
+              )}
+            </div>
+
+            {showSettings && (
               <form
                 className="mt-4 rounded border border-slate-200 p-3"
                 onSubmit={(event) => {
                   event.preventDefault();
-                  const typed = appKey.trim();
                   const body: UploadCanvasConfigUpdate = {
                     backend_base_url: backendUrl.trim(),
                     upload_canvas_base_url: webUrl.trim(),
                   };
-                  if (typed) body.imacs_app_key = typed;
                   saveConfig.mutate(body);
                 }}
               >
                 <h4 className="font-medium text-sm text-slate-900">Upload Canvas settings</h4>
-                <label htmlFor="imacs-app-key" className="mt-2 block text-xs text-slate-600">
-                  i-macs app key
-                </label>
-                <input
-                  id="imacs-app-key"
-                  type="password"
-                  name="imacs-app-key"
-                  autoComplete="off"
-                  spellCheck={false}
-                  value={appKey}
-                  onChange={(event) => setAppKey(event.target.value)}
-                  placeholder={
-                    hasAppKey
-                      ? "Key saved — paste a new key to replace it"
-                      : "Paste the i-macs app key"
-                  }
-                  className="mt-1 w-full rounded border border-slate-300 px-2 py-1 text-xs"
-                />
-                <p className="mt-1 text-xs text-slate-500">
-                  Stored only on this computer. The saved key is not shown again.
-                </p>
                 <label htmlFor="uc-backend-url" className="mt-2 block text-xs text-slate-600">
                   Backend URL
                 </label>
@@ -471,9 +516,8 @@ export function UploadCanvasPanel({ jobId }: UploadCanvasPanelProps) {
                 <button
                   type="button"
                   onClick={() => {
-                    if (keyMissing) {
-                      setShowSettings(true);
-                      setErrorMessage(UPLOAD_CANVAS_KEY_MESSAGE);
+                    if (needsSignIn) {
+                      setErrorMessage(UPLOAD_CANVAS_SIGN_IN_MESSAGE);
                       return;
                     }
                     handoffMutation.mutate();
@@ -505,9 +549,9 @@ export function UploadCanvasPanel({ jobId }: UploadCanvasPanelProps) {
                   {searchProjectsQuery.isLoading && (
                     <p className="p-2 text-xs text-slate-500">Searching…</p>
                   )}
-                  {keyMissing && (
+                  {needsSignIn && (
                     <p role="alert" className="p-2 text-xs text-rose-700">
-                      {UPLOAD_CANVAS_KEY_MESSAGE}
+                      {UPLOAD_CANVAS_SIGN_IN_MESSAGE}
                     </p>
                   )}
                   {searchProjectsQuery.isError && (
@@ -534,7 +578,7 @@ export function UploadCanvasPanel({ jobId }: UploadCanvasPanelProps) {
                     </div>
                   ))}
                   {!searchProjectsQuery.isError &&
-                    !keyMissing &&
+                    !needsSignIn &&
                     searchProjectsQuery.data?.projects?.length === 0 && (
                     <p className="p-2 text-xs text-slate-400">No time-eq projects found.</p>
                   )}

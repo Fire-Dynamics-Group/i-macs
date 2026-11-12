@@ -10,6 +10,15 @@ from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
 
 from macs_automation.db import ResultsDB
+from macs_automation.entra_sign_in import (
+    REDIRECT_URI,
+    SIGN_IN_MESSAGE,
+    SignInError,
+    clear_session,
+    session_view,
+    sign_in_session,
+    usable_bearer,
+)
 from macs_automation.upload_canvas import (
     UploadCanvasClient,
     UploadCanvasError,
@@ -101,20 +110,21 @@ def _get_client(db: ResultsDB = Depends(_get_db)) -> UploadCanvasClient:
         backend_url=backend_url,
         upload_canvas_url=web_url,
         app_key=app_key,
+        bearer_token=usable_bearer(db),
     )
 
 
-def _require_app_key(client: UploadCanvasClient) -> None:
-    """Stop before chart rendering or a network call when no key is configured.
+def _require_upload_canvas_auth(client: UploadCanvasClient) -> None:
+    """Stop before chart rendering when the user is not signed in.
 
-    A missing key used to build the batch charts and then hang on the
-    production host. The desktop settings screen is where the key is entered.
+    A packaged install has no shared key. Building the chart payload and
+    then waiting on the production host is what made Create time out.
+    A legacy app key still counts, so an older configured machine keeps
+    working until that person signs in.
     """
-    if not _nonempty(client.app_key):
-        raise HTTPException(
-            status_code=401,
-            detail="Upload Canvas key missing or invalid — open settings",
-        )
+    if _nonempty(client.bearer_token) or _nonempty(client.app_key):
+        return
+    raise HTTPException(status_code=401, detail=SIGN_IN_MESSAGE)
 
 
 def _safe_open_browser(url: str) -> None:
@@ -183,6 +193,8 @@ class LinkProjectBody(BaseModel):
 class ConfigBody(BaseModel):
     backend_base_url: Optional[str] = None
     upload_canvas_base_url: Optional[str] = None
+    # Ignored. Staff sign in with Microsoft; the desktop no longer accepts
+    # a pasted app key. Kept so an older client body does not 422.
     imacs_app_key: Optional[str] = None
 
 
@@ -190,13 +202,15 @@ class ConfigBody(BaseModel):
 def get_config(db: ResultsDB = Depends(_get_db)):
     try:
         backend_url, web_url, app_key = resolve_upload_canvas_config(db)
-        # The key itself is never returned. has_app_key covers a saved
-        # setting or IMACS_APP_KEY. Callers must not log this response
-        # together with a request body that contains the key.
+        # Neither the Entra token nor the legacy app key is returned.
+        view = session_view(db)
         return {
             "backend_base_url": backend_url,
             "upload_canvas_base_url": web_url,
             "has_app_key": bool(_nonempty(app_key)),
+            "signed_in": view["signed_in"],
+            "account_email": view["account_email"],
+            "account_name": view["account_name"],
         }
     finally:
         db.close()
@@ -209,13 +223,33 @@ def set_config(body: ConfigBody, db: ResultsDB = Depends(_get_db)):
             db.set_setting("backend_base_url", body.backend_base_url.strip())
         if body.upload_canvas_base_url is not None:
             db.set_setting("upload_canvas_base_url", body.upload_canvas_base_url.strip())
-        # A blank field means "leave the saved key". Do not erase it, and
-        # do not write the key to the log.
-        if body.imacs_app_key is not None:
-            key_text = _nonempty(body.imacs_app_key)
-            if key_text is not None:
-                db.set_setting("imacs_app_key", key_text)
+        # imacs_app_key is intentionally ignored.
         return {"status": "saved"}
+    finally:
+        db.close()
+
+
+@router.post("/auth/sign-in")
+def start_sign_in(db: ResultsDB = Depends(_get_db)):
+    """Start PKCE sign-in and return the system-browser URL.
+
+    The URL is an authorize link for the existing FD app. It does not
+    contain a token. The browser redirect is handled on the loopback port.
+    """
+    try:
+        auth_url = sign_in_session.start(db)
+        return {"auth_url": auth_url, "redirect_uri": REDIRECT_URI}
+    except SignInError as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+    finally:
+        db.close()
+
+
+@router.post("/auth/sign-out")
+def sign_out(db: ResultsDB = Depends(_get_db)):
+    try:
+        clear_session(db)
+        return {"signed_in": False}
     finally:
         db.close()
 
@@ -251,7 +285,7 @@ def create_job_handoff(
     client: UploadCanvasClient = Depends(_get_client),
 ):
     try:
-        _require_app_key(client)
+        _require_upload_canvas_auth(client)
         local_id = resolve_local_job_id(db, job_id)
         imacs_job_id = get_or_create_imacs_job_id(db, local_id)
         payload = _resolve_job_payload(db, local_id, imacs_job_id)
@@ -272,7 +306,7 @@ def search_projects(
     db: ResultsDB = Depends(_get_db),
 ):
     try:
-        _require_app_key(client)
+        _require_upload_canvas_auth(client)
         projects = client.search_projects(q)
         return {"projects": projects}
     except UploadCanvasError as e:
@@ -289,7 +323,7 @@ def link_project(
     client: UploadCanvasClient = Depends(_get_client),
 ):
     try:
-        _require_app_key(client)
+        _require_upload_canvas_auth(client)
         local_id = resolve_local_job_id(db, job_id)
         imacs_job_id = get_or_create_imacs_job_id(db, local_id)
         payload = _resolve_job_payload(db, local_id, imacs_job_id)
@@ -319,7 +353,7 @@ def unlink_project(
     client: UploadCanvasClient = Depends(_get_client),
 ):
     try:
-        _require_app_key(client)
+        _require_upload_canvas_auth(client)
         local_id = resolve_local_job_id(db, job_id)
         imacs_job_id = get_or_create_imacs_job_id(db, local_id)
         res = client.unlink_project(imacs_job_id)
@@ -337,7 +371,7 @@ def push_run(
     client: UploadCanvasClient = Depends(_get_client),
 ):
     try:
-        _require_app_key(client)
+        _require_upload_canvas_auth(client)
         local_id = resolve_local_job_id(db, job_id)
         imacs_job_id = get_or_create_imacs_job_id(db, local_id)
         summary = client.get_summary(imacs_job_id)

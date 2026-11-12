@@ -160,7 +160,7 @@ def test_client_error_handling_401():
         with pytest.raises(UploadCanvasError) as exc_info:
             client.create_handoff({"schema": "fd-macs-reliability/1"})
         assert exc_info.value.status_code == 401
-        assert "Missing or invalid IMACS_APP_KEY" in str(exc_info.value)
+        assert "Sign in to Upload Canvas" in str(exc_info.value)
 
 
 def test_client_error_handling_503():
@@ -559,7 +559,7 @@ def test_client_error_handling_403():
         with pytest.raises(UploadCanvasError) as exc_info:
             client.create_handoff({"schema": "fd-macs-reliability/2"})
     assert exc_info.value.status_code == 403
-    assert "wrong key" in str(exc_info.value)
+    assert "Not authorised" in str(exc_info.value)
 
 
 def test_summary_404_stays_unlinked():
@@ -944,12 +944,12 @@ def test_search_missing_key_is_not_an_empty_project_list(tmp_path, monkeypatch):
         app.dependency_overrides.pop(token, None)
     assert res.status_code == 401
     assert "projects" not in res.json()
-    assert "open settings" in res.json().get("detail", "").lower()
+    assert "sign in to upload canvas" in res.json().get("detail", "").lower()
     mock_open.assert_not_called()
 
 
 def test_handoff_missing_key_fails_before_chart_payload(tmp_path, monkeypatch):
-    """Create must not draw charts and then time out when no key is saved."""
+    """Create must not draw charts and then time out when nobody is signed in."""
     _clear_upload_canvas_env(monkeypatch)
     monkeypatch.setenv("MACS_PACKAGED", "1")
     monkeypatch.setenv("MACS_APP_VERSION", "0.1.0-rc.20")
@@ -969,7 +969,7 @@ def test_handoff_missing_key_fails_before_chart_payload(tmp_path, monkeypatch):
     finally:
         app.dependency_overrides.pop(token, None)
     assert res.status_code == 401
-    assert "open settings" in res.json().get("detail", "").lower()
+    assert "sign in to upload canvas" in res.json().get("detail", "").lower()
     mock_payload.assert_not_called()
     mock_charts.assert_not_called()
     mock_open.assert_not_called()
@@ -988,7 +988,8 @@ def test_get_config_counts_env_key_without_returning_it(tmp_path, monkeypatch):
     assert "imacs_app_key" not in config
 
 
-def test_put_config_stores_key_and_blank_does_not_erase_or_echo_it(tmp_path, monkeypatch, capsys):
+def test_put_config_ignores_a_pasted_app_key(tmp_path, monkeypatch, capsys):
+    """The desktop no longer stores a pasted key. URL overrides still save."""
     _clear_upload_canvas_env(monkeypatch)
     monkeypatch.setenv("MACS_PACKAGED", "1")
     path = tmp_path / "cfg.db"
@@ -1008,14 +1009,13 @@ def test_put_config_stores_key_and_blank_does_not_erase_or_echo_it(tmp_path, mon
         shown = api.get("/api/imacs/config")
         assert shown.status_code == 200
         body = shown.json()
-        assert body["has_app_key"] is True
+        assert body["has_app_key"] is False
+        assert body["signed_in"] is False
         assert body["backend_base_url"] == "https://backendfornextapp-production.up.railway.app"
         assert body["upload_canvas_base_url"] == "https://upload-canvas.vercel.app"
         assert "settings-key-from-test" not in shown.text
-        blank = api.put("/api/imacs/config", json={"imacs_app_key": "   "})
-        assert blank.status_code == 200
         kept = ResultsDB(path)
-        assert kept.get_setting("imacs_app_key") == "settings-key-from-test"
+        assert kept.get_setting("imacs_app_key") is None
         kept.close()
     finally:
         app.dependency_overrides.pop(token, None)

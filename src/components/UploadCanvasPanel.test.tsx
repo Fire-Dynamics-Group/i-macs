@@ -3,9 +3,10 @@ import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import {
   UploadCanvasPanel,
-  UPLOAD_CANVAS_KEY_MESSAGE,
+  UPLOAD_CANVAS_NOT_AUTHORISED_MESSAGE,
   UPLOAD_CANVAS_PRODUCTION_BACKEND,
   UPLOAD_CANVAS_PRODUCTION_WEB,
+  UPLOAD_CANVAS_SIGN_IN_MESSAGE,
 } from "./UploadCanvasPanel";
 import * as client from "../api/client";
 
@@ -21,6 +22,8 @@ vi.mock("../api/client", async () => {
     pushUploadCanvasRun: vi.fn(),
     getUploadCanvasConfig: vi.fn(),
     putUploadCanvasConfig: vi.fn(),
+    startUploadCanvasSignIn: vi.fn(),
+    signOutUploadCanvas: vi.fn(),
   };
 });
 
@@ -41,7 +44,10 @@ function renderPanel(jobId = "batch-100") {
 const PRODUCTION_CONFIG = {
   backend_base_url: UPLOAD_CANVAS_PRODUCTION_BACKEND,
   upload_canvas_base_url: UPLOAD_CANVAS_PRODUCTION_WEB,
-  has_app_key: true,
+  has_app_key: false,
+  signed_in: true,
+  account_email: "sam@firedynamicsgroup.com",
+  account_name: "Sam Bennett",
 };
 
 describe("UploadCanvasPanel", () => {
@@ -282,10 +288,10 @@ describe("UploadCanvasPanel", () => {
   });
 
   it.each([
-    [401, "Missing or invalid IMACS_APP_KEY"],
-    [403, "IMACS_APP_KEY is rejected (wrong key)"],
-    [503, "i-macs access is not configured."],
-  ])("shows a settings prompt when project search returns %s", async (status, detail) => {
+    [401, "Missing or invalid IMACS_APP_KEY", UPLOAD_CANVAS_SIGN_IN_MESSAGE],
+    [403, "IMACS_APP_KEY is rejected (wrong key)", UPLOAD_CANVAS_NOT_AUTHORISED_MESSAGE],
+    [503, "i-macs access is not configured.", UPLOAD_CANVAS_SIGN_IN_MESSAGE],
+  ])("shows a sign-in or auth error when project search returns %s", async (status, detail, expected) => {
     vi.mocked(client.getUploadCanvasSummary).mockResolvedValue({
       job_id: "batch-100",
       imacs_job_id: "imacs-uuid-1",
@@ -299,7 +305,7 @@ describe("UploadCanvasPanel", () => {
     await openChooser();
 
     const alert = await screen.findByRole("alert");
-    expect(alert).toHaveTextContent(UPLOAD_CANVAS_KEY_MESSAGE);
+    expect(alert).toHaveTextContent(expected);
     expect(screen.queryByText(/No time-eq projects found/i)).not.toBeInTheDocument();
   });
 
@@ -342,7 +348,7 @@ describe("UploadCanvasPanel", () => {
     expect(screen.queryByText(/No time-eq projects found/i)).not.toBeInTheDocument();
   });
 
-  it("asks for the app key before creating a project", async () => {
+  it("asks the user to sign in before creating a project", async () => {
     vi.mocked(client.getUploadCanvasSummary).mockResolvedValue({
       job_id: "batch-100",
       imacs_job_id: "imacs-uuid-1",
@@ -350,23 +356,50 @@ describe("UploadCanvasPanel", () => {
     });
     vi.mocked(client.getUploadCanvasConfig).mockResolvedValue({
       ...PRODUCTION_CONFIG,
+      signed_in: false,
       has_app_key: false,
     });
 
     renderPanel();
     await openChooser();
 
-    expect(await screen.findByText(UPLOAD_CANVAS_KEY_MESSAGE)).toBeInTheDocument();
-    const key = screen.getByLabelText(/app key/i);
-    expect(key).toHaveAttribute("type", "password");
-    expect(key).toHaveValue("");
+    expect(await screen.findByText(UPLOAD_CANVAS_SIGN_IN_MESSAGE)).toBeInTheDocument();
+    expect(screen.queryByLabelText(/app key/i)).not.toBeInTheDocument();
+    expect(screen.queryByDisplayValue(/secret/i)).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: /Create new project/i }));
 
     expect(client.createUploadCanvasHandoff).not.toHaveBeenCalled();
   });
 
-  it("opens settings from the dialog with production URLs and a masked key", async () => {
+  it("starts Microsoft sign-in from the dialog", async () => {
+    vi.mocked(client.getUploadCanvasSummary).mockResolvedValue({
+      job_id: "batch-100",
+      imacs_job_id: "imacs-uuid-1",
+      summary: null,
+    });
+    vi.mocked(client.getUploadCanvasConfig).mockResolvedValue({
+      ...PRODUCTION_CONFIG,
+      signed_in: false,
+      has_app_key: false,
+    });
+    vi.mocked(client.startUploadCanvasSignIn).mockResolvedValue({
+      auth_url:
+        "https://login.microsoftonline.com/8c535dde-8170-4909-8edc-40bbff4924ba/oauth2/v2.0/authorize?client_id=2b180b8a-7cd3-40b2-83dd-8338103ce41e",
+      redirect_uri: "http://127.0.0.1:47831/callback",
+    });
+
+    renderPanel();
+    await openChooser();
+    fireEvent.click(screen.getByRole("button", { name: /Sign in with Microsoft/i }));
+
+    await waitFor(() => {
+      expect(client.startUploadCanvasSignIn).toHaveBeenCalledTimes(1);
+    });
+    expect(screen.queryByLabelText(/app key/i)).not.toBeInTheDocument();
+  });
+
+  it("opens settings from the dialog with production URLs and no key field", async () => {
     vi.mocked(client.getUploadCanvasSummary).mockResolvedValue({
       job_id: "batch-100",
       imacs_job_id: "imacs-uuid-1",
@@ -383,7 +416,7 @@ describe("UploadCanvasPanel", () => {
     expect(screen.getByLabelText(/web url/i)).toHaveValue(
       UPLOAD_CANVAS_PRODUCTION_WEB,
     );
-    expect(screen.getByLabelText(/app key/i)).toHaveAttribute("type", "password");
+    expect(screen.queryByLabelText(/app key/i)).not.toBeInTheDocument();
   });
 
   it("keeps production URLs when config cannot be loaded", async () => {
@@ -415,7 +448,10 @@ describe("UploadCanvasPanel", () => {
     vi.mocked(client.getUploadCanvasConfig).mockResolvedValue({
       backend_base_url: "https://api.example.test",
       upload_canvas_base_url: "https://canvas.example.test",
-      has_app_key: true,
+      has_app_key: false,
+      signed_in: true,
+      account_email: "sam@firedynamicsgroup.com",
+      account_name: "Sam Bennett",
     });
 
     renderPanel();
@@ -426,40 +462,26 @@ describe("UploadCanvasPanel", () => {
     expect(screen.getByDisplayValue("https://canvas.example.test")).toBeInTheDocument();
   });
 
-  it("saves the app key without showing or logging it", async () => {
+  it("saves URL overrides and does not send an app key", async () => {
     vi.mocked(client.getUploadCanvasSummary).mockResolvedValue({
       job_id: "batch-100",
       imacs_job_id: "imacs-uuid-1",
       summary: null,
     });
-    const log = vi.spyOn(console, "log").mockImplementation(() => {});
-    const info = vi.spyOn(console, "info").mockImplementation(() => {});
-    const debug = vi.spyOn(console, "debug").mockImplementation(() => {});
 
     renderPanel();
     await openChooser();
     fireEvent.click(screen.getByRole("button", { name: /settings/i }));
-    fireEvent.change(screen.getByLabelText(/app key/i), {
-      target: { value: "secret-key-value" },
-    });
     fireEvent.click(screen.getByRole("button", { name: /save settings/i }));
 
     await waitFor(() => {
-      expect(client.putUploadCanvasConfig).toHaveBeenCalledWith(
-        expect.objectContaining({
-          imacs_app_key: "secret-key-value",
-          backend_base_url: UPLOAD_CANVAS_PRODUCTION_BACKEND,
-          upload_canvas_base_url: UPLOAD_CANVAS_PRODUCTION_WEB,
-        }),
-      );
+      expect(client.putUploadCanvasConfig).toHaveBeenCalledWith({
+        backend_base_url: UPLOAD_CANVAS_PRODUCTION_BACKEND,
+        upload_canvas_base_url: UPLOAD_CANVAS_PRODUCTION_WEB,
+      });
     });
-    expect(screen.getByLabelText(/app key/i)).toHaveValue("");
-    expect(screen.queryByDisplayValue("secret-key-value")).not.toBeInTheDocument();
-    expect(document.body.textContent).not.toContain("secret-key-value");
-    const logged = [log, info, debug].flatMap((spy) => spy.mock.calls).flat().join(" ");
-    expect(logged).not.toContain("secret-key-value");
-    log.mockRestore();
-    info.mockRestore();
-    debug.mockRestore();
+    expect(screen.queryByLabelText(/app key/i)).not.toBeInTheDocument();
+    const sent = vi.mocked(client.putUploadCanvasConfig).mock.calls[0][0];
+    expect(sent).not.toHaveProperty("imacs_app_key");
   });
 });

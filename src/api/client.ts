@@ -766,21 +766,34 @@ export interface UploadCanvasConfig {
   backend_base_url: string;
   upload_canvas_base_url: string;
   has_app_key: boolean;
+  signed_in: boolean;
+  account_email: string;
+  account_name: string;
 }
 
 export interface UploadCanvasConfigUpdate {
   backend_base_url?: string;
   upload_canvas_base_url?: string;
-  imacs_app_key?: string;
 }
 
 export async function getUploadCanvasConfig(): Promise<UploadCanvasConfig> {
   return getJson<UploadCanvasConfig>("/api/imacs/config");
 }
 
-/** Persists the key locally. Callers must not log `body`. */
+/** Persists URL overrides. Does not send an app key. */
 export async function putUploadCanvasConfig(
   body: UploadCanvasConfigUpdate,
 ): Promise<{ status: string }> {
   return putJson("/api/imacs/config", body);
+}
+
+export async function startUploadCanvasSignIn(): Promise<{
+  auth_url: string;
+  redirect_uri: string;
+}> {
+  return postJson("/api/imacs/auth/sign-in", {});
+}
+
+export async function signOutUploadCanvas(): Promise<{ signed_in: boolean }> {
+  return postJson("/api/imacs/auth/sign-out", {});
 }

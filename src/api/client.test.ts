@@ -22,6 +22,7 @@ import {
   getUploadCanvasConfig,
   listCustomSections,
   putUploadCanvasConfig,
+  startUploadCanvasSignIn,
   submitRun,
 } from "./client";
 
@@ -190,6 +191,9 @@ describe("api/client — upload canvas config", () => {
           backend_base_url: "https://backendfornextapp-production.up.railway.app",
           upload_canvas_base_url: "https://upload-canvas.vercel.app",
           has_app_key: false,
+          signed_in: false,
+          account_email: "",
+          account_name: "",
         }),
         { status: 200, headers: { "Content-Type": "application/json" } },
       ),
@@ -198,6 +202,7 @@ describe("api/client — upload canvas config", () => {
     const config = await getUploadCanvasConfig();
 
     expect(config.has_app_key).toBe(false);
+    expect(config.signed_in).toBe(false);
     expect(config.backend_base_url).toBe(
       "https://backendfornextapp-production.up.railway.app",
     );
@@ -205,10 +210,7 @@ describe("api/client — upload canvas config", () => {
     expect(JSON.stringify(config)).not.toContain("imacs_app_key");
   });
 
-  it("PUTs the app key to /api/imacs/config and does not log it", async () => {
-    const log = vi.spyOn(console, "log").mockImplementation(() => {});
-    const info = vi.spyOn(console, "info").mockImplementation(() => {});
-    const debug = vi.spyOn(console, "debug").mockImplementation(() => {});
+  it("PUTs URL overrides and does not send an app key", async () => {
     fetchMock.mockResolvedValueOnce(
       new Response(JSON.stringify({ status: "saved" }), {
         status: 200,
@@ -217,7 +219,6 @@ describe("api/client — upload canvas config", () => {
     );
 
     await putUploadCanvasConfig({
-      imacs_app_key: "secret-key-value",
       backend_base_url: "https://backendfornextapp-production.up.railway.app",
       upload_canvas_base_url: "https://upload-canvas.vercel.app",
     });
@@ -226,14 +227,29 @@ describe("api/client — upload canvas config", () => {
     expect(url).toBe("http://127.0.0.1:8765/api/imacs/config");
     expect(init.method).toBe("PUT");
     expect(JSON.parse(init.body)).toEqual({
-      imacs_app_key: "secret-key-value",
       backend_base_url: "https://backendfornextapp-production.up.railway.app",
       upload_canvas_base_url: "https://upload-canvas.vercel.app",
     });
-    const logged = [log, info, debug].flatMap((spy) => spy.mock.calls).flat().join(" ");
-    expect(logged).not.toContain("secret-key-value");
-    log.mockRestore();
-    info.mockRestore();
-    debug.mockRestore();
+    expect(init.body).not.toContain("imacs_app_key");
+  });
+
+  it("POSTs Microsoft sign-in without a token in the body", async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          auth_url: "https://login.microsoftonline.com/8c535dde-8170-4909-8edc-40bbff4924ba/oauth2/v2.0/authorize",
+          redirect_uri: "http://127.0.0.1:47831/callback",
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+
+    const started = await startUploadCanvasSignIn();
+
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe("http://127.0.0.1:8765/api/imacs/auth/sign-in");
+    expect(init.method).toBe("POST");
+    expect(started.redirect_uri).toBe("http://127.0.0.1:47831/callback");
+    expect(init.body).not.toContain("id_token");
   });
 });

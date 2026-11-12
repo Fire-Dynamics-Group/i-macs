@@ -155,7 +155,10 @@ export async function installSidecarMock(page: Page, opts: MockOpts) {
         json: {
           backend_base_url: "https://backendfornextapp-production.up.railway.app",
           upload_canvas_base_url: "https://upload-canvas.vercel.app",
-          has_app_key: true,
+          has_app_key: false,
+          signed_in: true,
+          account_email: "sam@firedynamicsgroup.com",
+          account_name: "Sam Bennett",
         },
       });
     }
