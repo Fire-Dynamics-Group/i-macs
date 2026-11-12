@@ -9,8 +9,8 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use serde::Deserialize;
-use tauri::{AppHandle, Emitter, Manager, RunEvent, State};
 use tauri::path::BaseDirectory;
+use tauri::{AppHandle, Emitter, Manager, RunEvent, State};
 use tauri_plugin_dialog::{DialogExt, FilePath, MessageDialogButtons, MessageDialogKind};
 
 #[cfg(windows)]
@@ -126,11 +126,50 @@ fn upload_canvas_env_pairs(
     pairs
 }
 
-fn apply_upload_canvas_env(cmd: &mut Command, packaged: bool) {
+fn resolved_upload_canvas_value(
+    setting: Option<String>,
+    from_env: Option<String>,
+) -> Option<String> {
+    if let Some(value) = setting {
+        let trimmed = value.trim();
+        if !trimmed.is_empty() {
+            return Some(trimmed.to_string());
+        }
+    }
+    from_env
+}
+
+fn upload_canvas_setting_name(env_key: &str) -> Option<&'static str> {
+    match env_key {
+        "IMACS_APP_KEY" => Some("imacs_app_key"),
+        "IMACS_BACKEND_BASE_URL" => Some("backend_base_url"),
+        "UPLOAD_CANVAS_BASE_URL" => Some("upload_canvas_base_url"),
+        _ => None,
+    }
+}
+
+/// Settings stored by the desktop UI win over the process environment, matching
+/// the sidecar. A blank saved value does not hide an environment value.
+/// The app key is not logged.
+fn upload_canvas_forward_pairs(
+    packaged: bool,
+    db_path: &Path,
+    env_lookup: impl Fn(&str) -> Option<String>,
+) -> Vec<(String, String)> {
+    upload_canvas_env_pairs(packaged, |key| {
+        let setting =
+            upload_canvas_setting_name(key).and_then(|name| read_setting_from_db(db_path, name));
+        resolved_upload_canvas_value(setting, env_lookup(key))
+    })
+}
+
+fn apply_upload_canvas_env(cmd: &mut Command, packaged: bool, db_path: &Path) {
     if !packaged {
         cmd.env_remove("MACS_PACKAGED");
     }
-    for (key, value) in upload_canvas_env_pairs(packaged, |key| std::env::var(key).ok()) {
+    for (key, value) in
+        upload_canvas_forward_pairs(packaged, db_path, |key| std::env::var(key).ok())
+    {
         cmd.env(key, value);
     }
 }
@@ -142,11 +181,7 @@ fn apply_upload_canvas_env(cmd: &mut Command, packaged: bool) {
 ///
 /// `log_dir` is forwarded as `--log-dir` so the sidecar writes a rotating
 /// `sidecar.log` for post-mortem debugging on user machines.
-fn spawn_sidecar(
-    app: &AppHandle,
-    port: u16,
-    log_dir: &std::path::Path,
-) -> Result<Child, String> {
+fn spawn_sidecar(app: &AppHandle, port: u16, log_dir: &std::path::Path) -> Result<Child, String> {
     let log_dir_str = log_dir.to_string_lossy().into_owned();
     let app_version = app.package_info().version.to_string();
 
@@ -160,7 +195,10 @@ fn spawn_sidecar(
 
         // Prefer the 32-bit venv interpreter (FRACOF COM is 32-bit), then
         // fall back to a generic venv, then PATH.
-        let venv32_python = project_root.join("venv-32").join("Scripts").join("python.exe");
+        let venv32_python = project_root
+            .join("venv-32")
+            .join("Scripts")
+            .join("python.exe");
         let venv_python = project_root.join("venv").join("Scripts").join("python.exe");
         let python_cmd = if venv32_python.exists() {
             venv32_python.to_string_lossy().into_owned()
@@ -191,7 +229,8 @@ fn spawn_sidecar(
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit());
         // Dev stays unpackaged so an unset URL still falls back to localhost.
-        apply_upload_canvas_env(&mut cmd, false);
+        // A key saved in results.db is forwarded without being printed.
+        apply_upload_canvas_env(&mut cmd, false, &dev_db);
         if let Some(macs_data_path) = read_setting_from_db(&dev_db, "macs_data_path") {
             println!("[tauri] (dev) injecting MACS_DATA_PATH from settings: {macs_data_path}");
             cmd.env("MACS_DATA_PATH", macs_data_path);
@@ -247,20 +286,18 @@ fn spawn_sidecar(
         .current_dir(&sidecar_dir)
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit());
-    // Packaged installs have no settings screen for these. Forward any
-    // explicit URL or app key the user launched with. When those are unset,
-    // MACS_PACKAGED=1 tells the sidecar to use its production URL literals
-    // rather than loopback. This function does not invent a key.
-    apply_upload_canvas_env(&mut cmd, true);
+    // Forward a key or URL saved in results.db, then any value this process
+    // was launched with. Blank values are skipped and nothing is logged.
+    // When both are unset, MACS_PACKAGED=1 tells the sidecar to use its
+    // production URL literals rather than loopback. This does not invent a key.
+    apply_upload_canvas_env(&mut cmd, true, &db_path);
 
     // Read the user's persisted MACS+ install-location override (#23).
     // The sidecar's data_loader checks `MACS_DATA_PATH` as the first
     // step of the detection chain, so any value here wins over registry
     // / Start Menu / filesystem discovery.
     if let Some(macs_data_path) = read_setting_from_db(&db_path, "macs_data_path") {
-        println!(
-            "[tauri] injecting MACS_DATA_PATH from settings: {macs_data_path}"
-        );
+        println!("[tauri] injecting MACS_DATA_PATH from settings: {macs_data_path}");
         cmd.env("MACS_DATA_PATH", macs_data_path);
     }
 
@@ -472,7 +509,6 @@ fn open_external_url(app_handle: AppHandle, url: String) -> Result<(), String> {
         .map_err(|e| format!("failed to open URL: {e}"))
 }
 
-
 /// Bind the freshly spawned sidecar to a Job Object so it inherits this
 /// process's lifetime. KILL_ON_JOB_CLOSE means: when our last handle to the
 /// job closes (which happens when our process dies, however it dies), the
@@ -638,7 +674,7 @@ mod tests {
 
 #[cfg(test)]
 mod upload_canvas_env_tests {
-    use super::upload_canvas_env_pairs;
+    use super::{upload_canvas_env_pairs, upload_canvas_forward_pairs};
 
     #[test]
     fn packaged_forwards_set_key_and_urls() {
@@ -650,8 +686,14 @@ mod upload_canvas_env_tests {
         });
         assert!(pairs.contains(&("MACS_PACKAGED".into(), "1".into())));
         assert!(pairs.contains(&("IMACS_APP_KEY".into(), "env-key-from-test".into())));
-        assert!(pairs.contains(&("IMACS_BACKEND_BASE_URL".into(), "https://api.example.test".into())));
-        assert!(pairs.contains(&("UPLOAD_CANVAS_BASE_URL".into(), "https://canvas.example.test".into())));
+        assert!(pairs.contains(&(
+            "IMACS_BACKEND_BASE_URL".into(),
+            "https://api.example.test".into()
+        )));
+        assert!(pairs.contains(&(
+            "UPLOAD_CANVAS_BASE_URL".into(),
+            "https://canvas.example.test".into()
+        )));
     }
 
     #[test]
@@ -668,5 +710,82 @@ mod upload_canvas_env_tests {
     fn dev_does_not_mark_the_process_packaged() {
         let pairs = upload_canvas_env_pairs(false, |_| None);
         assert!(pairs.is_empty());
+    }
+
+    #[test]
+    fn packaged_forwards_saved_settings_ahead_of_the_environment() {
+        let dir = std::env::temp_dir().join(format!("imacs-uc-fwd-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let db_path = dir.join("results.db");
+        {
+            let conn = rusqlite::Connection::open(&db_path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+                 INSERT INTO settings (key, value) VALUES
+                   ('imacs_app_key', 'settings-key-from-test'),
+                   ('backend_base_url', 'https://settings.example.test'),
+                   ('upload_canvas_base_url', 'https://settings-canvas.example.test');",
+            )
+            .unwrap();
+        }
+        let pairs = upload_canvas_forward_pairs(true, &db_path, |key| match key {
+            "IMACS_APP_KEY" => Some("env-key-from-test".to_string()),
+            "IMACS_BACKEND_BASE_URL" => Some("https://env.example.test".to_string()),
+            "UPLOAD_CANVAS_BASE_URL" => Some("https://env-canvas.example.test".to_string()),
+            _ => None,
+        });
+        assert!(pairs.contains(&("MACS_PACKAGED".into(), "1".into())));
+        assert!(pairs.contains(&("IMACS_APP_KEY".into(), "settings-key-from-test".into())));
+        assert!(pairs.contains(&(
+            "IMACS_BACKEND_BASE_URL".into(),
+            "https://settings.example.test".into()
+        )));
+        assert!(pairs.contains(&(
+            "UPLOAD_CANVAS_BASE_URL".into(),
+            "https://settings-canvas.example.test".into()
+        )));
+        assert!(!pairs.iter().any(|(_, value)| {
+            value.contains("env-key")
+                || value.contains("env.example")
+                || value.contains("env-canvas")
+        }));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn blank_saved_key_does_not_mask_the_environment() {
+        let dir = std::env::temp_dir().join(format!("imacs-uc-blank-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let db_path = dir.join("results.db");
+        {
+            let conn = rusqlite::Connection::open(&db_path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+                 INSERT INTO settings (key, value) VALUES ('imacs_app_key', '   ');",
+            )
+            .unwrap();
+        }
+        let pairs = upload_canvas_forward_pairs(true, &db_path, |key| match key {
+            "IMACS_APP_KEY" => Some("env-key-from-test".to_string()),
+            _ => None,
+        });
+        assert!(pairs.contains(&("IMACS_APP_KEY".into(), "env-key-from-test".into())));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn missing_database_still_forwards_the_environment() {
+        let pairs = upload_canvas_forward_pairs(
+            true,
+            std::path::Path::new("/tmp/does-not-exist-imacs-uc.db"),
+            |key| match key {
+                "IMACS_APP_KEY" => Some("env-key-from-test".to_string()),
+                _ => None,
+            },
+        );
+        assert!(pairs.contains(&("MACS_PACKAGED".into(), "1".into())));
+        assert!(pairs.contains(&("IMACS_APP_KEY".into(), "env-key-from-test".into())));
     }
 }

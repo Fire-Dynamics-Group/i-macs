@@ -74,6 +74,26 @@ async function postJson<T>(path: string, body: unknown): Promise<T> {
   return (await resp.json()) as T;
 }
 
+async function putJson<T>(path: string, body: unknown): Promise<T> {
+  const base = await baseUrl();
+  const resp = await fetch(`${base}${path}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!resp.ok) {
+    let detail = "";
+    try {
+      const err = await resp.json();
+      detail = err.error ?? err.detail ?? JSON.stringify(err);
+    } catch {
+      detail = resp.statusText;
+    }
+    throw new Error(`PUT ${path} failed: ${resp.status} ${detail}`);
+  }
+  return (await resp.json()) as T;
+}
+
 async function patchJson<T>(path: string, body: unknown): Promise<T> {
   const base = await baseUrl();
   const resp = await fetch(`${base}${path}`, {
@@ -740,4 +760,27 @@ export async function pushUploadCanvasRun(
     `/api/imacs/jobs/${encodeURIComponent(jobId)}/upload-canvas-push`,
     {},
   );
+}
+
+export interface UploadCanvasConfig {
+  backend_base_url: string;
+  upload_canvas_base_url: string;
+  has_app_key: boolean;
+}
+
+export interface UploadCanvasConfigUpdate {
+  backend_base_url?: string;
+  upload_canvas_base_url?: string;
+  imacs_app_key?: string;
+}
+
+export async function getUploadCanvasConfig(): Promise<UploadCanvasConfig> {
+  return getJson<UploadCanvasConfig>("/api/imacs/config");
+}
+
+/** Persists the key locally. Callers must not log `body`. */
+export async function putUploadCanvasConfig(
+  body: UploadCanvasConfigUpdate,
+): Promise<{ status: string }> {
+  return putJson("/api/imacs/config", body);
 }

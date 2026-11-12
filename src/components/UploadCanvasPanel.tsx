@@ -2,13 +2,53 @@ import { useEffect, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   getUploadCanvasSummary,
+  getUploadCanvasConfig,
+  putUploadCanvasConfig,
   createUploadCanvasHandoff,
   searchUploadCanvasProjects,
   linkUploadCanvasProject,
   unlinkUploadCanvasProject,
   pushUploadCanvasRun,
+  type UploadCanvasConfigUpdate,
   type UploadCanvasProject,
 } from "../api/client";
+
+export const UPLOAD_CANVAS_PRODUCTION_BACKEND =
+  "https://backendfornextapp-production.up.railway.app";
+export const UPLOAD_CANVAS_PRODUCTION_WEB = "https://upload-canvas.vercel.app";
+export const UPLOAD_CANVAS_KEY_MESSAGE =
+  "Upload Canvas key missing or invalid — open settings";
+
+/** Map a failed project search onto the message the list should show. */
+export function uploadCanvasSearchMessage(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error ?? "");
+  const lower = message.toLowerCase();
+  if (
+    /\b401\b/.test(message) ||
+    /\b403\b/.test(message) ||
+    /not configured/.test(lower) ||
+    /app key/.test(lower) ||
+    /imacs_app_key/.test(lower)
+  ) {
+    return UPLOAD_CANVAS_KEY_MESSAGE;
+  }
+  if (/\b404\b/.test(message) || /not found/.test(lower)) {
+    return "Upload Canvas project search failed (not found).";
+  }
+  if (
+    /failed to fetch/.test(lower) ||
+    /network/.test(lower) ||
+    /unreachable/.test(lower) ||
+    /\b502\b/.test(message) ||
+    /econnrefused/.test(lower)
+  ) {
+    return "Upload Canvas backend is unreachable.";
+  }
+  if (/\b503\b/.test(message)) {
+    return "Upload Canvas backend is unreachable.";
+  }
+  return message || "Upload Canvas project search failed.";
+}
 
 interface UploadCanvasPanelProps {
   jobId: string;
@@ -47,10 +87,17 @@ async function safeOpenUrl(url: string) {
 export function UploadCanvasPanel({ jobId }: UploadCanvasPanelProps) {
   const queryClient = useQueryClient();
   const [showChooser, setShowChooser] = useState(false);
+  const [showSettings, setShowSettings] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [openedUrl, setOpenedUrl] = useState<string | null>(null);
   const [awaitingClaim, setAwaitingClaim] = useState(false);
+  const [appKey, setAppKey] = useState("");
+  const [backendUrl, setBackendUrl] = useState(UPLOAD_CANVAS_PRODUCTION_BACKEND);
+  const [webUrl, setWebUrl] = useState(UPLOAD_CANVAS_PRODUCTION_WEB);
+  const [urlsFromConfig, setUrlsFromConfig] = useState(false);
+  const [keyJustSaved, setKeyJustSaved] = useState(false);
+  const [settingsNote, setSettingsNote] = useState<string | null>(null);
 
   const summaryQuery = useQuery({
     queryKey: ["upload-canvas-summary", jobId],
@@ -63,10 +110,40 @@ export function UploadCanvasPanel({ jobId }: UploadCanvasPanelProps) {
     },
   });
 
+  const configQuery = useQuery({
+    queryKey: ["upload-canvas-config"],
+    queryFn: () => getUploadCanvasConfig(),
+  });
+
+  const hasAppKey = Boolean(configQuery.data?.has_app_key) || keyJustSaved;
+  const keyMissing = configQuery.isSuccess && !hasAppKey;
+
+  useEffect(() => {
+    if (!configQuery.data || urlsFromConfig) return;
+    setBackendUrl(configQuery.data.backend_base_url || UPLOAD_CANVAS_PRODUCTION_BACKEND);
+    setWebUrl(configQuery.data.upload_canvas_base_url || UPLOAD_CANVAS_PRODUCTION_WEB);
+    setUrlsFromConfig(true);
+  }, [configQuery.data, urlsFromConfig]);
+
   const searchProjectsQuery = useQuery({
     queryKey: ["upload-canvas-projects", searchQuery],
     queryFn: () => searchUploadCanvasProjects(searchQuery),
-    enabled: showChooser,
+    enabled: showChooser && hasAppKey,
+  });
+
+  const saveConfig = useMutation({
+    mutationFn: (body: UploadCanvasConfigUpdate) => putUploadCanvasConfig(body),
+    onSuccess: (_data, variables) => {
+      if (variables.imacs_app_key) setKeyJustSaved(true);
+      setAppKey("");
+      setSettingsNote("Settings saved.");
+      setErrorMessage(null);
+      queryClient.invalidateQueries({ queryKey: ["upload-canvas-config"] });
+      queryClient.invalidateQueries({ queryKey: ["upload-canvas-projects"] });
+    },
+    onError: (err: Error) => {
+      setSettingsNote(err.message || "Could not save settings");
+    },
   });
 
   const handoffMutation = useMutation({
@@ -84,7 +161,9 @@ export function UploadCanvasPanel({ jobId }: UploadCanvasPanelProps) {
       queryClient.invalidateQueries({ queryKey: ["upload-canvas-summary", jobId] });
     },
     onError: (err: Error) => {
-      setErrorMessage(err.message || "Failed to create handoff");
+      const message = uploadCanvasSearchMessage(err);
+      setErrorMessage(message);
+      if (message === UPLOAD_CANVAS_KEY_MESSAGE) setShowSettings(true);
     },
   });
 
@@ -291,17 +370,97 @@ export function UploadCanvasPanel({ jobId }: UploadCanvasPanelProps) {
       {/* Chooser Modal */}
       {showChooser && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
-          <div className="w-full max-w-md rounded-lg bg-white p-6 shadow-xl text-slate-800">
+          <div className="max-h-[90vh] w-full max-w-lg overflow-y-auto rounded-lg bg-white p-6 shadow-xl text-slate-800">
             <div className="flex items-center justify-between border-b pb-3">
               <h3 className="text-lg font-semibold">Open in Upload Canvas</h3>
-              <button
-                type="button"
-                onClick={() => setShowChooser(false)}
-                className="text-slate-400 hover:text-slate-600"
-              >
-                ✕
-              </button>
+              <div className="flex items-center gap-3">
+                <button
+                  type="button"
+                  onClick={() => setShowSettings((open) => !open)}
+                  className="text-xs font-medium text-blue-700 hover:underline"
+                >
+                  Settings
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShowChooser(false)}
+                  className="text-slate-400 hover:text-slate-600"
+                >
+                  ✕
+                </button>
+              </div>
             </div>
+
+            {(showSettings || keyMissing) && (
+              <form
+                className="mt-4 rounded border border-slate-200 p-3"
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  const typed = appKey.trim();
+                  const body: UploadCanvasConfigUpdate = {
+                    backend_base_url: backendUrl.trim(),
+                    upload_canvas_base_url: webUrl.trim(),
+                  };
+                  if (typed) body.imacs_app_key = typed;
+                  saveConfig.mutate(body);
+                }}
+              >
+                <h4 className="font-medium text-sm text-slate-900">Upload Canvas settings</h4>
+                <label htmlFor="imacs-app-key" className="mt-2 block text-xs text-slate-600">
+                  i-macs app key
+                </label>
+                <input
+                  id="imacs-app-key"
+                  type="password"
+                  name="imacs-app-key"
+                  autoComplete="off"
+                  spellCheck={false}
+                  value={appKey}
+                  onChange={(event) => setAppKey(event.target.value)}
+                  placeholder={
+                    hasAppKey
+                      ? "Key saved — paste a new key to replace it"
+                      : "Paste the i-macs app key"
+                  }
+                  className="mt-1 w-full rounded border border-slate-300 px-2 py-1 text-xs"
+                />
+                <p className="mt-1 text-xs text-slate-500">
+                  Stored only on this computer. The saved key is not shown again.
+                </p>
+                <label htmlFor="uc-backend-url" className="mt-2 block text-xs text-slate-600">
+                  Backend URL
+                </label>
+                <input
+                  id="uc-backend-url"
+                  type="url"
+                  value={backendUrl}
+                  onChange={(event) => setBackendUrl(event.target.value)}
+                  className="mt-1 w-full rounded border border-slate-300 px-2 py-1 text-xs"
+                />
+                <label htmlFor="uc-web-url" className="mt-2 block text-xs text-slate-600">
+                  Upload Canvas web URL
+                </label>
+                <input
+                  id="uc-web-url"
+                  type="url"
+                  value={webUrl}
+                  onChange={(event) => setWebUrl(event.target.value)}
+                  className="mt-1 w-full rounded border border-slate-300 px-2 py-1 text-xs"
+                />
+                <div className="mt-2 flex items-center justify-between gap-2">
+                  <button
+                    type="submit"
+                    disabled={saveConfig.isPending}
+                    className="rounded bg-slate-800 px-3 py-1 text-xs font-medium text-white hover:bg-slate-900 disabled:opacity-50"
+                  >
+                    {saveConfig.isPending ? "Saving…" : "Save settings"}
+                  </button>
+                  {settingsNote && (
+                    <p className="text-xs text-slate-600">{settingsNote}</p>
+                  )}
+                </div>
+              </form>
+            )}
 
             <div className="mt-4 flex flex-col gap-4">
               <div className="rounded border border-slate-200 p-3 hover:border-blue-400">
@@ -311,7 +470,14 @@ export function UploadCanvasPanel({ jobId }: UploadCanvasPanelProps) {
                 </p>
                 <button
                   type="button"
-                  onClick={() => handoffMutation.mutate()}
+                  onClick={() => {
+                    if (keyMissing) {
+                      setShowSettings(true);
+                      setErrorMessage(UPLOAD_CANVAS_KEY_MESSAGE);
+                      return;
+                    }
+                    handoffMutation.mutate();
+                  }}
                   disabled={handoffMutation.isPending}
                   className="mt-2 rounded bg-blue-600 px-3 py-1 text-xs font-medium text-white hover:bg-blue-700 disabled:opacity-50"
                 >
@@ -339,6 +505,16 @@ export function UploadCanvasPanel({ jobId }: UploadCanvasPanelProps) {
                   {searchProjectsQuery.isLoading && (
                     <p className="p-2 text-xs text-slate-500">Searching…</p>
                   )}
+                  {keyMissing && (
+                    <p role="alert" className="p-2 text-xs text-rose-700">
+                      {UPLOAD_CANVAS_KEY_MESSAGE}
+                    </p>
+                  )}
+                  {searchProjectsQuery.isError && (
+                    <p role="alert" className="p-2 text-xs text-rose-700">
+                      {uploadCanvasSearchMessage(searchProjectsQuery.error)}
+                    </p>
+                  )}
                   {searchProjectsQuery.data?.projects?.map((proj: UploadCanvasProject) => (
                     <div
                       key={proj.id}
@@ -357,7 +533,9 @@ export function UploadCanvasPanel({ jobId }: UploadCanvasPanelProps) {
                       </button>
                     </div>
                   ))}
-                  {searchProjectsQuery.data?.projects?.length === 0 && (
+                  {!searchProjectsQuery.isError &&
+                    !keyMissing &&
+                    searchProjectsQuery.data?.projects?.length === 0 && (
                     <p className="p-2 text-xs text-slate-400">No time-eq projects found.</p>
                   )}
                 </div>

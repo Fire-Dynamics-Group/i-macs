@@ -104,6 +104,19 @@ def _get_client(db: ResultsDB = Depends(_get_db)) -> UploadCanvasClient:
     )
 
 
+def _require_app_key(client: UploadCanvasClient) -> None:
+    """Stop before chart rendering or a network call when no key is configured.
+
+    A missing key used to build the batch charts and then hang on the
+    production host. The desktop settings screen is where the key is entered.
+    """
+    if not _nonempty(client.app_key):
+        raise HTTPException(
+            status_code=401,
+            detail="Upload Canvas key missing or invalid — open settings",
+        )
+
+
 def _safe_open_browser(url: str) -> None:
     """Best-effort launch of the default OS browser from the local sidecar."""
     if not url:
@@ -176,11 +189,14 @@ class ConfigBody(BaseModel):
 @router.get("/config")
 def get_config(db: ResultsDB = Depends(_get_db)):
     try:
-        backend_url, web_url, _app_key = resolve_upload_canvas_config(db)
+        backend_url, web_url, app_key = resolve_upload_canvas_config(db)
+        # The key itself is never returned. has_app_key covers a saved
+        # setting or IMACS_APP_KEY. Callers must not log this response
+        # together with a request body that contains the key.
         return {
             "backend_base_url": backend_url,
             "upload_canvas_base_url": web_url,
-            "has_app_key": bool(_nonempty(db.get_setting("imacs_app_key"))),
+            "has_app_key": bool(_nonempty(app_key)),
         }
     finally:
         db.close()
@@ -190,11 +206,15 @@ def get_config(db: ResultsDB = Depends(_get_db)):
 def set_config(body: ConfigBody, db: ResultsDB = Depends(_get_db)):
     try:
         if body.backend_base_url is not None:
-            db.set_setting("backend_base_url", body.backend_base_url)
+            db.set_setting("backend_base_url", body.backend_base_url.strip())
         if body.upload_canvas_base_url is not None:
-            db.set_setting("upload_canvas_base_url", body.upload_canvas_base_url)
+            db.set_setting("upload_canvas_base_url", body.upload_canvas_base_url.strip())
+        # A blank field means "leave the saved key". Do not erase it, and
+        # do not write the key to the log.
         if body.imacs_app_key is not None:
-            db.set_setting("imacs_app_key", body.imacs_app_key)
+            key_text = _nonempty(body.imacs_app_key)
+            if key_text is not None:
+                db.set_setting("imacs_app_key", key_text)
         return {"status": "saved"}
     finally:
         db.close()
@@ -231,6 +251,7 @@ def create_job_handoff(
     client: UploadCanvasClient = Depends(_get_client),
 ):
     try:
+        _require_app_key(client)
         local_id = resolve_local_job_id(db, job_id)
         imacs_job_id = get_or_create_imacs_job_id(db, local_id)
         payload = _resolve_job_payload(db, local_id, imacs_job_id)
@@ -251,6 +272,7 @@ def search_projects(
     db: ResultsDB = Depends(_get_db),
 ):
     try:
+        _require_app_key(client)
         projects = client.search_projects(q)
         return {"projects": projects}
     except UploadCanvasError as e:
@@ -267,6 +289,7 @@ def link_project(
     client: UploadCanvasClient = Depends(_get_client),
 ):
     try:
+        _require_app_key(client)
         local_id = resolve_local_job_id(db, job_id)
         imacs_job_id = get_or_create_imacs_job_id(db, local_id)
         payload = _resolve_job_payload(db, local_id, imacs_job_id)
@@ -296,6 +319,7 @@ def unlink_project(
     client: UploadCanvasClient = Depends(_get_client),
 ):
     try:
+        _require_app_key(client)
         local_id = resolve_local_job_id(db, job_id)
         imacs_job_id = get_or_create_imacs_job_id(db, local_id)
         res = client.unlink_project(imacs_job_id)
@@ -313,6 +337,7 @@ def push_run(
     client: UploadCanvasClient = Depends(_get_client),
 ):
     try:
+        _require_app_key(client)
         local_id = resolve_local_job_id(db, job_id)
         imacs_job_id = get_or_create_imacs_job_id(db, local_id)
         summary = client.get_summary(imacs_job_id)

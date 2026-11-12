@@ -149,6 +149,25 @@ export async function installSidecarMock(page: Page, opts: MockOpts) {
   await page.route(`http://127.0.0.1:${opts.sidecarPort}/**`, async (route) => {
     const url = new URL(route.request().url());
     const method = route.request().method();
+    if (method === "GET" && url.pathname === "/api/imacs/config") {
+      return route.fulfill({
+        status: 200,
+        json: {
+          backend_base_url: "https://backendfornextapp-production.up.railway.app",
+          upload_canvas_base_url: "https://upload-canvas.vercel.app",
+          has_app_key: true,
+        },
+      });
+    }
+    if (method === "GET" && url.pathname === "/api/imacs/upload-canvas-projects") {
+      return route.fulfill({ status: 200, json: { projects: [] } });
+    }
+    if (method === "GET" && url.pathname.includes("/upload-canvas-summary")) {
+      return route.fulfill({
+        status: 200,
+        json: { job_id: "job", imacs_job_id: "imacs-job", summary: null },
+      });
+    }
     if (method === "GET" && url.pathname === "/healthz") {
       return route.fulfill({ status: 200, json: healthz });
     }

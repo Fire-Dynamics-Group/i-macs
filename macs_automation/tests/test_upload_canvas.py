@@ -537,14 +537,15 @@ def test_payload_does_not_upload_the_database_file(tmp_path):
     assert "sqlite" not in payload
 
 
-def _http_error(code: int):
+def _http_error(code: int, body: bytes | None = None):
+    import io
     import urllib.error
     return urllib.error.HTTPError(
         url="http://127.0.0.1:8001/imacs/x",
         code=code,
         msg="error",
         hdrs={},
-        fp=None,
+        fp=None if body is None else io.BytesIO(body),
     )
 
 
@@ -589,9 +590,46 @@ def test_link_404_is_not_success_and_does_not_open_browser(monkeypatch):
             "/api/imacs/jobs/batch-404/upload-canvas-link",
             json={"project_id": "missing-project"},
         )
+    body = res.json()
     assert res.status_code == 404
+    assert body.get("status") != "linked"
+    # A 422 here is local payload validation (missing exposure or
+    # MACS_APP_VERSION) and means the backend was never asked. The fixture
+    # above is a real section, exposure, and version, so this 404 is the
+    # remote "project missing" response.
+    assert "not found" in body.get("detail", "").lower()
+    assert "exposure" not in body.get("detail", "").lower()
+    mock_open.assert_not_called()
+
+
+def test_link_incomplete_run_is_422_and_does_not_call_the_backend(monkeypatch):
+    """Missing exposure is a local validation error, not a missing project.
+
+    CI on main failed these 404 tests with `assert 422 == 404` because the
+    synthetic run had no exposure and MACS_APP_VERSION was unset. That 422
+    is the correct response for an incomplete run. It must not be reported
+    as a successful link, and it must not open a browser or hit the network.
+    """
+    api = TestClient(app)
+    with patch(
+        "macs_automation.upload_canvas_router._get_latest_run_for_job",
+        return_value={
+            "id": 10,
+            "side_a_critical_temp": 520.0,
+            "side_a_sec": "UB 457x191x82",
+        },
+    ), patch("macs_automation.upload_canvas_router._safe_open_browser") as mock_open, patch(
+        "urllib.request.urlopen"
+    ) as mock_http:
+        res = api.post(
+            "/api/imacs/jobs/batch-404/upload-canvas-link",
+            json={"project_id": "missing-project"},
+        )
+    assert res.status_code == 422
+    assert "exposure" in res.json().get("detail", "").lower()
     assert res.json().get("status") != "linked"
     mock_open.assert_not_called()
+    mock_http.assert_not_called()
 
 
 def test_push_404_is_not_success_and_does_not_open_browser(monkeypatch):
@@ -629,8 +667,11 @@ def test_push_404_is_not_success_and_does_not_open_browser(monkeypatch):
         "urllib.request.urlopen", side_effect=urlopen
     ):
         res = api.post("/api/imacs/jobs/batch-404/upload-canvas-push")
+    body = res.json()
     assert res.status_code == 404
-    assert res.json().get("status") != "pushed"
+    assert body.get("status") != "pushed"
+    assert "not found" in body.get("detail", "").lower()
+    assert "exposure" not in body.get("detail", "").lower()
     mock_open.assert_not_called()
 
 
@@ -839,3 +880,145 @@ def test_packaged_app_uses_env_urls_and_key(tmp_path, monkeypatch):
     assert client.upload_canvas_url == "http://localhost:3000"
     assert client.app_key == "env-key-from-test"
     db.close()
+
+
+def _use_db(path):
+    from macs_automation.upload_canvas_router import _get_db
+
+    def open_db():
+        return ResultsDB(path, check_same_thread=False)
+
+    app.dependency_overrides[_get_db] = open_db
+    return _get_db
+
+
+def test_client_preserves_not_configured_503_detail():
+    """The Upload Canvas backend says 'i-macs access is not configured.'
+
+    That sentence has to reach the desktop UI. Replacing it with a generic
+    503 hides the reason the project list is empty.
+    """
+    client = UploadCanvasClient(
+        backend_url="http://test-backend",
+        upload_canvas_url="http://test-web",
+        app_key="dummy-key",
+    )
+    body = b'{"detail":"i-macs access is not configured."}'
+    with patch("urllib.request.urlopen", side_effect=_http_error(503, body)):
+        with pytest.raises(UploadCanvasError) as exc_info:
+            client.search_projects("TimeEq")
+    assert exc_info.value.status_code == 503
+    assert "i-macs access is not configured." in str(exc_info.value)
+
+
+def test_search_404_is_not_an_empty_project_list():
+    api = TestClient(app)
+    with patch("urllib.request.urlopen", side_effect=_http_error(404)):
+        res = api.get("/api/imacs/upload-canvas-projects?q=TimeEq")
+    assert res.status_code == 404
+    assert "projects" not in res.json()
+    assert "not found" in res.json().get("detail", "").lower()
+
+
+def test_search_network_error_is_not_an_empty_project_list():
+    api = TestClient(app)
+    with patch("urllib.request.urlopen", side_effect=OSError("connection refused")):
+        res = api.get("/api/imacs/upload-canvas-projects?q=TimeEq")
+    assert res.status_code == 502
+    assert "projects" not in res.json()
+    detail = res.json().get("detail", "").lower()
+    assert "network" in detail or "connection" in detail
+
+
+def test_search_missing_key_is_not_an_empty_project_list(tmp_path, monkeypatch):
+    _clear_upload_canvas_env(monkeypatch)
+    monkeypatch.setenv("MACS_PACKAGED", "1")
+    path = tmp_path / "nokey.db"
+    ResultsDB(path).close()
+    token = _use_db(path)
+    api = TestClient(app)
+    try:
+        with patch("urllib.request.urlopen") as mock_open:
+            res = api.get("/api/imacs/upload-canvas-projects?q=TimeEq")
+    finally:
+        app.dependency_overrides.pop(token, None)
+    assert res.status_code == 401
+    assert "projects" not in res.json()
+    assert "open settings" in res.json().get("detail", "").lower()
+    mock_open.assert_not_called()
+
+
+def test_handoff_missing_key_fails_before_chart_payload(tmp_path, monkeypatch):
+    """Create must not draw charts and then time out when no key is saved."""
+    _clear_upload_canvas_env(monkeypatch)
+    monkeypatch.setenv("MACS_PACKAGED", "1")
+    monkeypatch.setenv("MACS_APP_VERSION", "0.1.0-rc.20")
+    path = tmp_path / "nokey-handoff.db"
+    ResultsDB(path).close()
+    token = _use_db(path)
+    api = TestClient(app)
+    try:
+        with patch(
+            "macs_automation.upload_canvas_router._resolve_job_payload"
+        ) as mock_payload, patch(
+            "macs_automation.report._render_house_charts"
+        ) as mock_charts, patch(
+            "urllib.request.urlopen"
+        ) as mock_open:
+            res = api.post("/api/imacs/jobs/batch-1/upload-canvas-handoff")
+    finally:
+        app.dependency_overrides.pop(token, None)
+    assert res.status_code == 401
+    assert "open settings" in res.json().get("detail", "").lower()
+    mock_payload.assert_not_called()
+    mock_charts.assert_not_called()
+    mock_open.assert_not_called()
+
+
+def test_get_config_counts_env_key_without_returning_it(tmp_path, monkeypatch):
+    _clear_upload_canvas_env(monkeypatch)
+    monkeypatch.setenv("MACS_PACKAGED", "1")
+    monkeypatch.setenv("IMACS_APP_KEY", "env-key-from-test")
+    from macs_automation.upload_canvas_router import get_config
+
+    db = ResultsDB(tmp_path / "env-visible.db")
+    config = get_config(db)
+    assert config["has_app_key"] is True
+    assert "env-key-from-test" not in str(config)
+    assert "imacs_app_key" not in config
+
+
+def test_put_config_stores_key_and_blank_does_not_erase_or_echo_it(tmp_path, monkeypatch, capsys):
+    _clear_upload_canvas_env(monkeypatch)
+    monkeypatch.setenv("MACS_PACKAGED", "1")
+    path = tmp_path / "cfg.db"
+    ResultsDB(path).close()
+    token = _use_db(path)
+    api = TestClient(app)
+    try:
+        saved = api.put(
+            "/api/imacs/config",
+            json={
+                "imacs_app_key": "settings-key-from-test",
+                "backend_base_url": "https://backendfornextapp-production.up.railway.app",
+                "upload_canvas_base_url": "https://upload-canvas.vercel.app",
+            },
+        )
+        assert saved.status_code == 200
+        shown = api.get("/api/imacs/config")
+        assert shown.status_code == 200
+        body = shown.json()
+        assert body["has_app_key"] is True
+        assert body["backend_base_url"] == "https://backendfornextapp-production.up.railway.app"
+        assert body["upload_canvas_base_url"] == "https://upload-canvas.vercel.app"
+        assert "settings-key-from-test" not in shown.text
+        blank = api.put("/api/imacs/config", json={"imacs_app_key": "   "})
+        assert blank.status_code == 200
+        kept = ResultsDB(path)
+        assert kept.get_setting("imacs_app_key") == "settings-key-from-test"
+        kept.close()
+    finally:
+        app.dependency_overrides.pop(token, None)
+    captured = capsys.readouterr()
+    assert "settings-key-from-test" not in captured.out
+    assert "settings-key-from-test" not in captured.err

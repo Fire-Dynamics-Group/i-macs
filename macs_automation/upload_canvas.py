@@ -450,7 +450,7 @@ class UploadCanvasClient:
                 )
             elif code == 503:
                 raise UploadCanvasError(
-                    "Service unavailable (backend IMACS_APP_KEY unset or offline).",
+                    detail_msg or "Service unavailable (backend IMACS_APP_KEY unset or offline).",
                     status_code=503,
                 )
             elif code == 404:

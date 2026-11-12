@@ -19,7 +19,9 @@ import {
   deleteCustomSection,
   fetchHealth,
   fetchRefData,
+  getUploadCanvasConfig,
   listCustomSections,
+  putUploadCanvasConfig,
   submitRun,
 } from "./client";
 
@@ -177,5 +179,61 @@ describe("api/client — custom sections", () => {
     await expect(
       createCustomSection({ name: "dupe", h: 1, b: 1, tw: 1, tf: 1 }),
     ).rejects.toThrow(/name already used/);
+  });
+});
+
+describe("api/client — upload canvas config", () => {
+  it("GETs /api/imacs/config without a key field", async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          backend_base_url: "https://backendfornextapp-production.up.railway.app",
+          upload_canvas_base_url: "https://upload-canvas.vercel.app",
+          has_app_key: false,
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+
+    const config = await getUploadCanvasConfig();
+
+    expect(config.has_app_key).toBe(false);
+    expect(config.backend_base_url).toBe(
+      "https://backendfornextapp-production.up.railway.app",
+    );
+    expect(fetchMock).toHaveBeenCalledWith("http://127.0.0.1:8765/api/imacs/config");
+    expect(JSON.stringify(config)).not.toContain("imacs_app_key");
+  });
+
+  it("PUTs the app key to /api/imacs/config and does not log it", async () => {
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    const info = vi.spyOn(console, "info").mockImplementation(() => {});
+    const debug = vi.spyOn(console, "debug").mockImplementation(() => {});
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ status: "saved" }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+
+    await putUploadCanvasConfig({
+      imacs_app_key: "secret-key-value",
+      backend_base_url: "https://backendfornextapp-production.up.railway.app",
+      upload_canvas_base_url: "https://upload-canvas.vercel.app",
+    });
+
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe("http://127.0.0.1:8765/api/imacs/config");
+    expect(init.method).toBe("PUT");
+    expect(JSON.parse(init.body)).toEqual({
+      imacs_app_key: "secret-key-value",
+      backend_base_url: "https://backendfornextapp-production.up.railway.app",
+      upload_canvas_base_url: "https://upload-canvas.vercel.app",
+    });
+    const logged = [log, info, debug].flatMap((spy) => spy.mock.calls).flat().join(" ");
+    expect(logged).not.toContain("secret-key-value");
+    log.mockRestore();
+    info.mockRestore();
+    debug.mockRestore();
   });
 });
