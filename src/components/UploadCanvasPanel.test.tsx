@@ -364,6 +364,8 @@ describe("UploadCanvasPanel", () => {
     await openChooser();
 
     expect(await screen.findByText(UPLOAD_CANVAS_SIGN_IN_MESSAGE)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Sign in with Microsoft/i })).toBeInTheDocument();
+    expect(screen.queryByText(/app key/i)).not.toBeInTheDocument();
     expect(screen.queryByLabelText(/app key/i)).not.toBeInTheDocument();
     expect(screen.queryByDisplayValue(/secret/i)).not.toBeInTheDocument();
 

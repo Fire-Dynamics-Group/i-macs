@@ -446,21 +446,16 @@ export function UploadCanvasPanel({ jobId }: UploadCanvasPanelProps) {
                   </button>
                 </div>
               ) : (
-                <div>
-                  <p className="text-xs text-slate-600">
-                    Sign in with your FD Microsoft account. The app key is not entered here.
-                  </p>
-                  <button
-                    type="button"
-                    onClick={() => signInMutation.mutate()}
-                    disabled={signInMutation.isPending}
-                    className="mt-2 rounded bg-slate-800 px-3 py-1 text-xs font-medium text-white hover:bg-slate-900 disabled:opacity-50"
-                  >
-                    {signInMutation.isPending || awaitingSignIn
-                      ? "Waiting for Microsoft…"
-                      : "Sign in with Microsoft"}
-                  </button>
-                </div>
+                <button
+                  type="button"
+                  onClick={() => signInMutation.mutate()}
+                  disabled={signInMutation.isPending}
+                  className="rounded bg-slate-800 px-3 py-1 text-xs font-medium text-white hover:bg-slate-900 disabled:opacity-50"
+                >
+                  {signInMutation.isPending || awaitingSignIn
+                    ? "Waiting for Microsoft…"
+                    : "Sign in with Microsoft"}
+                </button>
               )}
             </div>
 
