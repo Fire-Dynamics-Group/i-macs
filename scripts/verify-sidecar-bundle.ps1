@@ -18,13 +18,33 @@ Set-Location $repoRoot
 $bundle = "src-tauri/binaries/i-macs-sidecar-x86_64-pc-windows-msvc"
 $port = 8199
 
-foreach ($pkg in 'matplotlib', 'numpy', 'docx', 'msal') {
+foreach ($pkg in 'matplotlib', 'numpy', 'docx') {
     if (-not (Test-Path "$bundle/_internal/$pkg")) {
-        Write-Error "$pkg is missing from the frozen bundle — charts, reports, or macs_automation.entra_sign_in would fail at runtime."
+        Write-Error "$pkg is missing from the frozen bundle — charts and reports would 500 at runtime."
         exit 1
     }
     Write-Host "  ok  $pkg present"
 }
+
+# msal is pure Python. PyInstaller packs it into the PYZ inside the exe,
+# not as _internal/msal (that directory check is what matplotlib/numpy/docx
+# need, and it false-fails for msal). The archive table of contents stores
+# msal.application uncompressed. Our own source never names that module.
+# macs_automation.entra_sign_in imports msal at startup; the /healthz boot
+# below is what proves that import succeeds.
+$needle = "msal.application"
+$foundMsal = $false
+$searchPaths = @((Resolve-Path "$bundle/i-macs-sidecar.exe").Path)
+$searchPaths += @(Get-ChildItem -Recurse -File $bundle | Where-Object { $_.Extension -in '.pyz', '.pkg' } | ForEach-Object { $_.FullName })
+foreach ($path in $searchPaths) {
+    $text = [System.Text.Encoding]::ASCII.GetString([System.IO.File]::ReadAllBytes($path))
+    if ($text.Contains($needle)) { $foundMsal = $true; break }
+}
+if (-not $foundMsal) {
+    Write-Error "msal was not frozen into the sidecar. macs_automation.entra_sign_in would raise ModuleNotFoundError."
+    exit 1
+}
+Write-Host "  ok  msal frozen into the sidecar"
 
 # Longest path in the bundle + a generous install-prefix budget must
 # clear MAX_PATH (260): the app installs per-user under a path like

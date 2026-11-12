@@ -61,7 +61,10 @@ def test_pyinstaller_spec_fails_closed_when_msal_is_absent():
 
 def test_bundle_check_requires_msal_and_a_live_healthz():
     script = (ROOT / "scripts" / "verify-sidecar-bundle.ps1").read_text(encoding="utf-8")
-    assert "'msal'" in script
+    # msal is pure Python, so it is not a directory under _internal/. The
+    # PYZ table of contents lists msal.application only when that module
+    # was frozen. The name is not in our own source.
+    assert "msal.application" in script
     assert "/healthz" in script
     assert "macs_automation.entra_sign_in" in script
     release = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
