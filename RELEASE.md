@@ -81,17 +81,15 @@ Once the one-time setup above is complete, every release is just:
 
 ## Cutting a release candidate first
 
-Tag with an `-rc.N` suffix to publish a pre-release without flipping the
-"latest" pointer:
+Tag with an `-rc.N` suffix. The release workflow runs the full CI suite,
+builds the installer, and creates the GitHub Release as a draft
+pre-release. It does not mark that release latest, so existing installs
+do not auto-update. Promotion to latest is a separate approved step.
 
 ```powershell
 git tag v0.1.0-rc.1
-git push origin --tags
+git push origin v0.1.0-rc.1
 ```
-
-Note: the workflow currently sets `prerelease: false` unconditionally —
-edit `.github/workflows/release.yml` if you want `-rc` tags to be marked
-as pre-releases on GitHub.
 
 ## Local smoke before tagging
 

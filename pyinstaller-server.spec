@@ -38,6 +38,7 @@ hidden_imports = (
         # analyser doesn't see the dynamic spawn, so include it explicitly.
         'macs_automation.com_runner',
     ]
+    + collect_submodules('msal')
 )
 
 # Data files — none from our side (Data.xml lives in the MACS+ install,

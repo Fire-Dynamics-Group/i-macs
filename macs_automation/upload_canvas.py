@@ -400,6 +400,7 @@ class UploadCanvasClient:
         backend_url: str = "http://127.0.0.1:8001",
         upload_canvas_url: str = "http://localhost:3000",
         app_key: Optional[str] = None,
+        bearer_token: Optional[str] = None,
     ):
         self.backend_url = backend_url.rstrip("/")
         self.upload_canvas_url = upload_canvas_url.rstrip("/")
@@ -409,13 +410,18 @@ class UploadCanvasClient:
         if app_key is None:
             app_key = os.environ.get("IMACS_APP_KEY", "")
         self.app_key = app_key
+        # The Entra identity token, when the user has signed in. Never log it.
+        self.bearer_token = bearer_token or ""
 
     def _request(self, method: str, path: str, body: Optional[dict] = None) -> Any:
         url = f"{self.backend_url}{path}"
-        headers = {
-            "Content-Type": "application/json",
-            "X-IMACS-App-Key": self.app_key,
-        }
+        headers = {"Content-Type": "application/json"}
+        if self.bearer_token:
+            headers["Authorization"] = f"Bearer {self.bearer_token}"
+        # Older servers still require the shared key. Send it only when one
+        # is configured; a signed-in user does not need it.
+        if self.app_key:
+            headers["X-IMACS-App-Key"] = self.app_key
         data = json.dumps(body).encode("utf-8") if body is not None else None
         req = urllib.request.Request(url, data=data, headers=headers, method=method)
 
@@ -439,18 +445,19 @@ class UploadCanvasClient:
                 pass
 
             if code == 401:
-                raise UploadCanvasError(
-                    "Missing or invalid IMACS_APP_KEY header. Please configure the app key.",
-                    status_code=401,
-                )
+                lowered = detail_msg.lower()
+                if "not authorised" in lowered or "not authorized" in lowered:
+                    message = "Not authorised."
+                elif detail_msg and "sign in" in lowered:
+                    message = detail_msg
+                else:
+                    message = "Sign in to Upload Canvas"
+                raise UploadCanvasError(message, status_code=401)
             elif code == 403:
-                raise UploadCanvasError(
-                    "IMACS_APP_KEY is rejected (wrong key). Check your settings.",
-                    status_code=403,
-                )
+                raise UploadCanvasError("Not authorised.", status_code=403)
             elif code == 503:
                 raise UploadCanvasError(
-                    "Service unavailable (backend IMACS_APP_KEY unset or offline).",
+                    detail_msg or "Service unavailable (backend IMACS_APP_KEY unset or offline).",
                     status_code=503,
                 )
             elif code == 404:

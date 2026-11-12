@@ -316,10 +316,12 @@ jobs:
           }
           Write-Host "  ok  installer signature verifies against tauri.conf.json pubkey"
 
-      - name: Publish (draft, upload verified assets, promote)
-        # Draft-then-promote keeps the release invisible to the updater's
-        # /releases/latest endpoint until every asset — installer, signature,
-        # manifest — is uploaded. No half-published state can ever be served.
+      - name: Publish (draft, upload verified assets, promote stable only)
+        # Assets are always uploaded to a draft first so /releases/latest
+        # cannot serve a half-published release. An -rc tag stays a draft
+        # pre-release and is not marked latest; promoting it is a separate
+        # approved step. A stable tag is undrafted and marked latest only
+        # after every asset is uploaded.
         shell: pwsh
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -328,11 +330,21 @@ jobs:
           $tag = "${{ github.ref_name }}"
           $setup = Get-ChildItem "src-tauri/target/release/bundle/nsis/*-setup.exe" |
               Sort-Object LastWriteTime -Descending | Select-Object -First 1
-          gh release create $tag --draft `
-              --title "MACS+ Automation $tag" `
-              --notes "See the assets below to download and install. Already-installed copies will auto-update on next launch." `
-              $setup.FullName "$($setup.FullName).sig" latest.json
-          if ($LASTEXITCODE -ne 0) { Write-Error "draft release creation failed"; exit 1 }
-          gh release edit $tag --draft=false --latest
-          if ($LASTEXITCODE -ne 0) { Write-Error "promoting the draft failed"; exit 1 }
-          Write-Host "  ok  $tag published"
+          $isReleaseCandidate = $tag -match '-rc(\.|$)'
+          if ($isReleaseCandidate) {
+              gh release create $tag --draft --prerelease `
+                  --title "MACS+ Automation $tag" `
+                  --notes "Release candidate. Not marked latest; existing installs will not auto-update until this is promoted." `
+                  $setup.FullName "$($setup.FullName).sig" latest.json
+              if ($LASTEXITCODE -ne 0) { Write-Error "draft pre-release creation failed"; exit 1 }
+              Write-Host "  ok  $tag left as a draft pre-release (not latest)"
+          } else {
+              gh release create $tag --draft `
+                  --title "MACS+ Automation $tag" `
+                  --notes "See the assets below to download and install. Already-installed copies will auto-update on next launch." `
+                  $setup.FullName "$($setup.FullName).sig" latest.json
+              if ($LASTEXITCODE -ne 0) { Write-Error "draft release creation failed"; exit 1 }
+              gh release edit $tag --draft=false --latest
+              if ($LASTEXITCODE -ne 0) { Write-Error "promoting the draft failed"; exit 1 }
+              Write-Host "  ok  $tag published as latest"
+          }

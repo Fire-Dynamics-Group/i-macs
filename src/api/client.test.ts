@@ -19,7 +19,10 @@ import {
   deleteCustomSection,
   fetchHealth,
   fetchRefData,
+  getUploadCanvasConfig,
   listCustomSections,
+  putUploadCanvasConfig,
+  startUploadCanvasSignIn,
   submitRun,
 } from "./client";
 
@@ -177,5 +180,76 @@ describe("api/client — custom sections", () => {
     await expect(
       createCustomSection({ name: "dupe", h: 1, b: 1, tw: 1, tf: 1 }),
     ).rejects.toThrow(/name already used/);
+  });
+});
+
+describe("api/client — upload canvas config", () => {
+  it("GETs /api/imacs/config without a key field", async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          backend_base_url: "https://backendfornextapp-production.up.railway.app",
+          upload_canvas_base_url: "https://upload-canvas.vercel.app",
+          has_app_key: false,
+          signed_in: false,
+          account_email: "",
+          account_name: "",
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+
+    const config = await getUploadCanvasConfig();
+
+    expect(config.has_app_key).toBe(false);
+    expect(config.signed_in).toBe(false);
+    expect(config.backend_base_url).toBe(
+      "https://backendfornextapp-production.up.railway.app",
+    );
+    expect(fetchMock).toHaveBeenCalledWith("http://127.0.0.1:8765/api/imacs/config");
+    expect(JSON.stringify(config)).not.toContain("imacs_app_key");
+  });
+
+  it("PUTs URL overrides and does not send an app key", async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ status: "saved" }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+
+    await putUploadCanvasConfig({
+      backend_base_url: "https://backendfornextapp-production.up.railway.app",
+      upload_canvas_base_url: "https://upload-canvas.vercel.app",
+    });
+
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe("http://127.0.0.1:8765/api/imacs/config");
+    expect(init.method).toBe("PUT");
+    expect(JSON.parse(init.body)).toEqual({
+      backend_base_url: "https://backendfornextapp-production.up.railway.app",
+      upload_canvas_base_url: "https://upload-canvas.vercel.app",
+    });
+    expect(init.body).not.toContain("imacs_app_key");
+  });
+
+  it("POSTs Microsoft sign-in without a token in the body", async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          auth_url: "https://login.microsoftonline.com/8c535dde-8170-4909-8edc-40bbff4924ba/oauth2/v2.0/authorize",
+          redirect_uri: "http://127.0.0.1:47831/callback",
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+
+    const started = await startUploadCanvasSignIn();
+
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe("http://127.0.0.1:8765/api/imacs/auth/sign-in");
+    expect(init.method).toBe("POST");
+    expect(started.redirect_uri).toBe("http://127.0.0.1:47831/callback");
+    expect(init.body).not.toContain("id_token");
   });
 });
