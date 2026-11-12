@@ -13,9 +13,21 @@ into src-tauri/binaries/i-macs-sidecar-x86_64-pc-windows-msvc/, where Tauri
 picks it up via bundle.resources. The x86_64 triple is preserved by Tauri
 convention even for a 32-bit sidecar — the triple refers to the Tauri shell.
 """
+import importlib.util
+
 from PyInstaller.utils.hooks import collect_data_files, collect_submodules
 
 block_cipher = None
+
+# entra_sign_in imports msal while the process is starting. collect_submodules
+# only warns and returns [] when the package is missing, which is how the
+# v0.1.0-rc.20 bundle built and then died with ModuleNotFoundError. Fail here.
+if importlib.util.find_spec("msal") is None:
+    raise SystemExit(
+        "msal is not installed in this interpreter. The frozen sidecar "
+        "imports macs_automation.entra_sign_in at startup, and that module "
+        "imports msal. Install requirements-sidecar.lock before building."
+    )
 
 # Modules pulled in dynamically that the static analyser can't see.
 # pythoncom / win32com / pywintypes are the COM bridge for FRACOF; uvicorn
@@ -47,6 +59,9 @@ hidden_imports = (
 # stays in requirements, so collect its data to keep imports clean.
 datas = []
 datas += collect_data_files('matplotlib')
+# requests (via msal) reads certifi's CA bundle. The file is not a module, so
+# name it here or a frozen sign-in fails TLS with a missing cacert.pem.
+datas += collect_data_files('certifi')
 # MACS+ PDF replay scripts, driven by macs_automation/pdf_evidence.py. They are
 # data rather than code, so they need naming explicitly or the batch page's
 # "MACS+ PDF evidence" action finds nothing in a packaged build.
