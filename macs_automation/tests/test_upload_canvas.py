@@ -73,8 +73,10 @@ def test_build_macs_run_payload():
 
 
 def test_section_factor_uses_blue_book_not_140():
-    """UB_SECTIONS keys are lowercase. Both spellings are the same real factor."""
+    """UB_SECTIONS keys are lowercase. Both spellings and underscores resolve to the same real factor."""
     assert compute_section_factor("UB 457x191x82", "3-sided") == 138.1
+    assert compute_section_factor("UB_457x191x82", "3-sided") == 138.1
+    assert compute_section_factor("UB_406x140x39", "3-sided") == 239.8
     assert compute_section_factor("457x191x82", "3-sided") == 138.1
     assert compute_section_factor("ub 457x191x82", "4-sided") == 159.4
 
@@ -105,9 +107,14 @@ def test_payload_fails_when_critical_temp_section_or_exposure_is_missing():
     assert "UB 457x191x82" in str(exc.value)
 
     missing_exposure = {k: v for k, v in base.items() if k != "exposure"}
+    payload = build_macs_run_payload(missing_exposure, "job", version="0.1.0-rc.19")
+    assert payload["exposure"] == "3-sided"
+    assert payload["section_factor"] == compute_section_factor("UB 305x165x40", "3-sided")
+
+    invalid_exposure = {**base, "exposure": "2-sided"}
     with pytest.raises(UploadCanvasError) as exc:
-        build_macs_run_payload(missing_exposure, "job", version="0.1.0-rc.19")
-    assert "3-sided" in str(exc.value)
+        build_macs_run_payload(invalid_exposure, "job", version="0.1.0-rc.19")
+    assert "3-sided or 4-sided" in str(exc.value)
 
 
 def test_client_version_comes_from_macs_app_version(monkeypatch):
@@ -334,10 +341,10 @@ def test_build_macs_batch_payload_success(mem_db):
     assert payload["shear_check"]["checked"] == 2
     assert isinstance(payload["shear_check"]["sub_limit_runs"], list)
     # The seeded runs have a real section and critical temperature, and no
-    # exposure. The factor must not fall back to 140 or an assumed 3-sided.
+    # explicit exposure. The factor computes from real 3-sided Blue Book dimensions.
     assert payload["governing_section"] == "UB 457x191x82"
     assert payload["critical_temp"] == 540.0
-    assert payload["section_factor"] is None
+    assert payload["section_factor"] == 138.1
 
     charts = payload["charts"]
     assert "scatter" in charts
@@ -603,13 +610,12 @@ def test_link_404_is_not_success_and_does_not_open_browser(monkeypatch):
 
 
 def test_link_incomplete_run_is_422_and_does_not_call_the_backend(monkeypatch):
-    """Missing exposure is a local validation error, not a missing project.
+    """Invalid exposure is a local validation error, not a missing project.
 
-    CI on main failed these 404 tests with `assert 422 == 404` because the
-    synthetic run had no exposure and MACS_APP_VERSION was unset. That 422
-    is the correct response for an incomplete run. It must not be reported
-    as a successful link, and it must not open a browser or hit the network.
+    Local validation errors must return 422, must not be reported
+    as a successful link, and must not open a browser or hit the network.
     """
+    monkeypatch.setenv("MACS_APP_VERSION", "0.1.0-rc.20")
     api = TestClient(app)
     with patch(
         "macs_automation.upload_canvas_router._get_latest_run_for_job",
@@ -617,6 +623,7 @@ def test_link_incomplete_run_is_422_and_does_not_call_the_backend(monkeypatch):
             "id": 10,
             "side_a_critical_temp": 520.0,
             "side_a_sec": "UB 457x191x82",
+            "exposure": "2-sided",
         },
     ), patch("macs_automation.upload_canvas_router._safe_open_browser") as mock_open, patch(
         "urllib.request.urlopen"

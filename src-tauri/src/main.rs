@@ -193,14 +193,17 @@ fn spawn_sidecar(app: &AppHandle, port: u16, log_dir: &std::path::Path) -> Resul
             .ok_or_else(|| "could not resolve project root".to_string())?
             .to_path_buf();
 
-        // Prefer the 32-bit venv interpreter (FRACOF COM is 32-bit), then
+        // Prefer the active .venv interpreter, then 32-bit venv-32, then
         // fall back to a generic venv, then PATH.
+        let dot_venv_python = project_root.join(".venv").join("Scripts").join("python.exe");
         let venv32_python = project_root
             .join("venv-32")
             .join("Scripts")
             .join("python.exe");
         let venv_python = project_root.join("venv").join("Scripts").join("python.exe");
-        let python_cmd = if venv32_python.exists() {
+        let python_cmd = if dot_venv_python.exists() {
+            dot_venv_python.to_string_lossy().into_owned()
+        } else if venv32_python.exists() {
             venv32_python.to_string_lossy().into_owned()
         } else if venv_python.exists() {
             venv_python.to_string_lossy().into_owned()

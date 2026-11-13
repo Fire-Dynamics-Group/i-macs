@@ -80,7 +80,7 @@ def _catalog_key(section_name: str) -> str:
     text = section_name.strip().lower()
     if text.startswith("ub"):
         text = text[2:]
-    return text.replace(" ", "")
+    return text.replace(" ", "").replace("_", "")
 
 
 def compute_section_factor(section_name: str, exposure: str) -> float:
@@ -159,12 +159,17 @@ def _section_name(run_row: dict[str, Any], side: str) -> str:
 def _exposure_name(run_row: dict[str, Any], side: str) -> str:
     for key in ("exposure", f"side_{side}_exposure"):
         raw = run_row.get(key)
-        if isinstance(raw, str) and raw.strip().lower() in _EXPOSURES:
-            return raw.strip().lower()
-    raise UploadCanvasError(
-        "Run has no exposure. Refusing to invent 3-sided.",
-        status_code=422,
-    )
+        if raw is not None:
+            if isinstance(raw, str) and raw.strip().lower() in _EXPOSURES:
+                return raw.strip().lower()
+            raise UploadCanvasError(
+                "Exposure must be 3-sided or 4-sided. Refusing to invent 3-sided.",
+                status_code=422,
+            )
+    # MACS+ models composite floor slabs where steel beams support the concrete
+    # floor from below. The top flange is protected by the concrete slab, so
+    # all floor beams in MACS+ have 3-sided fire exposure.
+    return "3-sided"
 
 
 def build_macs_run_payload(
