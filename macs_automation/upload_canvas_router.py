@@ -291,8 +291,6 @@ def create_job_handoff(
         imacs_job_id = get_or_create_imacs_job_id(db, local_id)
         payload = _resolve_job_payload(db, local_id, imacs_job_id)
         handoff = client.create_handoff(payload)
-        if handoff and handoff.get("url"):
-            _safe_open_browser(handoff["url"])
         return handoff
     except UploadCanvasError as e:
         raise HTTPException(status_code=e.status_code, detail=str(e))
@@ -335,7 +333,6 @@ def link_project(
         client.push_run(body.project_id, payload)
 
         url = f"{client.upload_canvas_url}/structural-fire?project={body.project_id}"
-        _safe_open_browser(url)
         return {
             "status": "linked",
             "project_id": body.project_id,
@@ -384,7 +381,6 @@ def push_run(
         client.push_run(project_id, payload)
 
         url = f"{client.upload_canvas_url}/structural-fire?project={project_id}"
-        _safe_open_browser(url)
         return {
             "status": "pushed",
             "project_id": project_id,

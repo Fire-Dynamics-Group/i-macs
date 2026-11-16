@@ -381,15 +381,34 @@ export function UploadCanvasPanel({ jobId }: UploadCanvasPanelProps) {
             </div>
           </div>
 
-          <div className="mt-3">
-            <button
-              type="button"
-              onClick={() => pushMutation.mutate()}
-              disabled={pushMutation.isPending}
-              className="inline-flex items-center rounded bg-blue-600 px-4 py-1.5 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
-            >
-              {pushMutation.isPending ? "Pushing latest run…" : "Open project"}
-            </button>
+          <div className="mt-3 space-y-2">
+            <div className="flex items-center gap-3">
+              <button
+                type="button"
+                onClick={() => pushMutation.mutate()}
+                disabled={pushMutation.isPending}
+                className="inline-flex items-center gap-2 rounded bg-blue-600 px-4 py-1.5 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+              >
+                {pushMutation.isPending && (
+                  <span className="inline-block h-3.5 w-3.5 animate-spin rounded-full border-2 border-white border-t-transparent" />
+                )}
+                {pushMutation.isPending ? "Uploading batch & opening…" : "Open project"}
+              </button>
+              {pushMutation.isPending && (
+                <span className="text-xs text-slate-500">
+                  Preparing batch charts & uploading to Upload Canvas…
+                </span>
+              )}
+            </div>
+            {pushMutation.isPending && (
+              <div
+                role="progressbar"
+                aria-label="Uploading batch to Upload Canvas"
+                className="h-1.5 w-full overflow-hidden rounded-full bg-blue-100"
+              >
+                <div className="h-full w-1/2 animate-pulse rounded-full bg-blue-600" />
+              </div>
+            )}
           </div>
         </div>
       ) : (
@@ -522,11 +541,28 @@ export function UploadCanvasPanel({ jobId }: UploadCanvasPanelProps) {
                     }
                     handoffMutation.mutate();
                   }}
-                  disabled={handoffMutation.isPending}
-                  className="mt-2 rounded bg-blue-600 px-3 py-1 text-xs font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+                  disabled={handoffMutation.isPending || linkMutation.isPending}
+                  className="mt-2 inline-flex items-center gap-2 rounded bg-blue-600 px-3 py-1 text-xs font-medium text-white hover:bg-blue-700 disabled:opacity-50"
                 >
+                  {handoffMutation.isPending && (
+                    <span className="inline-block h-3 w-3 animate-spin rounded-full border-2 border-white border-t-transparent" />
+                  )}
                   {handoffMutation.isPending ? "Creating handoff…" : "Create new project"}
                 </button>
+                {(handoffMutation.isPending || linkMutation.isPending) && (
+                  <div className="mt-2 space-y-1.5 rounded border border-blue-200 bg-blue-50 px-2.5 py-2">
+                    <p className="text-xs text-blue-700">
+                      Rendering batch charts & uploading handoff to Upload Canvas… This may take a few seconds for large batches.
+                    </p>
+                    <div
+                      role="progressbar"
+                      aria-label="Creating Upload Canvas handoff"
+                      className="h-1.5 w-full overflow-hidden rounded-full bg-blue-200"
+                    >
+                      <div className="h-full w-1/2 animate-pulse rounded-full bg-blue-600" />
+                    </div>
+                  </div>
+                )}
               </div>
 
               <div className="rounded border border-slate-200 p-3">
