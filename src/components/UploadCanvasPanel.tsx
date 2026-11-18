@@ -13,6 +13,7 @@ import {
   pushUploadCanvasRun,
   type UploadCanvasConfigUpdate,
   type UploadCanvasProject,
+  type SampleRunSummary,
 } from "../api/client";
 
 export const UPLOAD_CANVAS_PRODUCTION_BACKEND =
@@ -223,17 +224,25 @@ export function UploadCanvasPanel({ jobId }: UploadCanvasPanelProps) {
     },
   });
 
+  const [syncSuccess, setSyncSuccess] = useState<string | null>(null);
+  const [syncedRuns, setSyncedRuns] = useState<SampleRunSummary[]>([]);
+
   const pushMutation = useMutation({
-    mutationFn: () => pushUploadCanvasRun(jobId),
-    onSuccess: async (data) => {
+    mutationFn: (_opts?: { openBrowser?: boolean }) => pushUploadCanvasRun(jobId),
+    onSuccess: async (data, opts) => {
       setErrorMessage(null);
-      if (data?.url) {
+      setSyncedRuns(Array.isArray(data?.sample_runs) ? data.sample_runs : []);
+      setSyncSuccess(
+        `Updated ${summary?.project_name || "linked project"} at ${new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`,
+      );
+      if (opts?.openBrowser !== false && data?.url) {
         setOpenedUrl(data.url);
         await safeOpenUrl(data.url);
       }
       queryClient.invalidateQueries({ queryKey: ["upload-canvas-summary", jobId] });
     },
     onError: (err: Error) => {
+      setSyncSuccess(null);
       setErrorMessage(err.message || "Failed to push run to project");
     },
   });
@@ -382,16 +391,24 @@ export function UploadCanvasPanel({ jobId }: UploadCanvasPanelProps) {
           </div>
 
           <div className="mt-3 space-y-2">
-            <div className="flex items-center gap-3">
+            <div className="flex flex-wrap items-center gap-2">
               <button
                 type="button"
-                onClick={() => pushMutation.mutate()}
+                onClick={() => pushMutation.mutate({ openBrowser: false })}
                 disabled={pushMutation.isPending}
-                className="inline-flex items-center gap-2 rounded bg-blue-600 px-4 py-1.5 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+                className="inline-flex items-center gap-2 rounded bg-emerald-600 px-3.5 py-1.5 text-sm font-medium text-white hover:bg-emerald-700 disabled:opacity-50"
               >
                 {pushMutation.isPending && (
                   <span className="inline-block h-3.5 w-3.5 animate-spin rounded-full border-2 border-white border-t-transparent" />
                 )}
+                {pushMutation.isPending ? "Updating linked project…" : "Update linked project"}
+              </button>
+              <button
+                type="button"
+                onClick={() => pushMutation.mutate({ openBrowser: true })}
+                disabled={pushMutation.isPending}
+                className="inline-flex items-center gap-2 rounded bg-blue-600 px-4 py-1.5 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+              >
                 {pushMutation.isPending ? "Uploading batch & opening…" : "Open project"}
               </button>
               {pushMutation.isPending && (
@@ -400,6 +417,33 @@ export function UploadCanvasPanel({ jobId }: UploadCanvasPanelProps) {
                 </span>
               )}
             </div>
+            {syncSuccess && !pushMutation.isPending && (
+              <div className="space-y-1 text-xs" role="status">
+                <p className="font-medium text-emerald-700">{syncSuccess}</p>
+                {syncedRuns.length > 0 && (
+                  <p className="text-slate-600">
+                    Randomly chosen runs sent:{" "}
+                    {syncedRuns.map((sr, i) => (
+                      <span key={`${sr.run_number}-${sr.run_id ?? i}`}>
+                        {i > 0 && ", "}
+                        <span className="font-semibold text-slate-800">
+                          Simulation {sr.run_number.toLocaleString()} of{" "}
+                          {sr.total_runs.toLocaleString()}
+                        </span>
+                        {sr.run_id != null && (
+                          <a
+                            href={`#/runs/${sr.run_id}`}
+                            className="ml-1 text-blue-600 underline hover:text-blue-800"
+                          >
+                            (Run #{sr.run_id})
+                          </a>
+                        )}
+                      </span>
+                    ))}
+                  </p>
+                )}
+              </div>
+            )}
             {pushMutation.isPending && (
               <div
                 role="progressbar"
