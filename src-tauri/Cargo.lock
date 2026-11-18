@@ -1618,7 +1618,7 @@ dependencies = [
 
 [[package]]
 name = "i-macs"
-version = "0.1.0-rc.23"
+version = "0.1.0-rc.24"
 dependencies = [
  "rusqlite",
  "serde",
