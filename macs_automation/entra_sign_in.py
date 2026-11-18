@@ -18,6 +18,8 @@ logged and are not returned by the config API.
 
 from __future__ import annotations
 
+import base64
+import json
 import logging
 import threading
 import time
@@ -98,6 +100,20 @@ def exchange_auth_code(flow: dict, auth_response: dict) -> dict:
     return result
 
 
+def _id_token_exp(token: str) -> Optional[int]:
+    """Return the JWT `exp` claim from an Entra ID token, or None if opaque."""
+    parts = token.split(".")
+    if len(parts) < 2:
+        return None
+    try:
+        padded = parts[1] + "=" * (-len(parts[1]) % 4)
+        payload = json.loads(base64.urlsafe_b64decode(padded))
+        exp = payload.get("exp")
+        return int(exp) if exp is not None else None
+    except Exception:
+        return None
+
+
 def persist_result(db: ResultsDB, result: dict) -> None:
     """Store the identity token and account. Never log `result`."""
     id_token = _nonempty(result.get("id_token"))
@@ -110,8 +126,11 @@ def persist_result(db: ResultsDB, result: dict) -> None:
     refresh = _nonempty(result.get("refresh_token"))
     if refresh:
         db.set_setting(_REFRESH, refresh)
+    jwt_exp = _id_token_exp(id_token)
     expires_in = result.get("expires_in")
-    if expires_in:
+    if jwt_exp is not None:
+        db.set_setting(_EXPIRES, str(jwt_exp))
+    elif expires_in:
         db.set_setting(_EXPIRES, str(int(time.time()) + int(expires_in)))
     if email:
         db.set_setting(_EMAIL, email)
@@ -143,8 +162,10 @@ def usable_bearer(db: ResultsDB) -> str:
     token = _nonempty(db.get_setting(_ID_TOKEN))
     if not token:
         return ""
+    jwt_exp = _id_token_exp(token)
     expires = _nonempty(db.get_setting(_EXPIRES))
-    if expires is None or int(expires) > time.time() + 60:
+    effective_exp = jwt_exp if jwt_exp is not None else (int(expires) if expires is not None else None)
+    if effective_exp is None or effective_exp > time.time() + 60:
         return token
     refresh = _nonempty(db.get_setting(_REFRESH))
     if not refresh:

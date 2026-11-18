@@ -702,6 +702,7 @@ export interface UploadCanvasHandoffResponse {
   handoff_id: string;
   url: string;
   expires_at?: string;
+  sample_runs?: SampleRunSummary[];
 }
 
 export async function getUploadCanvasSummary(

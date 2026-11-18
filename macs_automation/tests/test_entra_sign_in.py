@@ -213,3 +213,36 @@ def test_signed_in_search_sends_the_bearer_and_skips_the_sign_in_block(
     assert captured["authorization"] == "Bearer id-token-not-for-logs"
     assert captured["app_key"] is None
     assert "id-token-not-for-logs" not in res.text
+
+
+def test_usable_bearer_refreshes_when_id_token_jwt_exp_is_expired(tmp_path, monkeypatch):
+    import base64
+    import json
+    from macs_automation.entra_sign_in import usable_bearer
+
+    def _fake_jwt(exp: int) -> str:
+        hdr = base64.urlsafe_b64encode(b'{"alg":"RS256"}').decode().rstrip("=")
+        pay = base64.urlsafe_b64encode(json.dumps({"exp": exp}).encode()).decode().rstrip("=")
+        return f"{hdr}.{pay}.sig"
+
+    expired_id = _fake_jwt(int(time.time()) - 120)
+    fresh_id = _fake_jwt(int(time.time()) + 3600)
+
+    db = ResultsDB(tmp_path / "refresh.db")
+    db.set_setting("entra_id_token", expired_id)
+    db.set_setting("entra_refresh_token", "refresh-tok")
+    # Even if entra_expires_at was set from a longer access_token lifetime:
+    db.set_setting("entra_expires_at", str(int(time.time()) + 1800))
+
+    class _FakeClient:
+        def acquire_token_by_refresh_token(self, refresh, scopes):
+            assert refresh == "refresh-tok"
+            return {"id_token": fresh_id, "refresh_token": "refresh-tok-2", "expires_in": 3600}
+
+    monkeypatch.setattr("macs_automation.entra_sign_in.build_public_client", lambda: _FakeClient())
+    try:
+        tok = usable_bearer(db)
+        assert tok == fresh_id
+        assert db.get_setting("entra_id_token") == fresh_id
+    finally:
+        db.close()
