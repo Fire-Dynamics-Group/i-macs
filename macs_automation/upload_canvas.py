@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import platform
+import random
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -380,6 +381,8 @@ def build_macs_batch_payload(db: ResultsDB, batch_id: str) -> Optional[dict[str,
             except UploadCanvasError:
                 section_factor = None
 
+    sample_runs = _pick_sample_runs(db, runs, count=2)
+
     return {
         "batch_id": str(batch_id),
         "name": batch.get("name") or f"Batch {str(batch_id)[:8]}",
@@ -396,7 +399,58 @@ def build_macs_batch_payload(db: ResultsDB, batch_id: str) -> Optional[dict[str,
         "setup": setup,
         "shear_check": shear_check,
         "charts": charts,
+        "sample_runs": sample_runs,
     }
+
+
+def _pick_sample_runs(db: ResultsDB, runs: list[dict[str, Any]], count: int = 2) -> list[dict[str, Any]]:
+    """Randomly pick up to `count` valid runs from a batch for Appendix A.1 / A.2."""
+    total = len(runs)
+    if total == 0:
+        return []
+    indexed = list(enumerate(runs))
+    valid = [(i, r) for i, r in indexed if not r.get("error")]
+    pool = valid if len(valid) >= count else indexed
+    chosen = random.sample(pool, min(count, len(pool)))
+    chosen.sort(key=lambda pair: pair[0])
+
+    out: list[dict[str, Any]] = []
+    for idx, r in chosen:
+        ts: list[dict[str, Any]] = []
+        if r.get("id") is not None:
+            try:
+                ts = db.get_time_series(int(r["id"]))
+            except Exception:
+                ts = []
+        uf_vals = [
+            row.get("utilization_factor")
+            for row in ts
+            if isinstance(row.get("utilization_factor"), (int, float))
+        ]
+        uf_max = max(uf_vals) if uf_vals else r.get("uf_max")
+        outputs = {
+            k: r[k]
+            for k in (
+                "mb1_reqd", "mb2_reqd", "factored_hot",
+                "side_a_sec", "side_a_load_ratio", "side_a_critical_temp",
+                "side_b_sec", "side_b_load_ratio", "side_b_critical_temp",
+                "side_c_sec", "side_c_load_ratio", "side_c_critical_temp",
+                "side_d_sec", "side_d_load_ratio", "side_d_critical_temp",
+            )
+            if r.get(k) is not None
+        }
+        out.append({
+            "run_id": r.get("id"),
+            "run_uuid": r.get("uuid"),
+            "run_number": idx + 1,
+            "total_runs": total,
+            "qf": r.get("qf"),
+            "window_percent": r.get("window_percent"),
+            "uf_max": uf_max,
+            "outputs": outputs,
+            "time_series": ts,
+        })
+    return out
 
 
 class UploadCanvasClient:

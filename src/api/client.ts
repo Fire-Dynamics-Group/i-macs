@@ -729,10 +729,19 @@ export async function searchUploadCanvasProjects(
   );
 }
 
+export interface SampleRunSummary {
+  run_id: number | null;
+  run_number: number;
+  total_runs: number;
+  qf?: number | null;
+  window_percent?: number | null;
+  uf_max?: number | null;
+}
+
 export async function linkUploadCanvasProject(
   jobId: string,
   projectId: string,
-): Promise<{ status: string; project_id: string; url: string }> {
+): Promise<{ status: string; project_id: string; url: string; sample_runs?: SampleRunSummary[] }> {
   return postJson(
     `/api/imacs/jobs/${encodeURIComponent(jobId)}/upload-canvas-link`,
     { project_id: projectId },
@@ -755,7 +764,7 @@ export async function unlinkUploadCanvasProject(
 
 export async function pushUploadCanvasRun(
   jobId: string,
-): Promise<{ status: string; project_id: string; url: string }> {
+): Promise<{ status: string; project_id: string; url: string; sample_runs?: SampleRunSummary[] }> {
   return postJson(
     `/api/imacs/jobs/${encodeURIComponent(jobId)}/upload-canvas-push`,
     {},

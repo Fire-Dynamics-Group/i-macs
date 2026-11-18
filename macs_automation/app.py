@@ -43,6 +43,23 @@ from macs_automation import pdf_evidence
 from macs_automation.shear_check import flags_for_run
 from macs_automation.sse_broker import Broker
 from macs_automation.sweep import DEFAULTS, PARAM_ALIASES, BEAM_SIDE_MAP, resolve_deck, resolve_mesh, resolve_slab_weight, generate_combinations
+
+
+def _ensure_macs_app_version() -> None:
+    """Seed MACS_APP_VERSION from package.json in dev when the launcher didn't set it."""
+    if os.environ.get("MACS_APP_VERSION"):
+        return
+    pkg = Path(__file__).resolve().parent.parent / "package.json"
+    if pkg.exists():
+        try:
+            ver = str(json.loads(pkg.read_text(encoding="utf-8")).get("version") or "").strip()
+            if ver:
+                os.environ["MACS_APP_VERSION"] = ver
+        except Exception:
+            pass
+
+
+_ensure_macs_app_version()
 from macs_automation.sampling import FIRE_LOAD_PRESETS
 from macs_automation.varying_params import varying_params_from_config
 

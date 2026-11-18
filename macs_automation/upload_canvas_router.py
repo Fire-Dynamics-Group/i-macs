@@ -314,6 +314,21 @@ def search_projects(
         db.close()
 
 
+def _sample_run_summaries(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    raw = ((payload.get("macs_batch") or {}).get("sample_runs") or [])
+    return [
+        {
+            "run_id": sr.get("run_id"),
+            "run_number": sr.get("run_number"),
+            "total_runs": sr.get("total_runs"),
+            "qf": sr.get("qf"),
+            "window_percent": sr.get("window_percent"),
+            "uf_max": sr.get("uf_max"),
+        }
+        for sr in raw
+    ]
+
+
 @router.post("/jobs/{job_id}/upload-canvas-link")
 def link_project(
     job_id: str,
@@ -337,6 +352,7 @@ def link_project(
             "status": "linked",
             "project_id": body.project_id,
             "url": url,
+            "sample_runs": _sample_run_summaries(payload),
         }
     except UploadCanvasError as e:
         raise HTTPException(status_code=e.status_code, detail=str(e))
@@ -385,6 +401,7 @@ def push_run(
             "status": "pushed",
             "project_id": project_id,
             "url": url,
+            "sample_runs": _sample_run_summaries(payload),
         }
     except UploadCanvasError as e:
         raise HTTPException(status_code=e.status_code, detail=str(e))
