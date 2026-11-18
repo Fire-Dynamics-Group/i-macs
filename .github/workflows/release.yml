@@ -5,6 +5,16 @@ on:
     tags:
       - "v*"
   workflow_dispatch:
+    inputs:
+      publish:
+        description: "Promote to Latest immediately (leave false to hold as Draft for local testing)"
+        required: false
+        type: boolean
+        default: false
+      tag:
+        description: "Tag to release when triggered manually (defaults to v<package.json version>)"
+        required: false
+        type: string
 
 jobs:
   tests:
@@ -224,7 +234,15 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $tag = "${{ github.ref_name }}"
+          $pkgVersion = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          $inputTag = "${{ inputs.tag }}".Trim()
+          if ($inputTag) {
+              $tag = $inputTag
+          } elseif ("${{ github.ref_type }}" -eq "tag") {
+              $tag = "${{ github.ref_name }}"
+          } else {
+              $tag = "v$pkgVersion"
+          }
           $version = $tag.TrimStart('v')
           $setup = Get-ChildItem "src-tauri/target/release/bundle/nsis/*-setup.exe" |
               Sort-Object LastWriteTime -Descending | Select-Object -First 1
@@ -266,26 +284,38 @@ jobs:
           }
           Write-Host "  ok  installer signature verifies against tauri.conf.json pubkey"
 
-      - name: Publish (draft, upload verified assets, promote)
+      - name: Publish (draft by default; promote only when publish=true)
         # Draft-then-promote keeps the release invisible to the updater's
         # /releases/latest endpoint until every asset — installer, signature,
-        # manifest — is uploaded. No half-published state can ever be served.
-        # An -rc tag is published and marked Latest, same as v0.1.0-rc.19.
-        # Leaving it as a draft prerelease would keep latest.json off
-        # /releases/latest, so installed copies would not auto-update.
+        # manifest — is uploaded. By default we stop at Draft so the build can
+        # be tested locally before shipping to the team; pass publish=true via
+        # workflow_dispatch to promote straight to Latest.
         shell: pwsh
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           $ErrorActionPreference = 'Stop'
-          $tag = "${{ github.ref_name }}"
+          $pkgVersion = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          $inputTag = "${{ inputs.tag }}".Trim()
+          if ($inputTag) {
+              $tag = $inputTag
+          } elseif ("${{ github.ref_type }}" -eq "tag") {
+              $tag = "${{ github.ref_name }}"
+          } else {
+              $tag = "v$pkgVersion"
+          }
           $setup = Get-ChildItem "src-tauri/target/release/bundle/nsis/*-setup.exe" |
               Sort-Object LastWriteTime -Descending | Select-Object -First 1
           gh release create $tag --draft `
               --title "MACS+ Automation $tag" `
-              --notes "See the assets below to download and install. Already-installed copies will auto-update on next launch." `
+              --notes "See the assets below to download and install. Already-installed copies will auto-update on next launch once published." `
               $setup.FullName "$($setup.FullName).sig" latest.json
           if ($LASTEXITCODE -ne 0) { Write-Error "draft release creation failed"; exit 1 }
-          gh release edit $tag --draft=false --latest
-          if ($LASTEXITCODE -ne 0) { Write-Error "promoting the draft failed"; exit 1 }
-          Write-Host "  ok  $tag published"
+
+          if ("${{ inputs.publish }}" -eq "true") {
+              gh release edit $tag --draft=false --latest
+              if ($LASTEXITCODE -ne 0) { Write-Error "promoting the draft failed"; exit 1 }
+              Write-Host "  ok  $tag published as Latest"
+          } else {
+              Write-Host "  ok  $tag created as DRAFT (not yet visible to team auto-updater). Publish on GitHub when ready."
+          }
