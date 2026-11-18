@@ -291,7 +291,7 @@ def create_job_handoff(
         imacs_job_id = get_or_create_imacs_job_id(db, local_id)
         payload = _resolve_job_payload(db, local_id, imacs_job_id)
         handoff = client.create_handoff(payload)
-        return handoff
+        return {**handoff, "sample_runs": _sample_run_summaries(payload)}
     except UploadCanvasError as e:
         raise HTTPException(status_code=e.status_code, detail=str(e))
     finally:

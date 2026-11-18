@@ -192,6 +192,7 @@ export function UploadCanvasPanel({ jobId }: UploadCanvasPanelProps) {
     onSuccess: async (data) => {
       setShowChooser(false);
       setErrorMessage(null);
+      setSyncedRuns(Array.isArray(data?.sample_runs) ? data.sample_runs : []);
       // The browser claims the handoff after this response. A null summary
       // until then is waiting, not a failure.
       setAwaitingClaim(true);
@@ -213,6 +214,7 @@ export function UploadCanvasPanel({ jobId }: UploadCanvasPanelProps) {
     onSuccess: async (data) => {
       setShowChooser(false);
       setErrorMessage(null);
+      setSyncedRuns(Array.isArray(data?.sample_runs) ? data.sample_runs : []);
       if (data?.url) {
         setOpenedUrl(data.url);
         await safeOpenUrl(data.url);

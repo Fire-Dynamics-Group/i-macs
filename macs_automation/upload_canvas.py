@@ -381,7 +381,7 @@ def build_macs_batch_payload(db: ResultsDB, batch_id: str) -> Optional[dict[str,
             except UploadCanvasError:
                 section_factor = None
 
-    sample_runs = _pick_sample_runs(db, runs, count=2)
+    sample_runs = _pick_sample_runs(db, runs, count=2, seed_key=str(batch_id))
 
     return {
         "batch_id": str(batch_id),
@@ -403,15 +403,21 @@ def build_macs_batch_payload(db: ResultsDB, batch_id: str) -> Optional[dict[str,
     }
 
 
-def _pick_sample_runs(db: ResultsDB, runs: list[dict[str, Any]], count: int = 2) -> list[dict[str, Any]]:
-    """Randomly pick up to `count` valid runs from a batch for Appendix A.1 / A.2."""
+def _pick_sample_runs(
+    db: ResultsDB,
+    runs: list[dict[str, Any]],
+    count: int = 2,
+    seed_key: Optional[str] = None,
+) -> list[dict[str, Any]]:
+    """Deterministically pick up to `count` valid runs from a batch for Appendix A.1 / A.2."""
     total = len(runs)
     if total == 0:
         return []
     indexed = list(enumerate(runs))
     valid = [(i, r) for i, r in indexed if not r.get("error")]
     pool = valid if len(valid) >= count else indexed
-    chosen = random.sample(pool, min(count, len(pool)))
+    rng = random.Random(seed_key) if seed_key is not None else random
+    chosen = rng.sample(pool, min(count, len(pool)))
     chosen.sort(key=lambda pair: pair[0])
 
     out: list[dict[str, Any]] = []
