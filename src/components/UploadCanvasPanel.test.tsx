@@ -91,6 +91,10 @@ describe("UploadCanvasPanel", () => {
     vi.mocked(client.createUploadCanvasHandoff).mockResolvedValue({
       handoff_id: "h-xyz",
       url: "http://localhost:3000/?handoff=h-xyz",
+      sample_runs: [
+        { run_id: 10123, run_number: 123, total_runs: 10000 },
+        { run_id: 10456, run_number: 456, total_runs: 10000 },
+      ],
     });
 
     renderPanel("batch-100");
@@ -115,6 +119,8 @@ describe("UploadCanvasPanel", () => {
         "batch-100",
       );
     });
+    expect(await screen.findByText(/Simulation 123 of 10,000/)).toBeInTheDocument();
+    expect(screen.getByText(/Simulation 456 of 10,000/)).toBeInTheDocument();
   });
 
   it("shows the linked project after New project once the claim exists", async () => {

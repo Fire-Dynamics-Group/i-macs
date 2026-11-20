@@ -337,33 +337,57 @@ export function UploadCanvasPanel({ jobId }: UploadCanvasPanelProps) {
       )}
 
       {openedUrl && (
-        <div className="mt-3 rounded border border-blue-200 bg-blue-50 p-3 text-xs text-blue-900 flex items-center justify-between">
-          <div className="flex-1 mr-2">
-            <span className="font-semibold">Opened in browser:</span>{" "}
-            <a
-              href={openedUrl}
-              target="_blank"
-              rel="noopener noreferrer"
-              onClick={async (e) => {
-                e.preventDefault();
-                await safeOpenUrl(openedUrl);
+        <div className="mt-3 rounded border border-blue-200 bg-blue-50 p-3 text-xs text-blue-900 space-y-1.5">
+          <div className="flex items-center justify-between">
+            <div className="flex-1 mr-2">
+              <span className="font-semibold">Opened in browser:</span>{" "}
+              <a
+                href={openedUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                onClick={async (e) => {
+                  e.preventDefault();
+                  await safeOpenUrl(openedUrl);
+                }}
+                className="text-blue-700 underline font-medium hover:text-blue-900 break-all"
+              >
+                {openedUrl}
+              </a>
+            </div>
+            <button
+              type="button"
+              onClick={() => {
+                if (navigator.clipboard) {
+                  navigator.clipboard.writeText(openedUrl);
+                }
               }}
-              className="text-blue-700 underline font-medium hover:text-blue-900 break-all"
+              className="rounded bg-white px-2 py-1 text-xs border border-blue-300 text-blue-800 hover:bg-blue-100 whitespace-nowrap"
             >
-              {openedUrl}
-            </a>
+              Copy link
+            </button>
           </div>
-          <button
-            type="button"
-            onClick={() => {
-              if (navigator.clipboard) {
-                navigator.clipboard.writeText(openedUrl);
-              }
-            }}
-            className="rounded bg-white px-2 py-1 text-xs border border-blue-300 text-blue-800 hover:bg-blue-100 whitespace-nowrap"
-          >
-            Copy link
-          </button>
+          {!syncSuccess && syncedRuns.length > 0 && (
+            <p className="text-slate-700">
+              Randomly chosen runs sent:{" "}
+              {syncedRuns.map((sr, i) => (
+                <span key={`${sr.run_number}-${sr.run_id ?? i}`}>
+                  {i > 0 && ", "}
+                  <span className="font-semibold text-slate-900">
+                    Simulation {sr.run_number.toLocaleString()} of{" "}
+                    {sr.total_runs.toLocaleString()}
+                  </span>
+                  {sr.run_id != null && (
+                    <a
+                      href={`#/runs/${sr.run_id}`}
+                      className="ml-1 text-blue-700 underline hover:text-blue-900"
+                    >
+                      (Run #{sr.run_id})
+                    </a>
+                  )}
+                </span>
+              ))}
+            </p>
+          )}
         </div>
       )}
 
