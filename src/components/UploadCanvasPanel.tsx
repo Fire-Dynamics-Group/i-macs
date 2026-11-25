@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   getUploadCanvasSummary,
@@ -107,6 +107,8 @@ export function UploadCanvasPanel({ jobId }: UploadCanvasPanelProps) {
   const [urlsFromConfig, setUrlsFromConfig] = useState(false);
   const [awaitingSignIn, setAwaitingSignIn] = useState(false);
   const [settingsNote, setSettingsNote] = useState<string | null>(null);
+  const wasSignedInOnStartRef = useRef(false);
+  const sawSignInInProgressRef = useRef(false);
 
   const summaryQuery = useQuery({
     queryKey: ["upload-canvas-summary", jobId],
@@ -130,14 +132,44 @@ export function UploadCanvasPanel({ jobId }: UploadCanvasPanelProps) {
   const canUseUploadCanvas = signedIn || hasAppKey;
   const needsSignIn = configQuery.isSuccess && !canUseUploadCanvas;
 
+  const signInInProgress = configQuery.data?.sign_in_in_progress;
+
   useEffect(() => {
-    if (signedIn) setAwaitingSignIn(false);
+    if (!awaitingSignIn) {
+      sawSignInInProgressRef.current = false;
+      return;
+    }
+    if (signInInProgress === true) {
+      sawSignInInProgressRef.current = true;
+    }
+    const finishedViaSidecar =
+      sawSignInInProgressRef.current && signInInProgress === false;
+    const finishedViaSignedInTransition =
+      signInInProgress === undefined && !wasSignedInOnStartRef.current && signedIn;
+
+    if (finishedViaSidecar || finishedViaSignedInTransition) {
+      setAwaitingSignIn(false);
+      sawSignInInProgressRef.current = false;
+      if (signedIn) {
+        setErrorMessage(null);
+        queryClient.invalidateQueries({ queryKey: ["upload-canvas-summary", jobId] });
+        queryClient.invalidateQueries({ queryKey: ["upload-canvas-projects"] });
+      }
+    }
     const signInError = configQuery.data?.sign_in_error;
     if (signInError) {
       setAwaitingSignIn(false);
+      sawSignInInProgressRef.current = false;
       setErrorMessage(signInError);
     }
-  }, [signedIn, configQuery.data?.sign_in_error]);
+  }, [
+    signedIn,
+    awaitingSignIn,
+    signInInProgress,
+    configQuery.data?.sign_in_error,
+    jobId,
+    queryClient,
+  ]);
 
   useEffect(() => {
     if (!configQuery.data || urlsFromConfig) return;
@@ -159,6 +191,7 @@ export function UploadCanvasPanel({ jobId }: UploadCanvasPanelProps) {
       setErrorMessage(null);
       queryClient.invalidateQueries({ queryKey: ["upload-canvas-config"] });
       queryClient.invalidateQueries({ queryKey: ["upload-canvas-projects"] });
+      queryClient.invalidateQueries({ queryKey: ["upload-canvas-summary", jobId] });
     },
     onError: (err: Error) => {
       setSettingsNote(err.message || "Could not save settings");
@@ -168,6 +201,8 @@ export function UploadCanvasPanel({ jobId }: UploadCanvasPanelProps) {
   const signInMutation = useMutation({
     mutationFn: () => startUploadCanvasSignIn(),
     onSuccess: async (data) => {
+      wasSignedInOnStartRef.current = signedIn;
+      sawSignInInProgressRef.current = false;
       setAwaitingSignIn(true);
       setErrorMessage(null);
       if (data?.auth_url) await safeOpenUrl(data.auth_url);
@@ -184,6 +219,7 @@ export function UploadCanvasPanel({ jobId }: UploadCanvasPanelProps) {
       setAwaitingSignIn(false);
       queryClient.invalidateQueries({ queryKey: ["upload-canvas-config"] });
       queryClient.invalidateQueries({ queryKey: ["upload-canvas-projects"] });
+      queryClient.invalidateQueries({ queryKey: ["upload-canvas-summary", jobId] });
     },
   });
 
@@ -366,6 +402,18 @@ export function UploadCanvasPanel({ jobId }: UploadCanvasPanelProps) {
               Copy link
             </button>
           </div>
+          {awaitingClaim && (
+            <div className="flex items-center justify-between gap-2 text-blue-800">
+              <span>Waiting for you to finish creating the project in Upload Canvas…</span>
+              <button
+                type="button"
+                onClick={() => setAwaitingClaim(false)}
+                className="text-xs font-medium underline hover:text-blue-950 whitespace-nowrap"
+              >
+                Stop checking
+              </button>
+            </div>
+          )}
           {!syncSuccess && syncedRuns.length > 0 && (
             <p className="text-slate-700">
               Randomly chosen runs sent:{" "}
@@ -391,11 +439,71 @@ export function UploadCanvasPanel({ jobId }: UploadCanvasPanelProps) {
         </div>
       )}
 
-      {summaryQuery.isError ? (
-        <p className="mt-3 text-sm text-rose-700" role="alert">
-          {(summaryQuery.error as Error).message}
-        </p>
-      ) : isLinked ? (
+      {summaryQuery.isError ? (() => {
+        const summarySearchMsg = uploadCanvasSearchMessage(summaryQuery.error);
+        const summaryNeedsAuth =
+          needsSignIn ||
+          summarySearchMsg === UPLOAD_CANVAS_SIGN_IN_MESSAGE ||
+          summarySearchMsg === UPLOAD_CANVAS_NOT_AUTHORISED_MESSAGE;
+        return (
+          <div className="mt-3 space-y-2">
+            <p className="text-sm text-rose-700" role="alert">
+              {(summaryQuery.error as Error).message}
+            </p>
+            <div className="flex flex-wrap items-center gap-2">
+              {summaryNeedsAuth && (
+                <button
+                  type="button"
+                  onClick={() => signInMutation.mutate()}
+                  disabled={signInMutation.isPending}
+                  className="rounded bg-slate-800 px-3 py-1.5 text-xs font-medium text-white hover:bg-slate-900 disabled:opacity-50"
+                >
+                  {signInMutation.isPending || awaitingSignIn
+                    ? "Waiting for Microsoft…"
+                    : "Sign in with Microsoft"}
+                </button>
+              )}
+              {awaitingSignIn && (
+                <button
+                  type="button"
+                  onClick={() => setAwaitingSignIn(false)}
+                  className="rounded border border-slate-300 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-50"
+                >
+                  Cancel
+                </button>
+              )}
+              {signedIn && summaryNeedsAuth && (
+                <button
+                  type="button"
+                  onClick={() => signOutMutation.mutate()}
+                  disabled={signOutMutation.isPending}
+                  className="rounded border border-slate-300 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+                >
+                  Sign out
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={() => summaryQuery.refetch()}
+                disabled={summaryQuery.isFetching}
+                className="rounded border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+              >
+                {summaryQuery.isFetching ? "Retrying…" : "Retry"}
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setShowSettings(true);
+                  setShowChooser(true);
+                }}
+                className="rounded border border-slate-300 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50"
+              >
+                Settings
+              </button>
+            </div>
+          </div>
+        );
+      })() : isLinked ? (
         <div className="mt-3">
           <div className="grid grid-cols-2 gap-4 text-sm">
             <div>
@@ -520,6 +628,18 @@ export function UploadCanvasPanel({ jobId }: UploadCanvasPanelProps) {
               </div>
             </div>
 
+            {errorMessage && (
+              <div
+                role="alert"
+                className="mt-3 rounded bg-rose-50 p-2 text-xs text-rose-700 border border-rose-200 flex justify-between items-center"
+              >
+                <span>{errorMessage}</span>
+                <button type="button" onClick={() => setErrorMessage(null)} className="font-bold ml-2">
+                  ×
+                </button>
+              </div>
+            )}
+
             <div className="mt-4 rounded border border-slate-200 p-3">
               {signedIn ? (
                 <div className="flex items-center justify-between gap-2">
@@ -535,16 +655,27 @@ export function UploadCanvasPanel({ jobId }: UploadCanvasPanelProps) {
                   </button>
                 </div>
               ) : (
-                <button
-                  type="button"
-                  onClick={() => signInMutation.mutate()}
-                  disabled={signInMutation.isPending}
-                  className="rounded bg-slate-800 px-3 py-1 text-xs font-medium text-white hover:bg-slate-900 disabled:opacity-50"
-                >
-                  {signInMutation.isPending || awaitingSignIn
-                    ? "Waiting for Microsoft…"
-                    : "Sign in with Microsoft"}
-                </button>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => signInMutation.mutate()}
+                    disabled={signInMutation.isPending}
+                    className="rounded bg-slate-800 px-3 py-1 text-xs font-medium text-white hover:bg-slate-900 disabled:opacity-50"
+                  >
+                    {signInMutation.isPending || awaitingSignIn
+                      ? "Waiting for Microsoft…"
+                      : "Sign in with Microsoft"}
+                  </button>
+                  {awaitingSignIn && (
+                    <button
+                      type="button"
+                      onClick={() => setAwaitingSignIn(false)}
+                      className="text-xs font-medium text-slate-600 hover:underline"
+                    >
+                      Cancel
+                    </button>
+                  )}
+                </div>
               )}
             </div>
 
