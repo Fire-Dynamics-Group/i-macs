@@ -200,9 +200,14 @@ class SignInSession:
         self._flow: Optional[dict] = None
         self._db_path: Optional[str] = None
 
+    @property
+    def in_progress(self) -> bool:
+        with self._lock:
+            return self._httpd is not None
+
     def start(self, db: ResultsDB) -> str:
         with self._lock:
-            self._close_unlocked()
+            self._close_unlocked(sync=True)
             self.error = None
             self._flow = begin_auth_code_flow()
             self._db_path = db.db_path
@@ -226,16 +231,21 @@ class SignInSession:
         with self._lock:
             self._close_unlocked()
 
-    def _close_unlocked(self) -> None:
+    def _close_unlocked(self, sync: bool = False) -> None:
         httpd = self._httpd
+        thread = self._thread
         self._httpd = None
+        self._thread = None
         self._flow = None
         if httpd is not None:
             def _stop() -> None:
                 httpd.shutdown()
                 httpd.server_close()
 
-            threading.Thread(target=_stop, daemon=True).start()
+            if sync and threading.current_thread() is not thread:
+                _stop()
+            else:
+                threading.Thread(target=_stop, daemon=True).start()
 
     def _handler_class(self):
         session = self
@@ -269,23 +279,25 @@ class SignInSession:
         with self._lock:
             flow = self._flow
             db_path = self._db_path
-        if not flow or not db_path or not auth_response.get("code"):
-            self.error = "Microsoft sign-in could not be completed."
-            return False
         try:
-            result = exchange_auth_code(flow, auth_response)
-            db = ResultsDB(db_path, check_same_thread=False)
+            if not flow or not db_path or not auth_response.get("code"):
+                self.error = "Microsoft sign-in could not be completed."
+                return False
             try:
-                persist_result(db, result)
-            finally:
-                db.close()
-        except Exception:
-            log.warning("entra sign-in could not be completed")
-            self.error = "Microsoft sign-in could not be completed."
-            return False
-        self.error = None
-        threading.Thread(target=self.close, daemon=True).start()
-        return True
+                result = exchange_auth_code(flow, auth_response)
+                db = ResultsDB(db_path, check_same_thread=False)
+                try:
+                    persist_result(db, result)
+                finally:
+                    db.close()
+            except Exception:
+                log.warning("entra sign-in could not be completed")
+                self.error = "Microsoft sign-in could not be completed."
+                return False
+            self.error = None
+            return True
+        finally:
+            threading.Thread(target=self.close, daemon=True).start()
 
 
 sign_in_session = SignInSession()
