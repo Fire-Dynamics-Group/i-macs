@@ -212,6 +212,7 @@ def get_config(db: ResultsDB = Depends(_get_db)):
             "account_email": view["account_email"],
             "account_name": view["account_name"],
             "sign_in_error": sign_in_session.error or "",
+            "sign_in_in_progress": sign_in_session.in_progress,
         }
     finally:
         db.close()
@@ -262,6 +263,7 @@ def get_job_summary(
     client: UploadCanvasClient = Depends(_get_client),
 ):
     try:
+        _require_upload_canvas_auth(client)
         local_id = resolve_local_job_id(db, job_id)
         imacs_job_id = get_or_create_imacs_job_id(db, local_id)
         try:

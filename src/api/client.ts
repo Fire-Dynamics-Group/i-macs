@@ -780,6 +780,7 @@ export interface UploadCanvasConfig {
   account_email: string;
   account_name: string;
   sign_in_error?: string;
+  sign_in_in_progress?: boolean;
 }
 
 export interface UploadCanvasConfigUpdate {

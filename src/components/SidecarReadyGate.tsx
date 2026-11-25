@@ -26,10 +26,12 @@ type Status =
  */
 export function SidecarReadyGate({ children }: { children: ReactNode }) {
   const [status, setStatus] = useState<Status>({ kind: "starting" });
+  const [retryCount, setRetryCount] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
     let unlisten: (() => void) | undefined;
+    setStatus({ kind: "starting" });
 
     const markReady = () => {
       if (!cancelled) setStatus({ kind: "ready" });
@@ -74,7 +76,7 @@ export function SidecarReadyGate({ children }: { children: ReactNode }) {
       cancelled = true;
       unlisten?.();
     };
-  }, []);
+  }, [retryCount]);
 
   if (status.kind === "ready") return <>{children}</>;
 
@@ -96,12 +98,22 @@ export function SidecarReadyGate({ children }: { children: ReactNode }) {
               Background service didn't start
             </p>
             <p className="mt-2 text-xs text-rose-900">{status.message}</p>
-            <button
-              onClick={() => openLogFolder()}
-              className="mt-4 rounded border border-rose-300 px-3 py-1.5 text-xs text-rose-800 hover:bg-rose-50"
-            >
-              Open log folder
-            </button>
+            <div className="mt-4 flex items-center justify-center gap-2">
+              <button
+                type="button"
+                onClick={() => setRetryCount((c) => c + 1)}
+                className="rounded bg-slate-800 px-3 py-1.5 text-xs font-medium text-white hover:bg-slate-900"
+              >
+                Retry
+              </button>
+              <button
+                type="button"
+                onClick={() => openLogFolder()}
+                className="rounded border border-rose-300 px-3 py-1.5 text-xs text-rose-800 hover:bg-rose-50"
+              >
+                Open log folder
+              </button>
+            </div>
           </>
         )}
       </div>

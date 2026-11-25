@@ -503,14 +503,17 @@ function BatchRunsTable({
         </tr>
       </thead>
       <tbody>
-        {runs.map((run) => (
+        {runs.map((run, idx) => (
           <tr
             key={run.id}
             className={
               "border-t border-slate-100 " + (run.error ? "bg-rose-50" : "")
             }
           >
-            <td className="px-4 py-1">
+            <td className="px-4 py-1 tabular-nums">
+              <span className="font-medium text-slate-700">
+                {(idx + 1).toLocaleString()}
+              </span>{" "}
               <Link
                 to={`/runs/${run.id}`}
                 className="text-blue-700 hover:underline"

@@ -91,6 +91,10 @@ describe("UploadCanvasPanel", () => {
     vi.mocked(client.createUploadCanvasHandoff).mockResolvedValue({
       handoff_id: "h-xyz",
       url: "http://localhost:3000/?handoff=h-xyz",
+      sample_runs: [
+        { run_id: 10123, run_number: 123, total_runs: 10000 },
+        { run_id: 10456, run_number: 456, total_runs: 10000 },
+      ],
     });
 
     renderPanel("batch-100");
@@ -115,6 +119,8 @@ describe("UploadCanvasPanel", () => {
         "batch-100",
       );
     });
+    expect(await screen.findByText(/Simulation 123 of 10,000/)).toBeInTheDocument();
+    expect(screen.getByText(/Simulation 456 of 10,000/)).toBeInTheDocument();
   });
 
   it("shows the linked project after New project once the claim exists", async () => {
@@ -246,8 +252,51 @@ describe("UploadCanvasPanel", () => {
       expect(
         screen.queryByRole("button", { name: /Open in Upload Canvas/i }),
       ).not.toBeInTheDocument();
+      expect(screen.getByRole("button", { name: /Retry/i })).toBeInTheDocument();
     },
   );
+
+  it("offers Sign in with Microsoft and Retry when summary returns 401 and recovers on retry", async () => {
+    vi.mocked(client.getUploadCanvasConfig).mockResolvedValue({
+      ...PRODUCTION_CONFIG,
+      signed_in: false,
+      has_app_key: false,
+    });
+    vi.mocked(client.getUploadCanvasSummary)
+      .mockRejectedValueOnce(
+        new Error(
+          "GET /api/imacs/jobs/batch-100/upload-canvas-summary failed: 401 Sign in to Upload Canvas.",
+        ),
+      )
+      .mockResolvedValueOnce({
+        job_id: "batch-100",
+        imacs_job_id: "imacs-uuid-1",
+        summary: {
+          project_id: "p-abc",
+          project_name: "Birmingham Depot TEQ",
+          last_sent_at: "2026-11-02T14:30:00Z",
+          outcome: null,
+        },
+      });
+    vi.mocked(client.startUploadCanvasSignIn).mockResolvedValue({
+      auth_url: "https://login.microsoftonline.com/common/oauth2/v2.0/authorize",
+      redirect_uri: "http://127.0.0.1:47831/callback",
+    });
+
+    renderPanel("batch-100");
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(/401 Sign in to Upload Canvas/);
+    const signInBtn = screen.getByRole("button", { name: /Sign in with Microsoft/i });
+    const retryBtn = screen.getByRole("button", { name: /Retry/i });
+
+    fireEvent.click(signInBtn);
+    await waitFor(() => {
+      expect(client.startUploadCanvasSignIn).toHaveBeenCalledTimes(1);
+    });
+
+    fireEvent.click(retryBtn);
+    expect(await screen.findByText("Birmingham Depot TEQ")).toBeInTheDocument();
+  });
 
   async function openChooser() {
     fireEvent.click(
@@ -485,5 +534,37 @@ describe("UploadCanvasPanel", () => {
     expect(screen.queryByLabelText(/app key/i)).not.toBeInTheDocument();
     const sent = vi.mocked(client.putUploadCanvasConfig).mock.calls[0][0];
     expect(sent).not.toHaveProperty("imacs_app_key");
+  });
+
+  it("lets the user cancel a stuck Microsoft sign-in, open Settings, or sign out on 401 Not authorised", async () => {
+    vi.mocked(client.getUploadCanvasConfig).mockResolvedValue({
+      ...PRODUCTION_CONFIG,
+      signed_in: true,
+      has_app_key: false,
+      sign_in_in_progress: true,
+    });
+    vi.mocked(client.getUploadCanvasSummary).mockRejectedValue(
+      new Error(
+        "GET /api/imacs/jobs/batch-100/upload-canvas-summary failed: 401 Not authorised.",
+      ),
+    );
+    vi.mocked(client.startUploadCanvasSignIn).mockResolvedValue({
+      auth_url: "https://login.microsoftonline.com/common/oauth2/v2.0/authorize",
+      redirect_uri: "http://127.0.0.1:47831/callback",
+    });
+
+    renderPanel("batch-100");
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(/401 Not authorised/);
+    expect(screen.getByRole("button", { name: /Sign out/i })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /Sign in with Microsoft/i }));
+    expect(await screen.findByRole("button", { name: /Waiting for Microsoft/i })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /Cancel/i }));
+    expect(screen.getByRole("button", { name: /Sign in with Microsoft/i })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /Settings/i }));
+    expect(await screen.findByText(/Upload Canvas settings/i)).toBeInTheDocument();
   });
 });
